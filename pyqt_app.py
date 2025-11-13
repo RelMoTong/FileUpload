@@ -47,7 +47,8 @@ except ImportError:
 # 统一访问 Qt 枚举（兼容 Qt6 的强类型枚举命名）
 QtEnum = QtCore.Qt
 
-APP_TITLE = "图片异步上传工具 (PyQt)"
+APP_TITLE = "图片异步上传工具 v2.1 (PyQt)"
+APP_VERSION = "2.1"
 
 
 def get_app_dir() -> Path:
@@ -1438,7 +1439,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         
         title = QtWidgets.QLabel("图片异步上传工具")
         title.setObjectName("Title")
-        ver = QtWidgets.QLabel("v2 (PyQt)")
+        ver = QtWidgets.QLabel(f"v{APP_VERSION} (PyQt)")
         header.addWidget(title)
         header.addWidget(ver)
         header.addStretch(1)

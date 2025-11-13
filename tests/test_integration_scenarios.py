@@ -388,6 +388,170 @@ def test_scenario_5_config_upgrade():
         return False
 
 
+def test_scenario_6_network_recovery():
+    """
+    场景6: 网络断开恢复测试
+    模拟：FTP上传过程中网络断开，然后恢复连接继续上传
+    """
+    print_header("场景6: 网络断开恢复测试")
+    
+    server = None
+    client = None
+    
+    try:
+        # 1. 创建测试环境
+        share_dir = Path("test_scenario6_share").absolute()
+        upload_dir = Path("test_scenario6_upload").absolute()
+        share_dir.mkdir(exist_ok=True)
+        upload_dir.mkdir(exist_ok=True)
+        
+        # 创建测试文件
+        test_file = upload_dir / "recovery_test.txt"
+        test_file.write_text("网络恢复测试内容" * 100, encoding='utf-8')
+        print_result(True, f"测试文件创建: {test_file.stat().st_size} 字节")
+        
+        # 2. 启动FTP服务器
+        server_config = {
+            'host': '127.0.0.1',
+            'port': 3126,
+            'username': 'recovery_user',
+            'password': 'recovery_pass',
+            'shared_folder': str(share_dir.absolute())
+        }
+        
+        server = FTPServerManager(server_config)
+        if not server.start():
+            print_result(False, "FTP服务器启动失败")
+            return False
+        
+        time.sleep(1)  # 等待服务器完全启动
+        print_result(True, "FTP服务器启动成功")
+        
+        # 3. 创建FTP客户端
+        client_config = {
+            'name': 'recovery_client',
+            'host': '127.0.0.1',
+            'port': 3126,
+            'username': 'recovery_user',
+            'password': 'recovery_pass',
+            'remote_path': '/uploads',
+            'timeout': 10,
+            'retry_count': 3
+        }
+        
+        client = FTPClientUploader(client_config)
+        if not client.connect():
+            print_result(False, "客户端连接失败")
+            return False
+        
+        print_result(True, "客户端连接成功")
+        
+        # 4. 第一次上传成功
+        success = client.upload_file(test_file, '/uploads/recovery_test.txt')
+        if not success:
+            print_result(False, "初始上传失败")
+            return False
+        
+        print_result(True, "初始上传成功")
+        
+        # 5. 模拟网络断开（停止服务器）
+        client.disconnect()
+        server.stop()
+        time.sleep(1)
+        print_result(True, "模拟网络断开（服务器停止）")
+        
+        # 6. 验证客户端检测到断开
+        status = client.get_status()
+        if status['connected']:
+            print_result(False, "客户端应该检测到断开")
+            return False
+        
+        print_result(True, "客户端正确检测到断开")
+        
+        # 7. 模拟网络恢复（重启服务器）
+        server = FTPServerManager(server_config)
+        if not server.start():
+            print_result(False, "服务器重启失败")
+            return False
+        
+        time.sleep(1)
+        print_result(True, "模拟网络恢复（服务器重启）")
+        
+        # 8. 客户端重新连接
+        if not client.connect():
+            print_result(False, "客户端重连失败")
+            return False
+        
+        print_result(True, "客户端重连成功")
+        
+        # 9. 继续上传另一个文件
+        test_file2 = upload_dir / "recovery_test2.txt"
+        
+        # 确保upload_dir存在
+        if not upload_dir.exists():
+            upload_dir.mkdir(exist_ok=True)
+            print_result(True, f"重新创建上传目录: {upload_dir}")
+        
+        test_file2.write_text("恢复后的上传内容", encoding='utf-8')
+        print_result(True, f"创建恢复测试文件: {test_file2}")
+        
+        success = client.upload_file(test_file2, '/uploads/recovery_test2.txt')
+        if not success:
+            print_result(False, "恢复后上传失败")
+            return False
+        
+        print_result(True, "恢复后上传成功")
+        
+        # 10. 验证文件完整性
+        uploaded1 = share_dir / "uploads" / "recovery_test.txt"
+        uploaded2 = share_dir / "uploads" / "recovery_test2.txt"
+        
+        if not uploaded1.exists() or not uploaded2.exists():
+            print_result(False, "上传的文件不存在")
+            return False
+        
+        content1 = uploaded1.read_text(encoding='utf-8')
+        content2 = uploaded2.read_text(encoding='utf-8')
+        
+        if content1 != test_file.read_text(encoding='utf-8'):
+            print_result(False, "第一个文件内容不匹配")
+            return False
+        
+        if content2 != test_file2.read_text(encoding='utf-8'):
+            print_result(False, "第二个文件内容不匹配")
+            return False
+        
+        print_result(True, "文件内容验证通过")
+        print_result(True, "场景6测试通过：网络断开恢复功能正常")
+        
+        # 清理
+        client.disconnect()
+        server.stop()
+        time.sleep(0.5)
+        shutil.rmtree(share_dir)
+        shutil.rmtree(upload_dir)
+        
+        return True
+        
+    except Exception as e:
+        print_result(False, f"场景6测试失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+    finally:
+        # 确保清理
+        if client:
+            try:
+                client.disconnect()
+            except:
+                pass
+        if server:
+            try:
+                server.stop()
+            except:
+                pass
+
+
 def main():
     """运行所有集成测试场景"""
     print("\n")
@@ -405,6 +569,7 @@ def main():
     results['场景3: FTP客户端模式'] = test_scenario_3_ftp_client_mode()
     results['场景4: 混合模式'] = test_scenario_4_mixed_mode()
     results['场景5: 配置升级'] = test_scenario_5_config_upgrade()
+    results['场景6: 网络断开恢复'] = test_scenario_6_network_recovery()
     
     # 打印总结
     print("\n" + "=" * 70)
