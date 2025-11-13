@@ -21,8 +21,16 @@ import queue
 import winreg
 import hashlib
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+
+# v2.0 新增：导入 FTP 协议模块
+try:
+    from src.ftp_protocol import FTPProtocolManager, FTPServerManager, FTPClientUploader
+    FTP_AVAILABLE = True
+except ImportError:
+    FTP_AVAILABLE = False
+    print("警告: FTP 模块导入失败，FTP 功能不可用")
 
 try:
     from PySide6 import QtCore, QtGui, QtWidgets  # type: ignore
@@ -137,7 +145,10 @@ class UploadWorker(QtCore.QObject):  # type: ignore
                  network_auto_resume: bool = True,
                  enable_auto_delete: bool = False, auto_delete_folder: str = '',
                  auto_delete_threshold: int = 80, auto_delete_keep_days: int = 10,
-                 auto_delete_check_interval: int = 300):
+                 auto_delete_check_interval: int = 300,
+                 # v2.0 新增：协议相关参数
+                 upload_protocol: str = 'smb',
+                 ftp_client_config: Optional[dict] = None):
         super().__init__()
         self.source = source
         self.target = target
@@ -162,6 +173,11 @@ class UploadWorker(QtCore.QObject):  # type: ignore
         self.auto_delete_threshold = auto_delete_threshold
         self.auto_delete_keep_days = auto_delete_keep_days
         self.auto_delete_check_interval = auto_delete_check_interval
+        # v2.0 新增：协议配置
+        self.upload_protocol = upload_protocol  # 'smb', 'ftp_client', 'both'
+        self.ftp_client_config = ftp_client_config or {}
+        self.ftp_client = None  # FTP客户端实例
+        
         self._running = False
         self._paused = False
         self._thread = None
@@ -226,6 +242,15 @@ class UploadWorker(QtCore.QObject):  # type: ignore
     def stop(self):
         self._running = False
         self._paused = False
+        
+        # v2.0 新增：关闭FTP客户端连接
+        if self.ftp_client:
+            try:
+                self.ftp_client.disconnect()
+                self.ftp_client = None
+            except Exception as e:
+                pass  # 忽略断开连接错误
+        
         # 关闭线程池
         try:
             self._executor.shutdown(wait=False, cancel_futures=True)
@@ -667,6 +692,93 @@ class UploadWorker(QtCore.QObject):  # type: ignore
                     pass
             raise e
     
+    # v2.0 新增：多协议上传支持
+    def _upload_file_by_protocol(self, src: str, dst: str) -> bool:
+        """
+        根据配置的协议上传文件
+        
+        Args:
+            src: 源文件路径
+            dst: 目标文件路径（SMB路径或本地路径）
+        
+        Returns:
+            bool: 上传是否成功
+        """
+        if self.upload_protocol == 'smb':
+            # SMB协议：直接使用文件系统复制
+            return self._upload_via_smb(src, dst)
+        elif self.upload_protocol == 'ftp_client':
+            # FTP客户端模式：上传到FTP服务器
+            return self._upload_via_ftp(src, dst)
+        elif self.upload_protocol == 'both':
+            # 混合模式：同时使用SMB和FTP
+            smb_ok = self._upload_via_smb(src, dst)
+            ftp_ok = self._upload_via_ftp(src, dst)
+            return smb_ok or ftp_ok  # 任一成功即视为成功
+        else:
+            self.log.emit(f"❌ 未知的上传协议: {self.upload_protocol}")
+            return False
+    
+    def _upload_via_smb(self, src: str, dst: str) -> bool:
+        """通过SMB协议上传文件（使用shutil.copy2）"""
+        try:
+            # 对于大文件，显示上传进度
+            if self.current_file_size > 10 * 1024 * 1024:  # 大于10MB
+                self._copy_with_progress(src, dst)
+            else:
+                # 小文件也使用超时保护
+                def copy_file():
+                    shutil.copy2(src, dst)
+                    return True
+                
+                copy_success = self._safe_path_operation(copy_file, timeout=10.0, default=False)
+                if not copy_success:
+                    raise Exception("文件复制超时，网络可能已断开")
+            
+            return True
+        except Exception as e:
+            self.log.emit(f"❌ SMB上传失败: {e}")
+            return False
+    
+    def _upload_via_ftp(self, src: str, dst: str) -> bool:
+        """通过FTP协议上传文件"""
+        try:
+            # 初始化FTP客户端（如果还未初始化）
+            if not self.ftp_client and self.ftp_client_config:
+                self.ftp_client = FTPClientUploader(self.ftp_client_config)
+                if not self.ftp_client.connect():
+                    # v2.0 增强：详细错误日志
+                    host = self.ftp_client_config.get('host', 'unknown')
+                    port = self.ftp_client_config.get('port', 21)
+                    self.log.emit(f"❌ [FTP-CONN] 无法连接到 {host}:{port}")
+                    self.ftp_client = None
+                    return False
+            
+            if not self.ftp_client:
+                self.log.emit("❌ [FTP-INIT] FTP客户端未初始化")
+                return False
+            
+            # 计算远程路径（使用相对路径）
+            rel_path = os.path.relpath(dst, self.target)
+            remote_path = self.ftp_client_config.get('remote_path', '/upload')
+            remote_file = f"{remote_path}/{rel_path}".replace('\\', '/')
+            
+            # 上传文件
+            success = self.ftp_client.upload_file(Path(src), remote_file)
+            if success:
+                self.log.emit(f"✓ FTP上传成功: {os.path.basename(remote_file)}")
+                return True
+            else:
+                # v2.0 增强：详细错误日志
+                self.log.emit(f"❌ [FTP-UPLOAD] 上传失败: {os.path.basename(remote_file)}")
+                return False
+                
+        except Exception as e:
+            # v2.0 增强：详细错误日志，包含异常类型
+            error_type = type(e).__name__
+            self.log.emit(f"❌ [FTP-ERROR] {error_type}: {e}")
+            return False
+    
     def _calculate_file_hash(self, file_path: str, buffer_size: int = 8192) -> str:
         """计算文件哈希值（MD5或SHA256）"""
         try:
@@ -993,18 +1105,11 @@ class UploadWorker(QtCore.QObject):  # type: ignore
                                 if dir_created is False:
                                     raise Exception("创建目标目录超时，网络可能已断开")
                                 
-                                # 对于大文件，显示上传进度
-                                if self.current_file_size > 10 * 1024 * 1024:  # 大于10MB显示进度
-                                    self._copy_with_progress(path, final_target)
-                                else:
-                                    # 小文件也使用超时保护
-                                    def copy_file():
-                                        shutil.copy2(path, final_target)
-                                        return True
-                                    
-                                    copy_success = self._safe_path_operation(copy_file, timeout=10.0, default=False)
-                                    if not copy_success:
-                                        raise Exception("文件复制超时，网络可能已断开")
+                                # v2.0 新增：使用协议路由上传文件
+                                upload_success = self._upload_file_by_protocol(path, final_target)
+                                
+                                if not upload_success:
+                                    raise Exception("文件上传失败")
                                 
                                 self.uploaded += 1
                                 # 速率计算
@@ -1052,7 +1157,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_TITLE)
-        self.resize(1160, 760)
+        # 使用可折叠组件后，优化窗口大小
+        self.resize(1350, 880)  # 稍微减小高度
+        self.setMinimumSize(1200, 750)  # 减小最小尺寸
         self.app_dir = get_app_dir()
         
         # 连接内部信号
@@ -1101,6 +1208,25 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.auto_delete_keep_days = 10  # 保留最近10天的文件
         self.auto_delete_check_interval = 300  # 每5分钟检查一次
         
+        # v2.0 新增：FTP 协议配置
+        self.current_protocol = 'smb'  # 上传协议：smb, ftp_server, ftp_client, both
+        self.ftp_server_config = {
+            'host': '0.0.0.0',
+            'port': 2121,
+            'username': 'upload_user',
+            'password': 'upload_pass',
+            'shared_folder': '',
+        }
+        self.ftp_client_config = {
+            'host': '',
+            'port': 21,
+            'username': '',
+            'password': '',
+            'remote_path': '/upload',
+            'timeout': 30,
+            'retry_count': 3,
+        }
+        
         # 日志文件路径（每天一个日志文件）
         self.log_file_path = None
         self._init_log_file()
@@ -1111,11 +1237,24 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         # 日志写入线程池（避免阻塞主线程）
         self._log_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="LogWriter")
         
+        # v2.0 新增：FTP 协议管理器（延迟初始化，避免在UI创建前调用日志）
+        self.ftp_manager = None
+        
         # UI
         self._build_ui()
         self._load_config()
         self._apply_theme()
         self._update_ui_permissions()
+        
+        # v2.0 新增：初始化 FTP 协议管理器（在UI创建后）
+        if FTP_AVAILABLE:
+            try:
+                self.ftp_manager = FTPProtocolManager()
+                self._append_log("✓ FTP 协议管理器已初始化")
+            except Exception as e:
+                self._append_log(f"⚠ FTP 协议管理器初始化失败: {e}")
+                self.ftp_manager = None
+        
         # 自动运行检查
         if self.auto_run_on_startup:
             QtCore.QTimer.singleShot(1000, self._auto_start_upload)
@@ -1268,14 +1407,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.setCentralWidget(scroll_area)
         
-        # 创建内容容器
+        # 创建内容容器 - 优化宽度适配高分辨率
         central = QtWidgets.QWidget()
-        central.setMinimumWidth(1100)  # 设置最小宽度防止内容压缩
+        central.setMinimumWidth(1250)  # 减小最小宽度
         scroll_area.setWidget(central)
         
         root = QtWidgets.QVBoxLayout(central)
-        root.setSpacing(12)
-        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(12)  # 减小间距，节省空间
+        root.setContentsMargins(12, 12, 12, 12)  # 减小边距
 
         # header
         header = QtWidgets.QHBoxLayout()
@@ -1308,13 +1447,17 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         header.addWidget(self.role_label)
         root.addLayout(header)
 
-        # center three columns
+        # center three columns - 优化列间距
         center = QtWidgets.QHBoxLayout()
+        center.setSpacing(15)  # 减小列间距，节省空间
         root.addLayout(center, 1)
 
         left = QtWidgets.QVBoxLayout()
         middle = QtWidgets.QVBoxLayout()
         right = QtWidgets.QVBoxLayout()
+        left.setSpacing(12)  # 减小卡片间距
+        middle.setSpacing(12)
+        right.setSpacing(12)
         center.addLayout(left, 1)
         center.addLayout(middle, 1)
         center.addLayout(right, 1)
@@ -1334,8 +1477,8 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         card = QtWidgets.QFrame()
         card.setObjectName("Card")
         v = QtWidgets.QVBoxLayout(card)
-        v.setContentsMargins(16, 16, 16, 16)
-        v.setSpacing(12)
+        v.setContentsMargins(14, 14, 14, 14)  # 减小内边距，节省空间
+        v.setSpacing(10)  # 减小元素间距
         if title_text:
             t = QtWidgets.QLabel(title_text)
             t.setProperty("class", "Title")
@@ -1359,10 +1502,15 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
 
     def _path_row(self, layout: QtWidgets.QVBoxLayout, label: str, chooser):
         row = QtWidgets.QHBoxLayout()
+        row.setSpacing(10)  # 增加元素间距
         lab = QtWidgets.QLabel(label + ":")
+        lab.setMinimumWidth(90)  # 设置标签最小宽度，对齐更整齐
         edit = QtWidgets.QLineEdit()
+        edit.setMinimumHeight(32)  # 增加输入框高度
         btn = QtWidgets.QPushButton("浏览")
         btn.setProperty("class", "Secondary")
+        btn.setMinimumWidth(80)  # 设置按钮最小宽度
+        btn.setMinimumHeight(32)
         btn.clicked.connect(chooser)
         row.addWidget(lab)
         row.addWidget(edit, 1)
@@ -1372,6 +1520,214 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
 
     def _settings_card(self) -> QtWidgets.QFrame:
         card, v = self._card("⚙️ 上传设置")
+        
+        # ========== v2.0 新增：协议选择 ==========
+        protocol_lab = QtWidgets.QLabel("📡 上传协议 (v2.0)")
+        protocol_lab.setStyleSheet("color:#1976D2; font-size:11px; font-weight:700;")
+        v.addWidget(protocol_lab)
+        
+        # 协议选择下拉框
+        protocol_row = QtWidgets.QHBoxLayout()
+        protocol_label = QtWidgets.QLabel("协议类型:")
+        self.combo_protocol = QtWidgets.QComboBox()
+        self.combo_protocol.addItems([
+            "SMB (网络共享)",
+            "FTP 服务器模式",
+            "FTP 客户端模式",
+            "混合模式 (Server + Client)"
+        ])
+        self.combo_protocol.currentIndexChanged.connect(self._on_protocol_changed)
+        protocol_row.addWidget(protocol_label)
+        protocol_row.addWidget(self.combo_protocol, 1)
+        v.addLayout(protocol_row)
+        
+        # 协议说明
+        self.protocol_desc = QtWidgets.QLabel()
+        self.protocol_desc.setWordWrap(True)
+        self.protocol_desc.setStyleSheet("color: #6B7280; padding: 8px; background: #F3F4F6; border-radius: 6px; font-size: 10px;")
+        v.addWidget(self.protocol_desc)
+        self._update_protocol_description(0)
+        
+        # FTP 配置容器（可折叠）
+        self.ftp_config_widget = QtWidgets.QWidget()
+        self.ftp_config_widget.setVisible(False)
+        ftp_layout = QtWidgets.QVBoxLayout(self.ftp_config_widget)
+        ftp_layout.setContentsMargins(0, 8, 0, 0)
+        ftp_layout.setSpacing(10)
+        
+        # ========== FTP 服务器配置 - 可折叠 ==========
+        self.ftp_server_collapsible = MainWindow.CollapsibleBox("🖥️ FTP 服务器配置", self)
+        server_layout = QtWidgets.QFormLayout()
+        server_layout.setSpacing(8)
+        server_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.ftp_server_host = QtWidgets.QLineEdit("0.0.0.0")
+        self.ftp_server_host.setToolTip("0.0.0.0 表示监听所有网卡，127.0.0.1 仅本机可访问")
+        server_layout.addRow("监听地址:", self.ftp_server_host)
+        
+        self.ftp_server_port = QtWidgets.QSpinBox()
+        self.ftp_server_port.setRange(1, 65535)
+        self.ftp_server_port.setValue(2121)
+        self.ftp_server_port.setToolTip("默认FTP端口为21，建议使用2121避免权限问题")
+        server_layout.addRow("端口:", self.ftp_server_port)
+        
+        self.ftp_server_user = QtWidgets.QLineEdit("upload_user")
+        self.ftp_server_user.setToolTip("FTP登录用户名")
+        server_layout.addRow("用户名:", self.ftp_server_user)
+        
+        self.ftp_server_pass = QtWidgets.QLineEdit("upload_pass")
+        self.ftp_server_pass.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
+        self.ftp_server_pass.setToolTip("FTP登录密码，建议使用强密码")
+        server_layout.addRow("密码:", self.ftp_server_pass)
+        
+        # 共享目录选择
+        share_row = QtWidgets.QHBoxLayout()
+        self.ftp_server_share = QtWidgets.QLineEdit()
+        self.ftp_server_share.setPlaceholderText("选择FTP共享目录")
+        self.ftp_server_share.setToolTip("FTP服务器的根目录，客户端连接后可访问此目录")
+        btn_choose_share = QtWidgets.QPushButton("浏览")
+        btn_choose_share.setProperty("class", "Secondary")
+        btn_choose_share.clicked.connect(self._choose_ftp_share)
+        share_row.addWidget(self.ftp_server_share, 1)
+        share_row.addWidget(btn_choose_share)
+        server_layout.addRow("共享目录:", share_row)
+        
+        # v2.0 新增：高级选项 - 被动模式
+        self.cb_server_passive = QtWidgets.QCheckBox("启用被动模式")
+        self.cb_server_passive.setChecked(True)
+        self.cb_server_passive.setToolTip("被动模式适用于NAT/防火墙环境，建议启用")
+        server_layout.addRow("", self.cb_server_passive)
+        
+        # 被动端口范围
+        passive_row = QtWidgets.QHBoxLayout()
+        self.ftp_server_passive_start = QtWidgets.QSpinBox()
+        self.ftp_server_passive_start.setRange(1024, 65535)
+        self.ftp_server_passive_start.setValue(60000)
+        self.ftp_server_passive_start.setPrefix("起始: ")
+        passive_row.addWidget(self.ftp_server_passive_start)
+        
+        self.ftp_server_passive_end = QtWidgets.QSpinBox()
+        self.ftp_server_passive_end.setRange(1024, 65535)
+        self.ftp_server_passive_end.setValue(65535)
+        self.ftp_server_passive_end.setPrefix("结束: ")
+        passive_row.addWidget(self.ftp_server_passive_end)
+        passive_row.addStretch()
+        server_layout.addRow("  端口范围:", passive_row)
+        
+        # v2.0 新增：TLS/SSL选项
+        self.cb_server_tls = QtWidgets.QCheckBox("启用 TLS/SSL (FTPS)")
+        self.cb_server_tls.setChecked(False)
+        self.cb_server_tls.setToolTip("启用加密连接，需要证书文件")
+        server_layout.addRow("", self.cb_server_tls)
+        
+        # v2.0 新增：连接数限制
+        conn_row = QtWidgets.QHBoxLayout()
+        conn_label = QtWidgets.QLabel("最大连接:")
+        self.ftp_server_max_conn = QtWidgets.QSpinBox()
+        self.ftp_server_max_conn.setRange(1, 1000)
+        self.ftp_server_max_conn.setValue(256)
+        self.ftp_server_max_conn.setSuffix(" 个")
+        conn_row.addWidget(conn_label)
+        conn_row.addWidget(self.ftp_server_max_conn)
+        
+        ip_label = QtWidgets.QLabel("  单IP限制:")
+        self.ftp_server_max_conn_per_ip = QtWidgets.QSpinBox()
+        self.ftp_server_max_conn_per_ip.setRange(1, 100)
+        self.ftp_server_max_conn_per_ip.setValue(5)
+        self.ftp_server_max_conn_per_ip.setSuffix(" 个")
+        conn_row.addWidget(ip_label)
+        conn_row.addWidget(self.ftp_server_max_conn_per_ip)
+        conn_row.addStretch()
+        server_layout.addRow("连接限制:", conn_row)
+        
+        # v2.0 新增：FTP服务器测试按钮
+        self.btn_test_ftp_server = QtWidgets.QPushButton("🧪 测试配置")
+        self.btn_test_ftp_server.setProperty("class", "Secondary")
+        self.btn_test_ftp_server.clicked.connect(self._test_ftp_server_config)
+        server_layout.addRow("", self.btn_test_ftp_server)
+        
+        self.ftp_server_collapsible.setContentLayout(server_layout)
+        ftp_layout.addWidget(self.ftp_server_collapsible)
+        
+        # ========== FTP 客户端配置 - 可折叠 ==========
+        self.ftp_client_collapsible = MainWindow.CollapsibleBox("💻 FTP 客户端配置", self)
+        client_layout = QtWidgets.QFormLayout()
+        client_layout.setSpacing(8)
+        client_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.ftp_client_host = QtWidgets.QLineEdit()
+        self.ftp_client_host.setPlaceholderText("ftp.example.com")
+        self.ftp_client_host.setToolTip("FTP服务器地址，可以是域名或IP地址")
+        client_layout.addRow("服务器:", self.ftp_client_host)
+        
+        self.ftp_client_port = QtWidgets.QSpinBox()
+        self.ftp_client_port.setRange(1, 65535)
+        self.ftp_client_port.setValue(21)
+        self.ftp_client_port.setToolTip("FTP服务器端口，标准端口为21")
+        client_layout.addRow("端口:", self.ftp_client_port)
+        
+        self.ftp_client_user = QtWidgets.QLineEdit()
+        self.ftp_client_user.setPlaceholderText("用户名")
+        self.ftp_client_user.setToolTip("FTP服务器登录用户名")
+        client_layout.addRow("用户名:", self.ftp_client_user)
+        
+        self.ftp_client_pass = QtWidgets.QLineEdit()
+        self.ftp_client_pass.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
+        self.ftp_client_pass.setPlaceholderText("密码")
+        self.ftp_client_pass.setToolTip("FTP服务器登录密码")
+        client_layout.addRow("密码:", self.ftp_client_pass)
+        
+        self.ftp_client_remote = QtWidgets.QLineEdit("/upload")
+        self.ftp_client_remote.setToolTip("文件上传到服务器的目标路径")
+        client_layout.addRow("远程路径:", self.ftp_client_remote)
+        
+        # v2.0 新增：超时和重试配置
+        timeout_row = QtWidgets.QHBoxLayout()
+        self.ftp_client_timeout = QtWidgets.QSpinBox()
+        self.ftp_client_timeout.setRange(10, 300)
+        self.ftp_client_timeout.setValue(30)
+        self.ftp_client_timeout.setSuffix(" 秒")
+        self.ftp_client_timeout.setToolTip("连接和传输超时时间，网络慢时可适当增加")
+        timeout_row.addWidget(self.ftp_client_timeout)
+        timeout_row.addStretch()
+        client_layout.addRow("超时时间:", timeout_row)
+        
+        retry_row = QtWidgets.QHBoxLayout()
+        self.ftp_client_retry = QtWidgets.QSpinBox()
+        self.ftp_client_retry.setRange(0, 10)
+        self.ftp_client_retry.setValue(3)
+        self.ftp_client_retry.setSuffix(" 次")
+        self.ftp_client_retry.setToolTip("连接失败时的重试次数，0表示不重试")
+        retry_row.addWidget(self.ftp_client_retry)
+        retry_row.addStretch()
+        client_layout.addRow("重试次数:", retry_row)
+        
+        # v2.0 新增：高级选项 - 被动模式
+        self.cb_client_passive = QtWidgets.QCheckBox("使用被动模式")
+        self.cb_client_passive.setChecked(True)
+        self.cb_client_passive.setToolTip("被动模式适用于NAT/防火墙环境，建议启用")
+        client_layout.addRow("", self.cb_client_passive)
+        
+        # v2.0 新增：TLS/SSL选项
+        self.cb_client_tls = QtWidgets.QCheckBox("启用 TLS/SSL (FTPS)")
+        self.cb_client_tls.setChecked(False)
+        self.cb_client_tls.setToolTip("连接到FTPS服务器时启用")
+        client_layout.addRow("", self.cb_client_tls)
+        
+        # v2.0 新增：FTP客户端测试按钮
+        self.btn_test_ftp_client = QtWidgets.QPushButton("🔌 测试连接")
+        self.btn_test_ftp_client.setProperty("class", "Secondary")
+        self.btn_test_ftp_client.clicked.connect(self._test_ftp_client_connection)
+        client_layout.addRow("", self.btn_test_ftp_client)
+        
+        self.ftp_client_collapsible.setContentLayout(client_layout)
+        ftp_layout.addWidget(self.ftp_client_collapsible)
+        
+        v.addWidget(self.ftp_config_widget)
+        
+        v.addWidget(self._hline())
+        # ========== v2.0 协议选择结束 ==========
+        
         # interval
         self.spin_interval = self._spin_row(v, "间隔时间(秒)", 10, 3600, 30)
         self.spin_disk = self._spin_row(v, "磁盘阈值(%)", 5, 50, 10)
@@ -1379,10 +1735,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.spin_disk_check = self._spin_row(v, "磁盘检查间隔(秒)", 1, 60, 5)
         # 绑定磁盘检查间隔变化事件
         self.spin_disk_check.valueChanged.connect(lambda val: setattr(self, 'disk_check_interval', val))
-        # filters
-        filt_lab = QtWidgets.QLabel("文件类型限制")
-        v.addWidget(filt_lab)
+        
+        # ========== 文件类型限制 - 可折叠 ==========
+        filter_collapsible = MainWindow.CollapsibleBox("📋 文件类型限制", self)
         grid = QtWidgets.QGridLayout()
+        grid.setSpacing(10)
         self.cb_ext = {}
         exts = [
             ("JPG", ".jpg"), ("PNG", ".png"), ("BMP", ".bmp"), ("TIFF", ".tiff"), ("GIF", ".gif"), ("RAW", ".raw")
@@ -1398,13 +1755,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             self._set_checkbox_mark(cb, cb.isChecked())
             self.cb_ext[ext] = cb
             grid.addWidget(cb, i//3, i%3)
-        v.addLayout(grid)
+        filter_collapsible.addLayout(grid)
+        v.addWidget(filter_collapsible)
         
-        # 高级选项（开机自启、自动运行） - 用户和管理员可见
-        v.addWidget(self._hline())
-        adv_lab = QtWidgets.QLabel("高级选项")
-        adv_lab.setStyleSheet("color:#666; font-size:11px;")
-        v.addWidget(adv_lab)
+        # ========== 高级选项 - 可折叠 ==========
+        adv_collapsible = MainWindow.CollapsibleBox("⚡ 高级选项", self)
         
         self.cb_auto_start_windows = QtWidgets.QCheckBox("🚀 开机自启动")
         self.cb_auto_start_windows.setProperty('orig_text', "🚀 开机自启动")
@@ -1412,28 +1767,26 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.cb_auto_start_windows.toggled.connect(self._toggle_autostart)
         self.cb_auto_start_windows.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_auto_start_windows, checked))
         self._set_checkbox_mark(self.cb_auto_start_windows, self.cb_auto_start_windows.isChecked())
-        v.addWidget(self.cb_auto_start_windows)
+        adv_collapsible.addWidget(self.cb_auto_start_windows)
         
         self.cb_auto_run_on_startup = QtWidgets.QCheckBox("▶ 启动时自动运行")
         self.cb_auto_run_on_startup.setProperty('orig_text', "▶ 启动时自动运行")
         self.cb_auto_run_on_startup.setChecked(False)
         self.cb_auto_run_on_startup.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_auto_run_on_startup, checked))
         self._set_checkbox_mark(self.cb_auto_run_on_startup, self.cb_auto_run_on_startup.isChecked())
-        v.addWidget(self.cb_auto_run_on_startup)
+        adv_collapsible.addWidget(self.cb_auto_run_on_startup)
         
-        # v1.9 新增：智能去重选项
-        v.addWidget(self._hline())
-        dedup_lab = QtWidgets.QLabel("🔍 智能去重 (v1.9)")
-        dedup_lab.setStyleSheet("color:#1976D2; font-size:11px; font-weight:700;")
-        v.addWidget(dedup_lab)
+        # 添加分隔线
+        adv_collapsible.addWidget(self._hline())
         
-        self.cb_enable_dedup = QtWidgets.QCheckBox("🔍 启用智能去重")
-        self.cb_enable_dedup.setProperty('orig_text', "🔍 启用智能去重")
-        self.cb_enable_dedup.setChecked(False)
-        self.cb_enable_dedup.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_enable_dedup, checked))
-        self.cb_enable_dedup.toggled.connect(self._on_dedup_toggled)
-        self._set_checkbox_mark(self.cb_enable_dedup, self.cb_enable_dedup.isChecked())
-        v.addWidget(self.cb_enable_dedup)
+        # 去重功能
+        self.cb_dedup_enable = QtWidgets.QCheckBox("🔍 启用文件去重 (v1.8)")
+        self.cb_dedup_enable.setProperty('orig_text', "🔍 启用文件去重 (v1.8)")
+        self.cb_dedup_enable.setChecked(False)
+        self.cb_dedup_enable.toggled.connect(self._on_dedup_toggled)
+        self.cb_dedup_enable.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_dedup_enable, checked))
+        self._set_checkbox_mark(self.cb_dedup_enable, self.cb_dedup_enable.isChecked())
+        adv_collapsible.addWidget(self.cb_dedup_enable)
         
         # 哈希算法选择
         hash_row = QtWidgets.QHBoxLayout()
@@ -1443,7 +1796,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.combo_hash.setEnabled(False)
         hash_row.addWidget(hash_lab)
         hash_row.addWidget(self.combo_hash)
-        v.addLayout(hash_row)
+        adv_collapsible.addLayout(hash_row)
         
         # 去重策略选择
         strategy_row = QtWidgets.QHBoxLayout()
@@ -1453,42 +1806,55 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.combo_strategy.setEnabled(False)
         strategy_row.addWidget(strategy_lab)
         strategy_row.addWidget(self.combo_strategy)
-        v.addLayout(strategy_row)
+        adv_collapsible.addLayout(strategy_row)
         
         # 说明文本
         dedup_hint = QtWidgets.QLabel("💡 通过文件哈希检测重复，避免上传相同内容的文件")
         dedup_hint.setStyleSheet("color:#757575; font-size:9px; padding:4px;")
         dedup_hint.setWordWrap(True)
-        v.addWidget(dedup_hint)
+        adv_collapsible.addWidget(dedup_hint)
         
-        # v1.9 新增：网络监控选项
-        v.addWidget(self._hline())
-        network_lab = QtWidgets.QLabel("🌐 网络监控 (v1.9)")
-        network_lab.setStyleSheet("color:#1976D2; font-size:11px; font-weight:700;")
-        v.addWidget(network_lab)
+        # 添加分隔线
+        adv_collapsible.addWidget(self._hline())
         
-        # 网络检测间隔
-        self.spin_network_check = self._spin_row(v, "检测间隔(秒)", 5, 60, 10)
+        # 网络监控选项
+        network_sub_lab = QtWidgets.QLabel("🌐 网络监控")
+        network_sub_lab.setStyleSheet("color:#666; font-size:10px; font-weight:700;")
+        adv_collapsible.addWidget(network_sub_lab)
+        
+        # 网络检测间隔 - 压缩布局
+        network_check_row = QtWidgets.QHBoxLayout()
+        network_check_lab = QtWidgets.QLabel("检测间隔:")
+        self.spin_network_check = QtWidgets.QSpinBox()
+        self.spin_network_check.setRange(5, 60)
+        self.spin_network_check.setValue(10)
+        self.spin_network_check.setSuffix(" 秒")
+        network_check_row.addWidget(network_check_lab)
+        network_check_row.addWidget(self.spin_network_check)
+        network_check_row.addStretch()
+        adv_collapsible.addLayout(network_check_row)
         
         self.cb_network_auto_pause = QtWidgets.QCheckBox("⏸️ 断网时自动暂停")
         self.cb_network_auto_pause.setProperty('orig_text', "⏸️ 断网时自动暂停")
         self.cb_network_auto_pause.setChecked(True)
         self.cb_network_auto_pause.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_network_auto_pause, checked))
         self._set_checkbox_mark(self.cb_network_auto_pause, self.cb_network_auto_pause.isChecked())
-        v.addWidget(self.cb_network_auto_pause)
+        adv_collapsible.addWidget(self.cb_network_auto_pause)
         
         self.cb_network_auto_resume = QtWidgets.QCheckBox("▶️ 恢复时自动继续")
         self.cb_network_auto_resume.setProperty('orig_text', "▶️ 恢复时自动继续")
         self.cb_network_auto_resume.setChecked(True)
         self.cb_network_auto_resume.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_network_auto_resume, checked))
         self._set_checkbox_mark(self.cb_network_auto_resume, self.cb_network_auto_resume.isChecked())
-        v.addWidget(self.cb_network_auto_resume)
+        adv_collapsible.addWidget(self.cb_network_auto_resume)
         
         # 说明文本
         network_hint = QtWidgets.QLabel("💡 实时监控网络状态，断网时自动暂停，恢复后自动继续")
         network_hint.setStyleSheet("color:#757575; font-size:9px; padding:4px;")
         network_hint.setWordWrap(True)
-        v.addWidget(network_hint)
+        adv_collapsible.addWidget(network_hint)
+        
+        v.addWidget(adv_collapsible)
         
         # v1.9 新增：自动删除选项
         v.addWidget(self._hline())
@@ -1548,19 +1914,23 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
 
     def _control_card(self) -> QtWidgets.QFrame:
         card, v = self._card("🎮 操作控制")
-        # primary start
+        # primary start - 优化按钮尺寸
         self.btn_start = QtWidgets.QPushButton("▶ 开始上传")
         self.btn_start.setProperty("class", "Primary")
+        self.btn_start.setMinimumHeight(45)  # 增加按钮高度，更容易点击
         self.btn_start.clicked.connect(self._on_start)
         v.addWidget(self.btn_start)
         # secondary pause/stop
         row = QtWidgets.QHBoxLayout()
+        row.setSpacing(12)  # 增加按钮间距
         self.btn_pause = QtWidgets.QPushButton("⏸ 暂停上传")
         self.btn_pause.setProperty("class", "Warning")
+        self.btn_pause.setMinimumHeight(40)
         self.btn_pause.setEnabled(False)
         self.btn_pause.clicked.connect(self._on_pause_resume)
         self.btn_stop = QtWidgets.QPushButton("⏹ 停止上传")
         self.btn_stop.setProperty("class", "Danger")
+        self.btn_stop.setMinimumHeight(40)
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._on_stop)
         row.addWidget(self.btn_pause)
@@ -1570,11 +1940,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         v.addWidget(self._hline())
         # save + more
         row2 = QtWidgets.QHBoxLayout()
+        row2.setSpacing(12)  # 增加按钮间距
         self.btn_save = QtWidgets.QPushButton("💾 保存配置")
         self.btn_save.setProperty("class", "Secondary")
+        self.btn_save.setMinimumHeight(38)
         self.btn_save.clicked.connect(self._save_config)
         self.btn_more = QtWidgets.QToolButton()
         self.btn_more.setText("更多 ▾")
+        self.btn_more.setMinimumHeight(38)
         popup_enum = getattr(QtWidgets.QToolButton, 'ToolButtonPopupMode', QtWidgets.QToolButton)
         self.btn_more.setPopupMode(getattr(popup_enum, 'InstantPopup'))
         menu = QtWidgets.QMenu(self)
@@ -1919,6 +2292,197 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         else:
             self._append_log("⚪ 已禁用自动删除")
     
+    def _choose_ftp_share(self):
+        """选择 FTP 共享目录"""
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "选择 FTP 共享目录", self.ftp_server_share.text()
+        )
+        if folder:
+            self.ftp_server_share.setText(folder)
+            self.config_modified = True
+    
+    def _test_ftp_server_config(self):
+        """测试FTP服务器配置"""
+        self._append_log("🧪 开始测试FTP服务器配置...")
+        
+        # 收集当前配置
+        config = {
+            'host': self.ftp_server_host.text().strip(),
+            'port': self.ftp_server_port.value(),
+            'username': self.ftp_server_user.text().strip(),
+            'password': self.ftp_server_pass.text().strip(),
+            'shared_folder': self.ftp_server_share.text().strip()
+        }
+        
+        # 验证配置
+        errors = []
+        if not config['host']:
+            errors.append("主机地址为空")
+        if not config['username']:
+            errors.append("用户名为空")
+        if not config['password']:
+            errors.append("密码为空")
+        if not config['shared_folder']:
+            errors.append("共享目录为空")
+        elif not os.path.exists(config['shared_folder']):
+            errors.append(f"共享目录不存在: {config['shared_folder']}")
+        
+        if errors:
+            error_msg = "\n".join(errors)
+            self._append_log(f"❌ 配置验证失败:\n{error_msg}")
+            QtWidgets.QMessageBox.critical(self, "配置错误", f"FTP服务器配置有误：\n\n{error_msg}")
+            return
+        
+        # 尝试启动测试服务器
+        try:
+            from src.ftp_protocol import FTPServerManager
+            
+            self._append_log(f"🔧 正在测试FTP服务器 {config['host']}:{config['port']}...")
+            test_server = FTPServerManager(config)
+            
+            if test_server.start():
+                self._append_log("✓ FTP服务器测试成功！")
+                self._append_log(f"  地址: {config['host']}:{config['port']}")
+                self._append_log(f"  用户: {config['username']}")
+                self._append_log(f"  共享: {config['shared_folder']}")
+                
+                # 立即停止测试服务器
+                test_server.stop()
+                self._append_log("✓ 测试服务器已停止")
+                
+                QtWidgets.QMessageBox.information(
+                    self, "测试成功", 
+                    f"FTP服务器配置有效！\n\n"
+                    f"地址: {config['host']}:{config['port']}\n"
+                    f"用户: {config['username']}\n"
+                    f"共享: {config['shared_folder']}"
+                )
+            else:
+                self._append_log("❌ FTP服务器启动失败")
+                QtWidgets.QMessageBox.critical(
+                    self, "测试失败", 
+                    f"FTP服务器无法启动！\n\n可能原因：\n"
+                    f"1. 端口 {config['port']} 已被占用\n"
+                    f"2. 没有管理员权限（端口<1024需要）\n"
+                    f"3. 防火墙阻止"
+                )
+        except Exception as e:
+            self._append_log(f"❌ 测试异常: {e}")
+            QtWidgets.QMessageBox.critical(self, "测试错误", f"测试过程中发生错误：\n\n{str(e)}")
+    
+    def _test_ftp_client_connection(self):
+        """测试FTP客户端连接"""
+        self._append_log("🔌 开始测试FTP客户端连接...")
+        
+        # 收集当前配置
+        config = {
+            'name': 'test_client',
+            'host': self.ftp_client_host.text().strip(),
+            'port': self.ftp_client_port.value(),
+            'username': self.ftp_client_user.text().strip(),
+            'password': self.ftp_client_pass.text().strip(),
+            'remote_path': self.ftp_client_remote.text().strip(),
+            'timeout': self.ftp_client_timeout.value(),
+            'retry_count': self.ftp_client_retry.value(),
+        }
+        
+        # 验证配置
+        errors = []
+        if not config['host']:
+            errors.append("服务器地址为空")
+        if not config['username']:
+            errors.append("用户名为空")
+        if not config['password']:
+            errors.append("密码为空")
+        if not config['remote_path']:
+            errors.append("远程路径为空")
+        
+        if errors:
+            error_msg = "\n".join(errors)
+            self._append_log(f"❌ 配置验证失败:\n{error_msg}")
+            QtWidgets.QMessageBox.critical(self, "配置错误", f"FTP客户端配置有误：\n\n{error_msg}")
+            return
+        
+        # 尝试连接
+        try:
+            from src.ftp_protocol import FTPClientUploader
+            
+            self._append_log(f"🔗 正在连接FTP服务器 {config['host']}:{config['port']}...")
+            test_client = FTPClientUploader(config)
+            
+            if test_client.test_connection():
+                self._append_log("✓ FTP客户端连接测试成功！")
+                self._append_log(f"  服务器: {config['host']}:{config['port']}")
+                self._append_log(f"  用户: {config['username']}")
+                self._append_log(f"  远程路径: {config['remote_path']}")
+                
+                # 断开连接
+                test_client.disconnect()
+                self._append_log("✓ 已断开连接")
+                
+                QtWidgets.QMessageBox.information(
+                    self, "测试成功", 
+                    f"FTP客户端连接成功！\n\n"
+                    f"服务器: {config['host']}:{config['port']}\n"
+                    f"用户: {config['username']}\n"
+                    f"远程路径: {config['remote_path']}"
+                )
+            else:
+                self._append_log("❌ FTP客户端连接失败")
+                QtWidgets.QMessageBox.critical(
+                    self, "测试失败", 
+                    f"无法连接到FTP服务器！\n\n可能原因：\n"
+                    f"1. 服务器地址或端口错误\n"
+                    f"2. 用户名或密码错误\n"
+                    f"3. 网络不通或防火墙阻止\n"
+                    f"4. 服务器未运行"
+                )
+        except Exception as e:
+            self._append_log(f"❌ 测试异常: {e}")
+            QtWidgets.QMessageBox.critical(self, "测试错误", f"测试过程中发生错误：\n\n{str(e)}")
+    
+    def _on_protocol_changed(self, index: int):
+        """协议选择变化"""
+        protocols = ['smb', 'ftp_server', 'ftp_client', 'both']
+        self.current_protocol = protocols[index]
+        
+        # 更新说明文字
+        self._update_protocol_description(index)
+        
+        # 显示/隐藏 FTP 配置
+        show_ftp = index > 0  # 非 SMB 时显示
+        self.ftp_config_widget.setVisible(show_ftp)
+        
+        # 控制各组件可见性
+        if index == 0:  # SMB
+            self.ftp_server_collapsible.setVisible(False)
+            self.ftp_client_collapsible.setVisible(False)
+        elif index == 1:  # FTP Server
+            self.ftp_server_collapsible.setVisible(True)
+            self.ftp_client_collapsible.setVisible(False)
+        elif index == 2:  # FTP Client
+            self.ftp_server_collapsible.setVisible(False)
+            self.ftp_client_collapsible.setVisible(True)
+        elif index == 3:  # Both
+            self.ftp_server_collapsible.setVisible(True)
+            self.ftp_client_collapsible.setVisible(True)
+        
+        self.config_modified = True
+        self._append_log(f"📡 切换上传协议：{['SMB', 'FTP服务器', 'FTP客户端', '混合模式'][index]}")
+        
+        # v2.0 新增：更新协议状态显示
+        self._update_protocol_status()
+    
+    def _update_protocol_description(self, index: int):
+        """更新协议说明"""
+        descriptions = [
+            "📁 SMB (网络共享)：通过 Windows 网络共享上传文件到共享文件夹",
+            "🖥️ FTP 服务器模式：本机作为 FTP 服务器，其他设备可连接上传文件",
+            "📤 FTP 客户端模式：本机作为 FTP 客户端，连接到远程 FTP 服务器上传文件",
+            "🔄 混合模式：同时运行 FTP 服务器和客户端，灵活应对不同场景"
+        ]
+        self.protocol_desc.setText(descriptions[index])
+    
     def _toggle_autostart(self, checked: bool):
         """切换开机自启动状态"""
         if self.current_role not in ['user', 'admin']:
@@ -2025,10 +2589,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         card, v = self._card("📊 运行状态")
         # status pill
         self.lbl_status = QtWidgets.QLabel("🔴 已停止")
-        self.lbl_status.setStyleSheet("background:#FEE2E2; color:#B91C1C; padding:4px 10px; font-weight:700; border-radius:12px;")
+        self.lbl_status.setStyleSheet("background:#FEE2E2; color:#B91C1C; padding:6px 12px; font-weight:700; border-radius:12px; font-size:10pt;")
         v.addWidget(self.lbl_status)
-        # chips
+        # chips - 优化网格布局，4列显示更紧凑
         grid = QtWidgets.QGridLayout()
+        grid.setSpacing(12)  # 增加间距
         self.lbl_uploaded = self._chip("已上传", "0", "#E3F2FD", "#1976D2")
         self.lbl_failed = self._chip("失败", "0", "#FFEBEE", "#C62828")
         self.lbl_skipped = self._chip("跳过", "0", "#FFF9C3", "#F57F17")
@@ -2040,10 +2605,17 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.lbl_backup_disk = self._chip("归档磁盘", "--", "#F1F8E9", "#33691E")
         # v1.9 新增：网络状态芯片
         self.lbl_network = self._chip("网络状态", "未知", "#ECEFF1", "#546E7A")
+        # v2.0 新增：协议和FTP状态芯片
+        self.lbl_protocol = self._chip("上传协议", "SMB", "#E8EAF6", "#3F51B5")
+        self.lbl_ftp_server = self._chip("FTP服务器", "未启动", "#FCE4EC", "#C2185B")
+        self.lbl_ftp_client = self._chip("FTP客户端", "未连接", "#FFF8E1", "#F57C00")
+        
+        # 4列布局，在高分辨率下显示更好
         for i, w in enumerate([self.lbl_uploaded, self.lbl_failed, self.lbl_skipped, 
                                self.lbl_rate, self.lbl_queue, self.lbl_time,
-                               self.lbl_target_disk, self.lbl_backup_disk, self.lbl_network]):
-            grid.addWidget(w, i//3, i%3)
+                               self.lbl_target_disk, self.lbl_backup_disk, self.lbl_network,
+                               self.lbl_protocol, self.lbl_ftp_server, self.lbl_ftp_client]):
+            grid.addWidget(w, i//4, i%4)
         v.addLayout(grid)
         
         # 分隔线
@@ -2093,16 +2665,66 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         v.addWidget(self.pbar)
         return card
 
+    class CollapsibleBox(QtWidgets.QWidget):  # type: ignore
+        """可折叠的组件"""
+        def __init__(self, title: str = "", parent: QtWidgets.QWidget = None):
+            super().__init__(parent)
+            self.toggle_button = QtWidgets.QToolButton()
+            self.toggle_button.setStyleSheet("QToolButton { border: none; font-weight: 700; }")
+            self.toggle_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            self.toggle_button.setArrowType(QtCore.Qt.ArrowType.RightArrow)
+            self.toggle_button.setText(title)
+            self.toggle_button.setCheckable(True)
+            self.toggle_button.setChecked(False)
+            
+            self.content_area = QtWidgets.QWidget()
+            self.content_area.setVisible(False)
+            self.content_layout = QtWidgets.QVBoxLayout(self.content_area)
+            self.content_layout.setContentsMargins(20, 8, 8, 8)
+            
+            self.toggle_button.toggled.connect(self._on_toggle)
+            
+            main_layout = QtWidgets.QVBoxLayout(self)
+            main_layout.setSpacing(0)
+            main_layout.setContentsMargins(0, 0, 0, 0)
+            main_layout.addWidget(self.toggle_button)
+            main_layout.addWidget(self.content_area)
+        
+        def _on_toggle(self, checked: bool):
+            self.toggle_button.setArrowType(
+                QtCore.Qt.ArrowType.DownArrow if checked else QtCore.Qt.ArrowType.RightArrow
+            )
+            self.content_area.setVisible(checked)
+        
+        def setContentLayout(self, layout: QtWidgets.QLayout):
+            """设置内容布局"""
+            # 清除旧布局
+            old_layout = self.content_area.layout()
+            if old_layout is not None:
+                QtWidgets.QWidget().setLayout(old_layout)
+            self.content_area.setLayout(layout)
+            layout.setContentsMargins(20, 8, 8, 8)
+        
+        def addWidget(self, widget: QtWidgets.QWidget):
+            """添加widget到内容区域"""
+            self.content_layout.addWidget(widget)
+        
+        def addLayout(self, layout: QtWidgets.QLayout):
+            """添加layout到内容区域"""
+            self.content_layout.addLayout(layout)
+
     class ChipWidget(QtWidgets.QFrame):  # type: ignore
         value_label: QtWidgets.QLabel
         def __init__(self, title: str, val: str, bg: str, fg: str, parent: QtWidgets.QWidget = None):
             super().__init__(parent)
-            self.setStyleSheet(f"QFrame{{background:{bg}; border-radius:8px;}} QLabel{{color:{fg};}}")
+            self.setStyleSheet(f"QFrame{{background:{bg}; border-radius:8px; padding:2px;}} QLabel{{color:{fg};}}")
             vv = QtWidgets.QVBoxLayout(self)
+            vv.setSpacing(4)  # 增加标题和值之间的间距
+            vv.setContentsMargins(10, 8, 10, 8)  # 增加内边距
             t = QtWidgets.QLabel(title)
-            t.setStyleSheet("font-size:9pt; padding-top:6px;")
+            t.setStyleSheet("font-size:9.5pt; padding-top:2px;")
             self.value_label = QtWidgets.QLabel(val)
-            self.value_label.setStyleSheet("font-weight:700; font-size:11pt; padding-bottom:6px;")
+            self.value_label.setStyleSheet("font-weight:700; font-size:11.5pt; padding-bottom:2px;")
             vv.addWidget(t)
             vv.addWidget(self.value_label)
         def setValue(self, text: str):
@@ -2129,9 +2751,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.cb_autoscroll.setChecked(True)
         toolbar.addWidget(self.cb_autoscroll)
         v.addLayout(toolbar)
-        # log area
+        # log area - 压缩高度以节省空间
         self.log = QtWidgets.QPlainTextEdit()
         self.log.setReadOnly(True)
+        self.log.setMinimumHeight(300)  # 减小最小高度，使用可折叠组件后可减少滚动需求
         v.addWidget(self.log)
         return card
 
@@ -2257,6 +2880,108 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             self._append_log("✓ 所有路径验证通过")
         
         return len(errors) == 0, errors
+    
+    def _validate_ftp_config(self) -> tuple:
+        """
+        验证FTP配置的有效性
+        
+        Returns:
+            tuple: (是否有效, 错误消息列表)
+        """
+        errors = []
+        
+        # 如果不使用FTP，跳过验证
+        if self.current_protocol == 'smb':
+            return True, []
+        
+        self._append_log("🔍 正在验证FTP配置...")
+        
+        # 验证FTP服务器配置
+        if self.current_protocol in ['ftp_server', 'both']:
+            # 主机地址验证
+            host = self.ftp_server_config.get('host', '').strip()
+            if not host:
+                errors.append("FTP服务器主机地址为空")
+            elif host not in ['0.0.0.0', 'localhost', '127.0.0.1']:
+                # 简单的IP格式验证
+                import re
+                if not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host):
+                    errors.append(f"FTP服务器主机地址格式无效: {host}")
+            
+            # 端口验证
+            port = self.ftp_server_config.get('port', 0)
+            if not isinstance(port, int) or port < 1 or port > 65535:
+                errors.append(f"FTP服务器端口无效: {port}（范围：1-65535）")
+            elif port < 1024 and port != 21:
+                self._append_log(f"⚠️  FTP服务器使用特权端口 {port}，可能需要管理员权限")
+            
+            # 用户名验证
+            username = self.ftp_server_config.get('username', '').strip()
+            if not username:
+                errors.append("FTP服务器用户名为空")
+            elif len(username) < 3:
+                errors.append("FTP服务器用户名至少需要3个字符")
+            
+            # 密码验证
+            password = self.ftp_server_config.get('password', '').strip()
+            if not password:
+                errors.append("FTP服务器密码为空")
+            elif len(password) < 6:
+                errors.append("FTP服务器密码至少需要6个字符")
+            
+            # 共享目录验证
+            share_folder = self.ftp_server_config.get('shared_folder', '').strip()
+            if not share_folder:
+                errors.append("FTP服务器共享目录为空")
+            elif not os.path.exists(share_folder):
+                errors.append(f"FTP服务器共享目录不存在: {share_folder}")
+            elif not os.path.isdir(share_folder):
+                errors.append(f"FTP服务器共享路径不是目录: {share_folder}")
+            else:
+                self._append_log(f"✓ FTP服务器共享目录有效: {share_folder}")
+        
+        # 验证FTP客户端配置
+        if self.current_protocol in ['ftp_client', 'both']:
+            # 主机地址验证
+            host = self.ftp_client_config.get('host', '').strip()
+            if not host:
+                errors.append("FTP客户端主机地址为空")
+            else:
+                # 简单的域名或IP格式验证
+                import re
+                is_ip = re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host)
+                is_domain = re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$', host)
+                if not is_ip and not is_domain:
+                    errors.append(f"FTP客户端主机地址格式无效: {host}")
+            
+            # 端口验证
+            port = self.ftp_client_config.get('port', 0)
+            if not isinstance(port, int) or port < 1 or port > 65535:
+                errors.append(f"FTP客户端端口无效: {port}（范围：1-65535）")
+            
+            # 用户名验证
+            username = self.ftp_client_config.get('username', '').strip()
+            if not username:
+                errors.append("FTP客户端用户名为空")
+            
+            # 密码验证
+            password = self.ftp_client_config.get('password', '').strip()
+            if not password:
+                errors.append("FTP客户端密码为空")
+            
+            # 远程路径验证
+            remote_path = self.ftp_client_config.get('remote_path', '').strip()
+            if not remote_path:
+                errors.append("FTP客户端远程路径为空")
+            elif not remote_path.startswith('/'):
+                errors.append(f"FTP客户端远程路径应以 / 开头: {remote_path}")
+        
+        if errors:
+            self._append_log(f"❌ FTP配置验证失败，发现 {len(errors)} 个错误")
+        else:
+            self._append_log("✓ FTP配置验证通过")
+        
+        return len(errors) == 0, errors
 
     def _save_config(self):
         """保存配置到文件"""
@@ -2294,7 +3019,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             'auto_start_windows': self.cb_auto_start_windows.isChecked(),
             'auto_run_on_startup': self.cb_auto_run_on_startup.isChecked(),
             # v1.9 新增：去重
-            'enable_deduplication': self.cb_enable_dedup.isChecked(),
+            'enable_deduplication': self.cb_dedup_enable.isChecked(),
             'hash_algorithm': self.combo_hash.currentText().lower(),
             'duplicate_strategy': strategy_map.get(self.combo_strategy.currentText(), 'ask'),
             # v1.9 新增：网络监控
@@ -2307,6 +3032,32 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             'auto_delete_threshold': self.spin_auto_del_threshold.value(),
             'auto_delete_keep_days': self.spin_auto_del_keep_days.value(),
             'auto_delete_check_interval': self.spin_auto_del_interval.value(),
+            # v2.0 新增：FTP 协议配置
+            'upload_protocol': self.upload_protocol,
+            'ftp_server': {
+                'host': self.ftp_server_host.text(),
+                'port': self.ftp_server_port.value(),
+                'username': self.ftp_server_user.text(),
+                'password': self.ftp_server_pass.text(),
+                'shared_folder': self.ftp_server_share.text(),
+                'enable_passive': self.cb_server_passive.isChecked(),
+                'passive_ports_start': self.ftp_server_passive_start.value(),
+                'passive_ports_end': self.ftp_server_passive_end.value(),
+                'enable_tls': self.cb_server_tls.isChecked(),
+                'max_connections': self.ftp_server_max_conn.value(),
+                'max_connections_per_ip': self.ftp_server_max_conn_per_ip.value(),
+            },
+            'ftp_client': {
+                'host': self.ftp_client_host.text(),
+                'port': self.ftp_client_port.value(),
+                'username': self.ftp_client_user.text(),
+                'password': self.ftp_client_pass.text(),
+                'remote_path': self.ftp_client_remote.text(),
+                'timeout': self.ftp_client_timeout.value(),
+                'retry_count': self.ftp_client_retry.value(),
+                'passive_mode': self.cb_client_passive.isChecked(),
+                'enable_tls': self.cb_client_tls.isChecked(),
+            },
             'users': users,
         }
         try:
@@ -2367,9 +3118,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             self.hash_algorithm = cfg.get('hash_algorithm', 'md5')
             self.duplicate_strategy = cfg.get('duplicate_strategy', 'ask')
             
-            self.cb_enable_dedup.blockSignals(True)
-            self.cb_enable_dedup.setChecked(self.enable_deduplication)
-            self.cb_enable_dedup.blockSignals(False)
+            self.cb_dedup_enable.blockSignals(True)
+            self.cb_dedup_enable.setChecked(self.enable_deduplication)
+            self.cb_dedup_enable.blockSignals(False)
             
             # 映射策略文本
             strategy_text_map = {'skip': '跳过', 'rename': '重命名', 'overwrite': '覆盖', 'ask': '询问'}
@@ -2415,6 +3166,44 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             self.spin_auto_del_keep_days.setEnabled(self.enable_auto_delete)
             self.spin_auto_del_interval.setEnabled(self.enable_auto_delete)
             
+            # v2.0 新增：加载协议配置
+            protocol = cfg.get('upload_protocol', 'smb')
+            protocol_map = {
+                'smb': 0,
+                'ftp_server': 1,
+                'ftp_client': 2,
+                'both': 3
+            }
+            self.combo_protocol.setCurrentIndex(protocol_map.get(protocol, 0))
+            
+            # 加载 FTP 服务器配置
+            ftp_server = cfg.get('ftp_server', {})
+            self.ftp_server_host.setText(ftp_server.get('host', '0.0.0.0'))
+            self.ftp_server_port.setValue(ftp_server.get('port', 2121))
+            self.ftp_server_user.setText(ftp_server.get('username', 'upload_user'))
+            self.ftp_server_pass.setText(ftp_server.get('password', 'upload_pass'))
+            self.ftp_server_share.setText(ftp_server.get('shared_folder', ''))
+            # v2.0 新增：加载高级选项
+            self.cb_server_passive.setChecked(ftp_server.get('enable_passive', True))
+            self.ftp_server_passive_start.setValue(ftp_server.get('passive_ports_start', 60000))
+            self.ftp_server_passive_end.setValue(ftp_server.get('passive_ports_end', 65535))
+            self.cb_server_tls.setChecked(ftp_server.get('enable_tls', False))
+            self.ftp_server_max_conn.setValue(ftp_server.get('max_connections', 256))
+            self.ftp_server_max_conn_per_ip.setValue(ftp_server.get('max_connections_per_ip', 5))
+            
+            # 加载 FTP 客户端配置
+            ftp_client = cfg.get('ftp_client', {})
+            self.ftp_client_host.setText(ftp_client.get('host', ''))
+            self.ftp_client_port.setValue(ftp_client.get('port', 21))
+            self.ftp_client_user.setText(ftp_client.get('username', ''))
+            self.ftp_client_pass.setText(ftp_client.get('password', ''))
+            self.ftp_client_remote.setText(ftp_client.get('remote_path', '/upload'))
+            self.ftp_client_timeout.setValue(ftp_client.get('timeout', 30))
+            self.ftp_client_retry.setValue(ftp_client.get('retry_count', 3))
+            # v2.0 新增：加载高级选项
+            self.cb_client_passive.setChecked(ftp_client.get('passive_mode', True))
+            self.cb_client_tls.setChecked(ftp_client.get('enable_tls', False))
+            
             # 保存已加载的配置（用于回退）
             self.saved_config = cfg.copy()
             self.config_modified = False
@@ -2447,6 +3236,25 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             
             self._toast('路径验证失败，无法开始上传', 'danger')
             return
+        
+        # v2.0 新增：验证FTP配置（如果使用FTP协议）
+        if self.current_protocol != 'smb':
+            is_valid, errors = self._validate_ftp_config()
+            if not is_valid:
+                error_msg = "\n".join(errors)
+                self._append_log(f"❌ FTP配置验证失败:\n{error_msg}")
+                
+                # 弹窗显示错误
+                msg_box = QtWidgets.QMessageBox(self)
+                msg_box.setIcon(QtWidgets.QMessageBox.Icon.Critical)
+                msg_box.setWindowTitle("FTP配置验证失败")
+                msg_box.setText("FTP配置有误，无法开始上传！")
+                msg_box.setDetailedText(error_msg)
+                msg_box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
+                msg_box.exec() if hasattr(msg_box, 'exec') else msg_box.exec_()
+                
+                self._toast('FTP配置验证失败', 'danger')
+                return
         
         # 2. 检查配置是否被修改但未保存
         if self.config_modified:
@@ -2524,10 +3332,108 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         
         filters = [ext for ext, cb in self.cb_ext.items() if cb.isChecked()]
         self._append_log(f"  文件类型: {', '.join(filters)}")
+        self._append_log(f"  上传协议: {self.current_protocol}")
+        
+        # v2.0 新增：启动FTP服务器（如果需要）
+        if self.current_protocol in ['ftp_server', 'both']:
+            try:
+                if not self.ftp_manager:
+                    self.ftp_manager = FTPProtocolManager()
+                
+                self._append_log("🔧 正在启动FTP服务器...")
+                share_folder = self.ftp_server_config.get('shared_folder', '')
+                if not share_folder or not os.path.exists(share_folder):
+                    raise ValueError(f"FTP共享文件夹无效: {share_folder}")
+                
+                server_config = {
+                    'host': self.ftp_server_config.get('host', '0.0.0.0'),
+                    'port': self.ftp_server_config.get('port', 2121),
+                    'username': self.ftp_server_config.get('username', 'upload_user'),
+                    'password': self.ftp_server_config.get('password', 'upload_pass'),
+                    'shared_folder': share_folder
+                }
+                
+                success = self.ftp_manager.start_server(server_config)
+                if not success:
+                    raise RuntimeError("FTP服务器启动失败")
+                
+                server_status = self.ftp_manager.get_status()
+                if server_status.get('server'):
+                    srv = server_status['server']
+                    self._append_log(f"✓ FTP服务器已启动:")
+                    self._append_log(f"  地址: {srv['host']}:{srv['port']}")
+                    self._append_log(f"  共享: {srv['shared_folder']}")
+                else:
+                    self._append_log(f"✓ FTP服务器已启动")
+                
+                # v2.0 新增：更新FTP状态显示
+                self._update_protocol_status()
+            except ValueError as e:
+                # v2.0 增强：配置错误详细日志
+                self._append_log(f"❌ [FTP-CONFIG] 配置错误: {e}")
+                self._toast(f'FTP配置错误: {e}', 'danger')
+                # 恢复UI状态
+                self.is_running = False
+                self._update_status_pill()
+                self.btn_start.setEnabled(True)
+                self.btn_pause.setEnabled(False)
+                self.btn_stop.setEnabled(False)
+                self.src_edit.setReadOnly(False)
+                self.tgt_edit.setReadOnly(False)
+                self.bak_edit.setReadOnly(False)
+                return
+            except OSError as e:
+                # v2.0 增强：端口冲突等系统错误详细日志
+                error_msg = str(e)
+                if 'already in use' in error_msg.lower() or 'address already in use' in error_msg.lower():
+                    port = self.ftp_server_config.get('port', 2121)
+                    self._append_log(f"❌ [FTP-PORT] 端口 {port} 已被占用，请更换端口")
+                else:
+                    self._append_log(f"❌ [FTP-OS] 系统错误: {e}")
+                self._toast(f'FTP服务器启动失败: {e}', 'danger')
+                # 恢复UI状态
+                self.is_running = False
+                self._update_status_pill()
+                self.btn_start.setEnabled(True)
+                self.btn_pause.setEnabled(False)
+                self.btn_stop.setEnabled(False)
+                self.src_edit.setReadOnly(False)
+                self.tgt_edit.setReadOnly(False)
+                self.bak_edit.setReadOnly(False)
+                return
+            except Exception as e:
+                # v2.0 增强：其他错误详细日志
+                error_type = type(e).__name__
+                self._append_log(f"❌ [FTP-{error_type}] FTP服务器启动失败: {e}")
+                self._toast(f'FTP服务器启动失败: {e}', 'danger')
+                # 恢复UI状态
+                self.is_running = False
+                self._update_status_pill()
+                self.btn_start.setEnabled(True)
+                self.btn_pause.setEnabled(False)
+                self.btn_stop.setEnabled(False)
+                self.src_edit.setReadOnly(False)
+                self.tgt_edit.setReadOnly(False)
+                self.bak_edit.setReadOnly(False)
+                return
         
         # 获取去重策略映射
         strategy_map = {'跳过': 'skip', '重命名': 'rename', '覆盖': 'overwrite', '询问': 'ask'}
         duplicate_strategy = strategy_map.get(self.combo_strategy.currentText(), 'ask')
+        
+        # v2.0 新增：更新FTP客户端配置
+        if self.current_protocol in ['ftp_client', 'both']:
+            self.ftp_client_config = {
+                'host': self.ftp_client_host.text(),
+                'port': self.ftp_client_port.value(),
+                'username': self.ftp_client_user.text(),
+                'password': self.ftp_client_pass.text(),
+                'remote_path': self.ftp_client_remote.text(),
+                'timeout': self.ftp_client_timeout.value(),
+                'retry_count': self.ftp_client_retry.value(),
+            }
+            self._append_log(f"📡 FTP客户端配置: {self.ftp_client_config['host']}:{self.ftp_client_config['port']}")
+            self._append_log(f"  超时时间: {self.ftp_client_config['timeout']}秒, 重试次数: {self.ftp_client_config['retry_count']}次")
         
         self.worker = UploadWorker(
             self.src_edit.text(), self.tgt_edit.text(), self.bak_edit.text(),
@@ -2544,7 +3450,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             self.auto_del_folder_edit.text(),
             self.spin_auto_del_threshold.value(),
             self.spin_auto_del_keep_days.value(),
-            self.spin_auto_del_interval.value()
+            self.spin_auto_del_interval.value(),
+            # v2.0 新增：协议参数
+            self.current_protocol,
+            self.ftp_client_config if self.current_protocol in ['ftp_client', 'both'] else None
         )
         self.worker_thread = QtCore.QThread(self)
         self.worker.moveToThread(self.worker_thread)
@@ -2582,6 +3491,19 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
     def _on_stop(self):
         """停止上传"""
         self._append_log("🛑 正在停止上传任务...")
+        
+        # v2.0 新增：停止FTP服务器（如果启动了）
+        if self.ftp_manager:
+            try:
+                self._append_log("🔧 正在停止FTP服务...")
+                self.ftp_manager.stop_all()
+                self.ftp_manager = None
+                self._append_log("✓ FTP服务已停止")
+                
+                # v2.0 新增：更新FTP状态显示
+                self._update_protocol_status()
+            except Exception as e:
+                self._append_log(f"⚠️ 停止FTP服务时出错: {e}")
         
         if not self.worker:
             # 没有Worker，直接恢复UI
@@ -2658,7 +3580,16 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.lbl_uploaded.setValue(str(uploaded))
         self.lbl_failed.setValue(str(failed))
         self.lbl_skipped.setValue(str(skipped))
-        self.lbl_rate.setValue(rate)
+        
+        # v2.0 增强：速率显示添加协议图标
+        protocol_icons = {
+            'smb': '📁',
+            'ftp_server': '🖥️',
+            'ftp_client': '📤',
+            'both': '🔄'
+        }
+        icon = protocol_icons.get(self.current_protocol, '📁')
+        self.lbl_rate.setValue(f"{icon} {rate}")
 
     def _on_progress(self, current: int, total: int, filename: str):
         self.pbar.setValue(0 if total <= 0 else int(100*current/max(1,total)))
@@ -2939,6 +3870,87 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         else:
             self.lbl_status.setText("🔴 已停止")
             self.lbl_status.setStyleSheet("background:#FEE2E2; color:#B91C1C; padding:4px 10px; font-weight:700; border-radius:12px;")
+    
+    def _update_protocol_status(self):
+        """更新协议和FTP状态显示"""
+        # 更新协议模式
+        protocol_names = {
+            'smb': 'SMB',
+            'ftp_server': 'FTP服务器',
+            'ftp_client': 'FTP客户端',
+            'both': '混合模式'
+        }
+        protocol_text = protocol_names.get(self.current_protocol, 'SMB')
+        self.lbl_protocol.setValue(protocol_text)
+        
+        # 更新FTP服务器状态（含图标指示器）
+        if self.current_protocol in ['ftp_server', 'both']:
+            if self.ftp_manager and self.ftp_manager.server:
+                try:
+                    # 直接从FTPServerManager获取状态
+                    server_info = self.ftp_manager.server.get_status()
+                    if server_info.get('running'):
+                        connections = server_info.get('connections', 0)
+                        # 显示连接数，如果有连接则用绿色高亮
+                        if connections > 0:
+                            self.lbl_ftp_server.setValue(f"🟢 运行中 ({connections}个连接)")
+                        else:
+                            self.lbl_ftp_server.setValue("🟢 运行中 (0)")
+                        self.lbl_ftp_server.setStyleSheet(
+                            "background:#DCFCE7; color:#166534; padding:4px 8px; border-radius:4px; font-size:9pt; font-weight:500;"
+                        )
+                    else:
+                        self.lbl_ftp_server.setValue("🔴 已停止")
+                        self.lbl_ftp_server.setStyleSheet(
+                            "background:#FEE2E2; color:#B91C1C; padding:4px 8px; border-radius:4px; font-size:9pt;"
+                        )
+                except:
+                    self.lbl_ftp_server.setValue("⚪ 未启动")
+                    self.lbl_ftp_server.setStyleSheet(
+                        "background:#F5F5F5; color:#757575; padding:4px 8px; border-radius:4px; font-size:9pt;"
+                    )
+            else:
+                self.lbl_ftp_server.setValue("⚪ 未启动")
+                self.lbl_ftp_server.setStyleSheet(
+                    "background:#F5F5F5; color:#757575; padding:4px 8px; border-radius:4px; font-size:9pt;"
+                )
+        else:
+            self.lbl_ftp_server.setValue("⚫ --")
+            self.lbl_ftp_server.setStyleSheet(
+                "background:#F5F5F5; color:#9E9E9E; padding:4px 8px; border-radius:4px; font-size:9pt;"
+            )
+        
+        # 更新FTP客户端状态（含图标指示器）
+        if self.current_protocol in ['ftp_client', 'both']:
+            if self.worker and hasattr(self.worker, 'ftp_client') and self.worker.ftp_client:
+                try:
+                    client_status = self.worker.ftp_client.get_status()
+                    if client_status.get('connected'):
+                        host = client_status.get('host', '')
+                        self.lbl_ftp_client.setValue(f"🟢 已连接 ({host})")
+                        self.lbl_ftp_client.setStyleSheet(
+                            "background:#DCFCE7; color:#166534; padding:4px 8px; border-radius:4px; font-size:9pt; font-weight:500;"
+                        )
+                    else:
+                        self.lbl_ftp_client.setValue("🟡 未连接")
+                        self.lbl_ftp_client.setStyleSheet(
+                            "background:#FEF9C3; color:#A16207; padding:4px 8px; border-radius:4px; font-size:9pt;"
+                        )
+                except:
+                    self.lbl_ftp_client.setValue("⚪ 未连接")
+                    self.lbl_ftp_client.setStyleSheet(
+                        "background:#F5F5F5; color:#757575; padding:4px 8px; border-radius:4px; font-size:9pt;"
+                    )
+            else:
+                self.lbl_ftp_client.setValue("⚪ 未连接")
+                self.lbl_ftp_client.setStyleSheet(
+                    "background:#F5F5F5; color:#757575; padding:4px 8px; border-radius:4px; font-size:9pt;"
+                )
+        else:
+            self.lbl_ftp_client.setValue("⚫ --")
+            self.lbl_ftp_client.setStyleSheet(
+                "background:#F5F5F5; color:#9E9E9E; padding:4px 8px; border-radius:4px; font-size:9pt;"
+            )
 
     def _toast(self, msg: str, kind: str = 'info'):
         t = Toast(self.window(), msg, kind)
@@ -2967,6 +3979,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         if self.disk_check_counter >= self.disk_check_interval * 2:
             self.disk_check_counter = 0
             self._update_disk_space()
+        
+        # v2.0 新增：更新协议和FTP状态
+        self._update_protocol_status()
 
     def _update_disk_space(self):
         """更新磁盘剩余空间显示（异步，不阻塞主线程）"""
@@ -3085,11 +4100,11 @@ def main():
     app = QtWidgets.QApplication(sys.argv)
     w = MainWindow()
     w.show()
+    # 兼容 PyQt5 和 PySide6
     try:
-        sys.exit(app.exec_())
+        sys.exit(app.exec())  # PySide6 / PyQt6
     except AttributeError:
-        # PySide6 使用 exec()
-        sys.exit(app.exec())
+        sys.exit(app.exec_())  # PyQt5
 
 
 if __name__ == '__main__':
