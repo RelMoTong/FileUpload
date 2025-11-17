@@ -45,6 +45,8 @@ desktop.ini
 # Build artifacts
 *.spec
 dist/
+dist-*/
+dist-V*/
 build/
 *.exe
 
