@@ -1426,11 +1426,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             grid.addWidget(cb, i//3, i%3)
         v.addLayout(grid)
         
-        # 高级选项（开机自启、自动运行） - 用户和管理员可见
+        # 高级选项 - 使用可折叠组件
         v.addWidget(self._hline())
-        adv_lab = QtWidgets.QLabel("高级选项")
-        adv_lab.setStyleSheet("color:#666; font-size:11px;")
-        v.addWidget(adv_lab)
+        self.advanced_collapsible = MainWindow.CollapsibleBox("⚙️ 高级选项")
+        adv_content = QtWidgets.QWidget()
+        adv_layout = QtWidgets.QVBoxLayout(adv_content)
+        adv_layout.setContentsMargins(10, 5, 10, 5)
+        adv_layout.setSpacing(8)
         
         self.cb_auto_start_windows = QtWidgets.QCheckBox("🚀 开机自启动")
         self.cb_auto_start_windows.setProperty('orig_text', "🚀 开机自启动")
@@ -1438,20 +1440,25 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.cb_auto_start_windows.toggled.connect(self._toggle_autostart)
         self.cb_auto_start_windows.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_auto_start_windows, checked))
         self._set_checkbox_mark(self.cb_auto_start_windows, self.cb_auto_start_windows.isChecked())
-        v.addWidget(self.cb_auto_start_windows)
+        adv_layout.addWidget(self.cb_auto_start_windows)
         
         self.cb_auto_run_on_startup = QtWidgets.QCheckBox("▶ 启动时自动运行")
         self.cb_auto_run_on_startup.setProperty('orig_text', "▶ 启动时自动运行")
         self.cb_auto_run_on_startup.setChecked(False)
         self.cb_auto_run_on_startup.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_auto_run_on_startup, checked))
         self._set_checkbox_mark(self.cb_auto_run_on_startup, self.cb_auto_run_on_startup.isChecked())
-        v.addWidget(self.cb_auto_run_on_startup)
+        adv_layout.addWidget(self.cb_auto_run_on_startup)
         
-        # v1.9 新增：智能去重选项
+        self.advanced_collapsible.setContentLayout(adv_layout)
+        v.addWidget(self.advanced_collapsible)
+        
+        # v1.9 新增：智能去重选项 - 使用可折叠组件
         v.addWidget(self._hline())
-        dedup_lab = QtWidgets.QLabel("🔍 智能去重 (v1.9)")
-        dedup_lab.setStyleSheet("color:#1976D2; font-size:11px; font-weight:700;")
-        v.addWidget(dedup_lab)
+        self.dedup_collapsible = MainWindow.CollapsibleBox("🔍 智能去重 (v1.9)")
+        dedup_content = QtWidgets.QWidget()
+        dedup_layout = QtWidgets.QVBoxLayout(dedup_content)
+        dedup_layout.setContentsMargins(10, 5, 10, 5)
+        dedup_layout.setSpacing(8)
         
         self.cb_enable_dedup = QtWidgets.QCheckBox("🔍 启用智能去重")
         self.cb_enable_dedup.setProperty('orig_text', "🔍 启用智能去重")
@@ -1459,7 +1466,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.cb_enable_dedup.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_enable_dedup, checked))
         self.cb_enable_dedup.toggled.connect(self._on_dedup_toggled)
         self._set_checkbox_mark(self.cb_enable_dedup, self.cb_enable_dedup.isChecked())
-        v.addWidget(self.cb_enable_dedup)
+        dedup_layout.addWidget(self.cb_enable_dedup)
         
         # 哈希算法选择
         hash_row = QtWidgets.QHBoxLayout()
@@ -1469,7 +1476,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.combo_hash.setEnabled(False)
         hash_row.addWidget(hash_lab)
         hash_row.addWidget(self.combo_hash)
-        v.addLayout(hash_row)
+        dedup_layout.addLayout(hash_row)
         
         # 去重策略选择
         strategy_row = QtWidgets.QHBoxLayout()
@@ -1479,48 +1486,58 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.combo_strategy.setEnabled(False)
         strategy_row.addWidget(strategy_lab)
         strategy_row.addWidget(self.combo_strategy)
-        v.addLayout(strategy_row)
+        dedup_layout.addLayout(strategy_row)
         
         # 说明文本
         dedup_hint = QtWidgets.QLabel("💡 通过文件哈希检测重复，避免上传相同内容的文件")
         dedup_hint.setStyleSheet("color:#757575; font-size:9px; padding:4px;")
         dedup_hint.setWordWrap(True)
-        v.addWidget(dedup_hint)
+        dedup_layout.addWidget(dedup_hint)
         
-        # v1.9 新增：网络监控选项
+        self.dedup_collapsible.setContentLayout(dedup_layout)
+        v.addWidget(self.dedup_collapsible)
+        
+        # v1.9 新增：网络监控选项 - 使用可折叠组件
         v.addWidget(self._hline())
-        network_lab = QtWidgets.QLabel("🌐 网络监控 (v1.9)")
-        network_lab.setStyleSheet("color:#1976D2; font-size:11px; font-weight:700;")
-        v.addWidget(network_lab)
+        self.network_collapsible = MainWindow.CollapsibleBox("🌐 网络监控 (v1.9)")
+        network_content = QtWidgets.QWidget()
+        network_layout = QtWidgets.QVBoxLayout(network_content)
+        network_layout.setContentsMargins(10, 5, 10, 5)
+        network_layout.setSpacing(8)
         
         # 网络检测间隔
-        self.spin_network_check = self._spin_row(v, "检测间隔(秒)", 5, 60, 10)
+        self.spin_network_check = self._spin_row(network_layout, "检测间隔(秒)", 5, 60, 10)
         
         self.cb_network_auto_pause = QtWidgets.QCheckBox("⏸️ 断网时自动暂停")
         self.cb_network_auto_pause.setProperty('orig_text', "⏸️ 断网时自动暂停")
         self.cb_network_auto_pause.setChecked(True)
         self.cb_network_auto_pause.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_network_auto_pause, checked))
         self._set_checkbox_mark(self.cb_network_auto_pause, self.cb_network_auto_pause.isChecked())
-        v.addWidget(self.cb_network_auto_pause)
+        network_layout.addWidget(self.cb_network_auto_pause)
         
         self.cb_network_auto_resume = QtWidgets.QCheckBox("▶️ 恢复时自动继续")
         self.cb_network_auto_resume.setProperty('orig_text', "▶️ 恢复时自动继续")
         self.cb_network_auto_resume.setChecked(True)
         self.cb_network_auto_resume.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_network_auto_resume, checked))
         self._set_checkbox_mark(self.cb_network_auto_resume, self.cb_network_auto_resume.isChecked())
-        v.addWidget(self.cb_network_auto_resume)
+        network_layout.addWidget(self.cb_network_auto_resume)
         
         # 说明文本
         network_hint = QtWidgets.QLabel("💡 实时监控网络状态，断网时自动暂停，恢复后自动继续")
         network_hint.setStyleSheet("color:#757575; font-size:9px; padding:4px;")
         network_hint.setWordWrap(True)
-        v.addWidget(network_hint)
+        network_layout.addWidget(network_hint)
         
-        # v1.9 新增：自动删除选项
+        self.network_collapsible.setContentLayout(network_layout)
+        v.addWidget(self.network_collapsible)
+        
+        # v1.9 新增：自动删除选项 - 使用可折叠组件
         v.addWidget(self._hline())
-        auto_del_lab = QtWidgets.QLabel("🗑️ 自动删除 (v1.9)")
-        auto_del_lab.setStyleSheet("color:#1976D2; font-size:11px; font-weight:700;")
-        v.addWidget(auto_del_lab)
+        self.autodel_collapsible = MainWindow.CollapsibleBox("🗑️ 自动删除 (v1.9)")
+        autodel_content = QtWidgets.QWidget()
+        autodel_layout = QtWidgets.QVBoxLayout(autodel_content)
+        autodel_layout.setContentsMargins(10, 5, 10, 5)
+        autodel_layout.setSpacing(8)
         
         self.cb_enable_auto_delete = QtWidgets.QCheckBox("🗑️ 启用自动删除")
         self.cb_enable_auto_delete.setProperty('orig_text', "🗑️ 启用自动删除")
@@ -1528,36 +1545,39 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.cb_enable_auto_delete.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_enable_auto_delete, checked))
         self.cb_enable_auto_delete.toggled.connect(self._on_auto_delete_toggled)
         self._set_checkbox_mark(self.cb_enable_auto_delete, self.cb_enable_auto_delete.isChecked())
-        v.addWidget(self.cb_enable_auto_delete)
+        autodel_layout.addWidget(self.cb_enable_auto_delete)
         
         # 监控文件夹
-        self.auto_del_folder_edit, self.btn_choose_auto_del = self._path_row(v, "监控文件夹", self._choose_auto_delete_folder)
+        self.auto_del_folder_edit, self.btn_choose_auto_del = self._path_row(autodel_layout, "监控文件夹", self._choose_auto_delete_folder)
         self.auto_del_folder_edit.setEnabled(False)
         self.btn_choose_auto_del.setEnabled(False)
         
         # 磁盘阈值
-        self.spin_auto_del_threshold = self._spin_row(v, "空间阈值(%)", 50, 95, 80)
+        self.spin_auto_del_threshold = self._spin_row(autodel_layout, "空间阈值(%)", 50, 95, 80)
         self.spin_auto_del_threshold.setEnabled(False)
         
         # 保留天数
-        self.spin_auto_del_keep_days = self._spin_row(v, "保留天数", 1, 365, 10)
+        self.spin_auto_del_keep_days = self._spin_row(autodel_layout, "保留天数", 1, 365, 10)
         self.spin_auto_del_keep_days.setEnabled(False)
         
         # 检查间隔
-        self.spin_auto_del_interval = self._spin_row(v, "检查间隔(秒)", 60, 3600, 300)
+        self.spin_auto_del_interval = self._spin_row(autodel_layout, "检查间隔(秒)", 60, 3600, 300)
         self.spin_auto_del_interval.setEnabled(False)
         
         # 说明文本
         auto_del_hint = QtWidgets.QLabel("💡 当磁盘使用率达到阈值时，自动删除超出保留期限的图片文件，释放空间")
         auto_del_hint.setStyleSheet("color:#757575; font-size:9px; padding:8px;")
         auto_del_hint.setWordWrap(True)
-        v.addWidget(auto_del_hint)
+        autodel_layout.addWidget(auto_del_hint)
         
         # 警告提示
         auto_del_warning = QtWidgets.QLabel("⚠️ 警告：被删除的文件无法恢复，请谨慎设置保留天数！")
         auto_del_warning.setStyleSheet("color:#D32F2F; font-size:9px; padding:8px; font-weight:700;")
         auto_del_warning.setWordWrap(True)
-        v.addWidget(auto_del_warning)
+        autodel_layout.addWidget(auto_del_warning)
+        
+        self.autodel_collapsible.setContentLayout(autodel_layout)
+        v.addWidget(self.autodel_collapsible)
         
         return card
 
@@ -1629,56 +1649,93 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self._toast('已退出登录', 'info')
 
     def _update_ui_permissions(self):
-        """根据当前角色更新UI控件的启用状态"""
+        """根据当前角色更新UI控件的启用状态
+        v1.9.1 优化：未登录时只能开始/停止上传，所有配置功能禁用
+        """
         self._append_log(f"🔐 更新权限: 当前角色={self.current_role}, 运行状态={'运行中' if self.is_running else '已停止'}")
         
-        # 未登录：禁用所有配置相关控件
+        # 权限定义
         is_guest = self.current_role == 'guest'
         is_user_or_admin = self.current_role in ['user', 'admin']
+        is_admin = self.current_role == 'admin'
         
-        # 文件夹选择按钮：源文件夹所有人可用，目标和备份文件夹仅登录用户可用
-        # 未登录时：禁用目标文件夹和备份文件夹的浏览按钮
+        # === 核心逻辑：未登录时只能开始/停止上传 ===
+        
+        # 1. 文件夹选择按钮：仅登录用户可用
         if hasattr(self, 'btn_choose_src'):
-            # 源文件夹浏览按钮：所有人可用（除非运行中）
             self.btn_choose_src.setEnabled(is_user_or_admin and not self.is_running)
         if hasattr(self, 'btn_choose_tgt'):
-            # 目标文件夹浏览按钮：登录用户且未运行中可用
             self.btn_choose_tgt.setEnabled(is_user_or_admin and not self.is_running)
         if hasattr(self, 'btn_choose_bak'):
-            # 备份文件夹浏览按钮：登录用户且未运行中可用
             self.btn_choose_bak.setEnabled(is_user_or_admin and not self.is_running)
         
-        # 输入框：未登录时源文件夹可编辑，目标和备份文件夹只读
-        # 运行中时全部只读
+        # 2. 文件夹路径输入框：未登录时全部只读
         self.src_edit.setReadOnly(is_guest or self.is_running)
         self.tgt_edit.setReadOnly(is_guest or self.is_running)
         self.bak_edit.setReadOnly(is_guest or self.is_running)
         
-        # 设置项：未登录时禁用
-        self.spin_interval.setEnabled(is_user_or_admin)
-        self.spin_disk.setEnabled(is_user_or_admin)
-        self.spin_retry.setEnabled(is_user_or_admin)
-        # 磁盘检查间隔：未登录时禁用
-        self.spin_disk_check.setEnabled(is_user_or_admin)
+        # 3. 备份启用复选框：仅登录用户可用
+        if hasattr(self, 'cb_enable_backup'):
+            self.cb_enable_backup.setEnabled(is_user_or_admin and not self.is_running)
         
-        # 文件类型复选框
+        # 4. 所有设置项：未登录时禁用
+        self.spin_interval.setEnabled(is_user_or_admin and not self.is_running)
+        self.spin_disk.setEnabled(is_user_or_admin and not self.is_running)
+        self.spin_retry.setEnabled(is_user_or_admin and not self.is_running)
+        self.spin_disk_check.setEnabled(is_user_or_admin and not self.is_running)
+        
+        # 5. 文件类型复选框：未登录时禁用
         for cb in self.cb_ext.values():
-            cb.setEnabled(is_user_or_admin)
+            cb.setEnabled(is_user_or_admin and not self.is_running)
         
-        # 开机自启和自动运行复选框（用户和管理员均可设置）
-        self.cb_auto_start_windows.setEnabled(is_user_or_admin)
-        self.cb_auto_run_on_startup.setEnabled(is_user_or_admin)
+        # 6. 高级选项：仅登录用户可用
+        if hasattr(self, 'cb_auto_start_windows'):
+            self.cb_auto_start_windows.setEnabled(is_user_or_admin and not self.is_running)
+        if hasattr(self, 'cb_auto_run_on_startup'):
+            self.cb_auto_run_on_startup.setEnabled(is_user_or_admin and not self.is_running)
         
-        # 保存配置按钮
-        self.btn_save.setEnabled(is_user_or_admin)
+        # 7. 智能去重：仅登录用户可用
+        if hasattr(self, 'cb_enable_dedup'):
+            self.cb_enable_dedup.setEnabled(is_user_or_admin and not self.is_running)
+            self.combo_hash.setEnabled(is_user_or_admin and not self.is_running and self.cb_enable_dedup.isChecked())
+            self.combo_strategy.setEnabled(is_user_or_admin and not self.is_running and self.cb_enable_dedup.isChecked())
         
-        # 上传控制按钮：所有人都可以使用（包括未登录状态）
-        # 开始按钮：未运行时启用
+        # 8. 网络监控：仅登录用户可用
+        if hasattr(self, 'spin_network_check'):
+            self.spin_network_check.setEnabled(is_user_or_admin and not self.is_running)
+        if hasattr(self, 'cb_network_auto_pause'):
+            self.cb_network_auto_pause.setEnabled(is_user_or_admin and not self.is_running)
+        if hasattr(self, 'cb_network_auto_resume'):
+            self.cb_network_auto_resume.setEnabled(is_user_or_admin and not self.is_running)
+        
+        # 9. 自动删除：仅登录用户可用
+        if hasattr(self, 'cb_enable_auto_delete'):
+            self.cb_enable_auto_delete.setEnabled(is_user_or_admin and not self.is_running)
+            auto_del_enabled = is_user_or_admin and not self.is_running and self.cb_enable_auto_delete.isChecked()
+            if hasattr(self, 'auto_del_folder_edit'):
+                self.auto_del_folder_edit.setEnabled(auto_del_enabled)
+            if hasattr(self, 'btn_choose_auto_del'):
+                self.btn_choose_auto_del.setEnabled(auto_del_enabled)
+            if hasattr(self, 'spin_auto_del_threshold'):
+                self.spin_auto_del_threshold.setEnabled(auto_del_enabled)
+            if hasattr(self, 'spin_auto_del_keep_days'):
+                self.spin_auto_del_keep_days.setEnabled(auto_del_enabled)
+            if hasattr(self, 'spin_auto_del_interval'):
+                self.spin_auto_del_interval.setEnabled(auto_del_enabled)
+        
+        # 10. 保存配置按钮：仅登录用户可用
+        self.btn_save.setEnabled(is_user_or_admin and not self.is_running)
+        
+        # 11. 上传控制按钮：所有人都可以使用（核心功能）
         self.btn_start.setEnabled(not self.is_running)
-        # 暂停按钮：正在运行时启用
         self.btn_pause.setEnabled(self.is_running)
-        # 停止按钮：正在运行时启用
         self.btn_stop.setEnabled(self.is_running)
+        
+        # 12. 可折叠组件：控制展开状态
+        # 未登录时可以查看但不能修改
+        if hasattr(self, 'advanced_collapsible'):
+            # 不禁用整个组件，只禁用内部控件
+            pass
 
     def _clear_logs(self):
         try:
@@ -2118,6 +2175,50 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.pbar.setValue(0)
         v.addWidget(self.pbar)
         return card
+
+    class CollapsibleBox(QtWidgets.QWidget):  # type: ignore
+        """可折叠的组件"""
+        def __init__(self, title: str = "", parent: QtWidgets.QWidget = None):
+            super().__init__(parent)
+            self.toggle_button = QtWidgets.QToolButton()
+            self.toggle_button.setStyleSheet(
+                "QToolButton { border: none; font-weight: 700; color: #1976D2; }"
+            )
+            self.toggle_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            arrow_type = getattr(QtCore.Qt, 'ArrowType', QtCore.Qt)
+            self.toggle_button.setArrowType(getattr(arrow_type, 'RightArrow'))
+            self.toggle_button.setText(title)
+            self.toggle_button.setCheckable(True)
+            self.toggle_button.setChecked(False)
+            
+            self.content_area = QtWidgets.QWidget()
+            self.content_area.setMaximumHeight(0)
+            self.content_area.setMinimumHeight(0)
+            
+            lay = QtWidgets.QVBoxLayout(self)
+            lay.setSpacing(0)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.addWidget(self.toggle_button)
+            lay.addWidget(self.content_area)
+            
+            self.toggle_button.clicked.connect(self.toggle)
+        
+        def toggle(self):
+            checked = self.toggle_button.isChecked()
+            arrow_type = getattr(QtCore.Qt, 'ArrowType', QtCore.Qt)
+            self.toggle_button.setArrowType(
+                getattr(arrow_type, 'DownArrow') if checked else getattr(arrow_type, 'RightArrow')
+            )
+            if checked:
+                self.content_area.setMaximumHeight(16777215)
+            else:
+                self.content_area.setMaximumHeight(0)
+        
+        def setContentLayout(self, layout: QtWidgets.QVBoxLayout):
+            lay = self.content_area.layout()
+            if lay is not None:
+                QtWidgets.QWidget().setLayout(lay)
+            self.content_area.setLayout(layout)
 
     class ChipWidget(QtWidgets.QFrame):  # type: ignore
         value_label: QtWidgets.QLabel
