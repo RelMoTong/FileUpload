@@ -157,6 +157,7 @@ echo [5/7] 配置打包参数...
 set APP_NAME=图片异步上传工具
 set VERSION=2.1.1
 set OUTPUT_NAME=%APP_NAME%_v%VERSION%
+set DIST_DIR=dist-%VERSION%
 set ENTRY=pyqt_app.py
 set ICON_PARAM=
 
@@ -171,6 +172,7 @@ if exist assets\app.ico (
 echo [信息] 应用名称：%APP_NAME%
 echo [信息] 版本号：v%VERSION%
 echo [信息] 输出文件名：%OUTPUT_NAME%.exe
+echo [信息] 输出目录：%DIST_DIR%\
 echo.
 
 :: ========================================
@@ -188,6 +190,7 @@ pyinstaller --noconfirm ^
   --onedir ^
   --windowed ^
   --name "%OUTPUT_NAME%" ^
+  --distpath "%DIST_DIR%" ^
   --add-data "config.json;." ^
   --add-data "assets;assets" ^
   --add-data "logs;logs" ^
@@ -230,15 +233,15 @@ if %errorlevel% neq 0 (
 echo.
 echo [7/7] 验证打包结果...
 
-if not exist "dist\%OUTPUT_NAME%\%OUTPUT_NAME%.exe" (
-    echo [错误] 未找到输出文件：dist\%OUTPUT_NAME%\%OUTPUT_NAME%.exe
+if not exist "%DIST_DIR%\%OUTPUT_NAME%\%OUTPUT_NAME%.exe" (
+    echo [错误] 未找到输出文件：%DIST_DIR%\%OUTPUT_NAME%\%OUTPUT_NAME%.exe
     echo [信息] 打包可能失败，请查看上方日志
     pause
     exit /b 1
 )
 
 :: 获取文件大小
-for %%A in ("dist\%OUTPUT_NAME%\%OUTPUT_NAME%.exe") do set FILE_SIZE=%%~zA
+for %%A in ("%DIST_DIR%\%OUTPUT_NAME%\%OUTPUT_NAME%.exe") do set FILE_SIZE=%%~zA
 
 :: 计算MB大小（简化版）
 set /a SIZE_MB=%FILE_SIZE% / 1048576
@@ -248,7 +251,7 @@ echo ========================================
 echo [成功] 打包完成！
 echo ========================================
 echo.
-echo 输出目录：dist\%OUTPUT_NAME%\
+echo 输出目录：%DIST_DIR%\%OUTPUT_NAME%\
 echo 主程序：%OUTPUT_NAME%.exe
 echo 程序大小：%SIZE_MB% MB
 echo.
@@ -261,7 +264,7 @@ echo   ✓ 依赖库：PySide6/PyQt5
 echo   ✓ 运行库：所有依赖 DLL 文件
 echo.
 echo 📝 使用说明：
-echo   1. 将整个 dist\%OUTPUT_NAME%\ 目录复制给用户
+echo   1. 将整个 %DIST_DIR%\%OUTPUT_NAME%\ 目录复制给用户
 echo   2. 双击 %OUTPUT_NAME%.exe 运行（启动速度快）
 echo   3. 首次运行会自动创建配置和日志
 echo.
@@ -275,7 +278,7 @@ echo.
 :: 打开输出目录
 echo [信息] 正在打开输出目录...
 timeout /t 2 /nobreak >nul
-explorer dist
+explorer %DIST_DIR%
 
 echo.
 echo 按任意键退出...
