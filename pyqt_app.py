@@ -47,8 +47,8 @@ except ImportError:
 # 统一访问 Qt 枚举（兼容 Qt6 的强类型枚举命名）
 QtEnum = QtCore.Qt
 
-APP_TITLE = "图片异步上传工具 v2.1 (PyQt)"
-APP_VERSION = "2.1"
+APP_TITLE = "图片异步上传工具 v2.1.1 (PyQt)"
+APP_VERSION = "2.1.1"
 
 
 def get_app_dir() -> Path:
@@ -855,7 +855,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore
                 return base_path
 
     def _archive_worker(self):
-        """独立归档线程（避免阻塞上传）"""
+        """独立归档线程（避免阻塞上传）
+        v2.1.1 修改：根据 enable_backup 配置决定是归档还是删除
+        """
         while self._running:
             try:
                 # 1秒超时，避免死等
@@ -865,9 +867,16 @@ class UploadWorker(QtCore.QObject):  # type: ignore
                 if not os.path.exists(src_path):
                     continue
                 
-                os.makedirs(os.path.dirname(bkp_path), exist_ok=True)
-                shutil.move(src_path, bkp_path)
-                self.log.emit(f"📦 已归档: {os.path.basename(bkp_path)}")
+                # v2.1.1：根据备份启用状态决定操作
+                if self.enable_backup and self.backup and os.path.exists(os.path.dirname(self.backup)):
+                    # 启用备份：移动到备份文件夹
+                    os.makedirs(os.path.dirname(bkp_path), exist_ok=True)
+                    shutil.move(src_path, bkp_path)
+                    self.log.emit(f"📦 已归档: {os.path.basename(bkp_path)}")
+                else:
+                    # 未启用备份：直接删除源文件
+                    os.remove(src_path)
+                    self.log.emit(f"🗑️ 已删除: {os.path.basename(src_path)}")
             except queue.Empty:
                 continue
             except Exception as e:
@@ -1174,6 +1183,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.source = ''
         self.target = ''
         self.backup = ''
+        self.enable_backup = True  # v2.1.1 新增：是否启用备份
         self.interval = 30
         self.mode = 'periodic'
         self.disk_threshold_percent = 10
@@ -1499,6 +1509,22 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.tgt_edit, self.btn_choose_tgt = self._path_row(v, "目标文件夹", self._choose_target)
         # backup
         self.bak_edit, self.btn_choose_bak = self._path_row(v, "备份文件夹", self._choose_backup)
+        
+        # v2.1.1 新增：启用备份复选框
+        self.cb_enable_backup = QtWidgets.QCheckBox("✓ 启用备份功能")
+        self.cb_enable_backup.setProperty('orig_text', "✓ 启用备份功能")
+        self.cb_enable_backup.setChecked(True)
+        self.cb_enable_backup.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_enable_backup, checked))
+        self.cb_enable_backup.toggled.connect(self._on_backup_toggled)
+        self._set_checkbox_mark(self.cb_enable_backup, self.cb_enable_backup.isChecked())
+        v.addWidget(self.cb_enable_backup)
+        
+        # 添加说明文本
+        backup_hint = QtWidgets.QLabel("💡 启用后，上传成功的文件会移动到备份文件夹保存；禁用后文件上传成功会直接删除")
+        backup_hint.setWordWrap(True)
+        backup_hint.setStyleSheet("color: #666; font-size: 11px; padding: 5px 0;")
+        v.addWidget(backup_hint)
+        
         return card
 
     def _path_row(self, layout: QtWidgets.QVBoxLayout, label: str, chooser):
@@ -1953,15 +1979,20 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             # 目标文件夹浏览按钮：登录用户且未运行中可用
             self.btn_choose_tgt.setEnabled(is_user_or_admin and not self.is_running)
         if hasattr(self, 'btn_choose_bak'):
-            # 备份文件夹浏览按钮：登录用户且未运行中可用
-            self.btn_choose_bak.setEnabled(is_user_or_admin and not self.is_running)
+            # v2.1.1：备份浏览按钮：需要登录 + 未运行 + 备份已启用
+            self.btn_choose_bak.setEnabled(is_user_or_admin and not self.is_running and self.enable_backup)
         
         # 输入框：未登录时源文件夹可编辑，目标和备份文件夹只读
         # 运行中时全部只读
         self.src_edit.setReadOnly(is_guest or self.is_running)
         self.tgt_edit.setReadOnly(is_guest or self.is_running)
-        self.bak_edit.setReadOnly(is_guest or self.is_running)
-        
+        # v2.1.1：备份路径：未登录、运行中或备份未启用时都只读
+        self.bak_edit.setReadOnly(is_guest or self.is_running or not self.enable_backup)
+
+        # v2.1.1：备份启用复选框：仅登录用户可用
+        if hasattr(self, 'cb_enable_backup'):
+            self.cb_enable_backup.setEnabled(is_user_or_admin and not self.is_running)
+
         # 设置项：未登录时禁用
         self.spin_interval.setEnabled(is_user_or_admin)
         self.spin_disk.setEnabled(is_user_or_admin)
@@ -3266,6 +3297,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         else:
             self._append_log("✗ 取消选择备份文件夹")
 
+    def _on_backup_toggled(self, checked: bool):
+        """切换备份开关"""
+        self.enable_backup = checked
+        # 刷新UI权限（会自动更新备份路径输入框和浏览按钮的状态）
+        self._update_ui_permissions()
+        self._mark_config_modified()
+
     def _mark_config_modified(self):
         """标记配置已修改"""
         self.config_modified = True
@@ -3296,12 +3334,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         else:
             self._append_log(f"✓ 目标文件夹路径有效: {tgt}")
         
-        if not bak:
-            errors.append("备份文件夹路径为空")
-        elif not os.path.exists(bak):
-            errors.append(f"备份文件夹不存在: {bak}")
-        else:
-            self._append_log(f"✓ 备份文件夹路径有效: {bak}")
+        # v2.1.1 修改：只有启用备份时才验证备份路径
+        if self.enable_backup:
+            if not bak:
+                errors.append("备份文件夹路径为空")
+            elif not os.path.exists(bak):
+                errors.append(f"备份文件夹不存在: {bak}")
+            else:
+                self._append_log(f"✓ 备份文件夹路径有效: {bak}")
         
         # 额外校验：三个路径必须互不相同，避免用户误填相同路径导致循环或数据覆盖
         try:
@@ -3314,10 +3354,12 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
 
             if n_src and n_tgt and n_src == n_tgt:
                 errors.append("源文件夹与目标文件夹路径相同，请选择不同的路径")
-            if n_src and n_bak and n_src == n_bak:
-                errors.append("源文件夹与备份文件夹路径相同，请选择不同的路径")
-            if n_tgt and n_bak and n_tgt == n_bak:
-                errors.append("目标文件夹与备份文件夹路径相同，请选择不同的路径")
+            # v2.1.1 修改：只有启用备份时才检查备份路径相同性
+            if self.enable_backup:
+                if n_src and n_bak and n_src == n_bak:
+                    errors.append("源文件夹与备份文件夹路径相同，请选择不同的路径")
+                if n_tgt and n_bak and n_tgt == n_bak:
+                    errors.append("目标文件夹与备份文件夹路径相同，请选择不同的路径")
         except Exception:
             # 如果路径规范化出错，不影响已有的存在性检查，继续返回其他错误信息
             pass
@@ -3453,6 +3495,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             'source_folder': self.src_edit.text(),
             'target_folder': self.tgt_edit.text(),
             'backup_folder': self.bak_edit.text(),
+            'enable_backup': self.cb_enable_backup.isChecked(),  # v2.1.1 新增
             'upload_interval': self.spin_interval.value(),
             'monitor_mode': 'periodic',
             'disk_threshold_percent': self.spin_disk.value(),
@@ -3539,6 +3582,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             self.src_edit.setText(cfg.get('source_folder', ''))
             self.tgt_edit.setText(cfg.get('target_folder', ''))
             self.bak_edit.setText(cfg.get('backup_folder', ''))
+            
+            # v2.1.1 新增：加载备份启用状态
+            self.enable_backup = cfg.get('enable_backup', True)
+            self.cb_enable_backup.blockSignals(True)
+            self.cb_enable_backup.setChecked(self.enable_backup)
+            self.cb_enable_backup.blockSignals(False)
+            
             self.spin_interval.setValue(int(cfg.get('upload_interval', 30)))
             self.spin_disk.setValue(int(cfg.get('disk_threshold_percent', 10)))
             self.spin_retry.setValue(int(cfg.get('retry_count', 3)))
@@ -3774,7 +3824,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self._append_log(f"📋 上传配置:")
         self._append_log(f"  源文件夹: {self.src_edit.text()}")
         self._append_log(f"  目标文件夹: {self.tgt_edit.text()}")
-        self._append_log(f"  备份文件夹: {self.bak_edit.text()}")
+        # v2.1.1 修改：根据备份启用状态显示不同信息
+        if self.enable_backup:
+            self._append_log(f"  备份文件夹: {self.bak_edit.text()}")
+        else:
+            self._append_log(f"  备份功能: 已禁用（上传成功后将删除源文件）")
         self._append_log(f"  间隔时间: {self.spin_interval.value()}秒")
         self._append_log(f"  重试次数: {self.spin_retry.value()}次")
         
