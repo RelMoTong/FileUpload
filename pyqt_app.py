@@ -20,6 +20,8 @@ import datetime
 import queue
 import winreg
 import hashlib
+import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import List, Tuple, Optional
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -31,6 +33,16 @@ try:
 except ImportError:
     FTP_AVAILABLE = False
     print("警告: FTP 模块导入失败，FTP 功能不可用")
+
+# v2.2.0 新增：导入核心业务模块
+try:
+    from core.config_manager import ConfigManager
+    from core.permission_manager import PermissionManager
+    from core.single_instance import SingleInstanceManager
+    CORE_MODULES_AVAILABLE = True
+except ImportError as e:
+    CORE_MODULES_AVAILABLE = False
+    print(f"警告: 核心模块导入失败 - {e}")
 
 try:
     from PySide6 import QtCore, QtGui, QtWidgets  # type: ignore
@@ -47,8 +59,16 @@ except ImportError:
 # 统一访问 Qt 枚举（兼容 Qt6 的强类型枚举命名）
 QtEnum = QtCore.Qt
 
-APP_TITLE = "图片异步上传工具 v2.1.3"
-APP_VERSION = "2.1.3"
+# v2.2.0 Qt枚举兼容性辅助函数（消除Pylance警告）
+def get_qt_enum(enum_class, attr_name: str, fallback_value: int):
+    """安全获取Qt枚举值，兼容PySide6/PyQt5"""
+    try:
+        return getattr(enum_class, attr_name, fallback_value)
+    except AttributeError:
+        return fallback_value
+
+APP_TITLE = "图片异步上传工具 v2.2.0"
+APP_VERSION = "2.2.0"
 
 
 def get_app_dir() -> Path:
@@ -136,6 +156,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore
     finished = Signal()
     status = Signal(str)                 # 'running'|'paused'|'stopped'
     ask_user_duplicate = Signal(object)  # payload dict: {'file': str, 'duplicate': str, 'event': threading.Event, 'result': dict}
+    upload_error = Signal(str, str)      # v2.2.0 新增：filename, error_message
+    disk_warning = Signal(float, float, int)  # v2.2.0 新增：target_percent, backup_percent, threshold
 
     def __init__(self, source: str, target: str, backup: str,
                  interval: int, mode: str, disk_threshold_percent: int, retry_count: int,
@@ -197,6 +219,10 @@ class UploadWorker(QtCore.QObject):  # type: ignore
         self.current_file_uploaded = 0
         # 失败重试队列
         self.retry_queue = {}  # {file_path: retry_count}
+        # v2.2.0 新增：失败文件详细记录
+        self.failed_files = []  # 失败文件列表 [{file, error, time}]
+        self.success_files = []  # 成功文件列表
+        self.skipped_files = []  # 跳过文件列表（去重）
         # 归档队列
         self.archive_queue = queue.Queue()
         # 网络连接状态
@@ -634,9 +660,30 @@ class UploadWorker(QtCore.QObject):  # type: ignore
                     self.log.emit(f"⚠ 重试失败，已重新排队 ({item['count']}/{self.retry_count})，等待{wait_time}秒: {os.path.basename(file_path)}")
 
     def _log_failed_file(self, file_path: str, reason: str):
-        """记录失败文件到日志文件"""
+        """v2.2.0 记录失败文件到日志文件和内存列表"""
         try:
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            # v2.2.0 新增：添加到失败文件列表
+            self.failed_files.append({
+                'file': file_path,
+                'filename': os.path.basename(file_path),
+                'error': reason,
+                'time': timestamp
+            })
+            
+            # v2.2.0 使用错误分类器显示友好的日志
+            try:
+                # 尝试导入错误分类器
+                from core.error_classifier import ErrorClassifier
+                error_icon = ErrorClassifier.get_error_icon(reason)
+                friendly_msg = ErrorClassifier.get_user_friendly_message(reason)
+                self.log.emit(f"{error_icon} 上传失败: {os.path.basename(file_path)} - {friendly_msg}")
+            except ImportError:
+                # 如果无法导入，使用原始错误信息
+                self.log.emit(f"❌ 上传失败: {os.path.basename(file_path)} - {reason[:50]}")
+            
+            # 写入失败日志文件
             with open(self.failed_log_path, 'a', encoding='utf-8') as f:
                 f.write(f"[{timestamp}] {file_path} - {reason}\n")
         except Exception as e:
@@ -968,6 +1015,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore
                     if now - self._last_space_warn > 10:
                         self._last_space_warn = now
                         self.log.emit(f"⚠ 磁盘空间不足！目标:{tf_ok:.0f}%，备份:{bf_ok:.0f}%（阈值:{self.disk_threshold_percent}%）")
+                        # v2.2.0 发送磁盘空间警告信号
+                        self.disk_warning.emit(tf_ok, bf_ok, self.disk_threshold_percent)
                     time.sleep(2)
                     continue
 
@@ -1122,6 +1171,12 @@ class UploadWorker(QtCore.QObject):  # type: ignore
                                     raise Exception("文件上传失败")
                                 
                                 self.uploaded += 1
+                                # v2.2.0 新增：记录成功文件
+                                self.success_files.append({
+                                    'file': final_target,
+                                    'filename': os.path.basename(final_target),
+                                    'time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                                })
                                 # 速率计算
                                 try: 
                                     size_mb = os.path.getsize(final_target) / (1024*1024)
@@ -1141,6 +1196,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore
                         self.failed += 1
                         self.stats.emit(self.uploaded, self.failed, self.skipped, self.rate)
                         self.log.emit(f"✗ 上传失败 {fname}: {e}")
+                        # v2.2.0 发送错误通知信号
+                        self.upload_error.emit(fname, str(e))
                         # 添加到重试队列
                         self._handle_upload_failure(path)
 
@@ -1171,6 +1228,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.resize(1350, 880)  # 稍微减小高度
         self.setMinimumSize(1200, 750)  # 减小最小尺寸
         self.app_dir = get_app_dir()
+        
+        # v2.2.0 新增：初始化核心管理器
+        if CORE_MODULES_AVAILABLE:
+            self.config_manager = ConfigManager(self.app_dir)
+            self.perm_manager = PermissionManager()
+        else:
+            self.config_manager = None
+            self.perm_manager = None
         
         # 连接内部信号
         self._disk_update_signal.connect(self._on_disk_update)
@@ -1248,6 +1313,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         # 日志写入线程池（避免阻塞主线程）
         self._log_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="LogWriter")
         
+        # v2.2.0 新增：系统托盘配置
+        self.minimize_to_tray = True  # 最小化到托盘
+        self.show_notifications = True  # 显示通知
+        self.enable_notifications = True  # v2.2.0 新增：通知开关
+        self.notification_level = 'all'  # v2.2.0 新增：通知级别 (all/important/errors)
+        self.tray_icon = None  # 托盘图标对象
+        
         # v2.0 新增：FTP 协议管理器（延迟初始化，避免在UI创建前调用日志）
         self.ftp_manager = None
         
@@ -1256,6 +1328,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self._load_config()
         self._apply_theme()
         self._update_ui_permissions()
+        
+        # v2.2.0 新增：初始化系统托盘
+        self._init_tray_icon()
         
         # v2.0 新增：初始化 FTP 协议管理器（在UI创建后）
         if FTP_AVAILABLE:
@@ -1275,25 +1350,91 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self._timer.start()
 
     def _init_log_file(self):
-        """初始化日志文件（每天一个日志文件）"""
+        """v2.2.0 初始化日志系统（使用 RotatingFileHandler 支持日志轮转）"""
         try:
             logs_dir = self.app_dir / 'logs'
             logs_dir.mkdir(parents=True, exist_ok=True)
             
-            # 使用当前日期作为文件名
+            # 使用当前日期作为日志文件名（保持兼容）
             today = datetime.datetime.now().strftime('%Y-%m-%d')
             self.log_file_path = logs_dir / f'upload_{today}.txt'
             
+            # v2.2.0 新增：配置 logging 模块
+            # 从配置文件读取日志轮转设置（如果配置管理器可用）
+            log_rotation_size_mb = 10  # 默认 10MB
+            log_retention_days = 30    # 默认保留 30 天
+            
+            if hasattr(self, 'config_manager') and self.config_manager:
+                config = self.config_manager.load()
+                log_rotation_size_mb = config.get('log_rotation_size_mb', 10)
+                log_retention_days = config.get('log_retention_days', 30)
+            
+            # 创建 logger
+            self.logger = logging.getLogger('UploadTool')
+            self.logger.setLevel(logging.INFO)
+            
+            # 清除已有的 handlers（避免重复）
+            self.logger.handlers.clear()
+            
+            # 创建 RotatingFileHandler
+            max_bytes = log_rotation_size_mb * 1024 * 1024  # 转换为字节
+            handler = RotatingFileHandler(
+                self.log_file_path,
+                maxBytes=max_bytes,
+                backupCount=5,  # 保留最近 5 个轮转文件
+                encoding='utf-8'
+            )
+            
+            # 设置日志格式
+            formatter = logging.Formatter('[%(asctime)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+            handler.setFormatter(formatter)
+            
+            # 添加 handler
+            self.logger.addHandler(handler)
+            
             # 如果是新文件，写入文件头
-            if not self.log_file_path.exists():
-                with open(self.log_file_path, 'w', encoding='utf-8') as f:
-                    f.write(f"{'='*60}\n")
-                    f.write(f"  图片异步上传工具 - 运行日志\n")
-                    f.write(f"  日期: {today}\n")
-                    f.write(f"{'='*60}\n\n")
+            if not self.log_file_path.exists() or self.log_file_path.stat().st_size == 0:
+                self.logger.info("="*60)
+                self.logger.info("  图片异步上传工具 - 运行日志")
+                self.logger.info(f"  日期: {today}")
+                self.logger.info(f"  日志轮转: {log_rotation_size_mb}MB / 保留 {log_retention_days} 天")
+                self.logger.info("="*60)
+            
+            # v2.2.0 新增：清理过期日志文件
+            self._cleanup_old_logs(log_retention_days)
+            
         except Exception as e:
-            print(f"初始化日志文件失败: {e}")
+            print(f"初始化日志系统失败: {e}")
             self.log_file_path = None
+            self.logger = None
+    
+    def _cleanup_old_logs(self, retention_days: int):
+        """v2.2.0 清理过期的日志文件
+        
+        Args:
+            retention_days: 日志保留天数
+        """
+        try:
+            logs_dir = self.app_dir / 'logs'
+            if not logs_dir.exists():
+                return
+            
+            cutoff_time = time.time() - (retention_days * 24 * 60 * 60)
+            deleted_count = 0
+            
+            for log_file in logs_dir.glob('upload_*.txt*'):
+                try:
+                    # 检查文件修改时间
+                    if log_file.stat().st_mtime < cutoff_time:
+                        log_file.unlink()
+                        deleted_count += 1
+                except Exception:
+                    pass
+            
+            if deleted_count > 0:
+                print(f"✓ 已清理 {deleted_count} 个过期日志文件（保留 {retention_days} 天）")
+        except Exception as e:
+            print(f"清理日志文件失败: {e}")
 
     def _ensure_directories(self):
         """确保必要的目录存在（logs 等）
@@ -1881,6 +2022,40 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         network_hint.setWordWrap(True)
         adv_collapsible.addWidget(network_hint)
         
+        # 添加分隔线
+        adv_collapsible.addWidget(self._hline())
+        
+        # v2.2.0 新增：通知设置
+        notification_sub_lab = QtWidgets.QLabel("🔔 通知设置")
+        notification_sub_lab.setStyleSheet("color:#666; font-size:10px; font-weight:700;")
+        adv_collapsible.addWidget(notification_sub_lab)
+        
+        # 通知开关
+        self.cb_enable_notifications = QtWidgets.QCheckBox("📢 启用系统通知")
+        self.cb_enable_notifications.setProperty('orig_text', "📢 启用系统通知")
+        self.cb_enable_notifications.setChecked(True)
+        self.cb_enable_notifications.toggled.connect(self._on_notification_toggled)
+        self.cb_enable_notifications.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_enable_notifications, checked))
+        self._set_checkbox_mark(self.cb_enable_notifications, self.cb_enable_notifications.isChecked())
+        adv_collapsible.addWidget(self.cb_enable_notifications)
+        
+        # 通知级别选择
+        notification_level_row = QtWidgets.QHBoxLayout()
+        notification_level_lab = QtWidgets.QLabel("通知级别:")
+        self.combo_notification_level = QtWidgets.QComboBox()
+        self.combo_notification_level.addItems(["全部通知", "仅重要", "仅错误"])
+        self.combo_notification_level.setCurrentIndex(0)
+        notification_level_row.addWidget(notification_level_lab)
+        notification_level_row.addWidget(self.combo_notification_level)
+        notification_level_row.addStretch()
+        adv_collapsible.addLayout(notification_level_row)
+        
+        # 说明文本
+        notification_hint = QtWidgets.QLabel("💡 全部=所有事件 | 仅重要=开始/完成/停止 | 仅错误=仅错误提示")
+        notification_hint.setStyleSheet("color:#757575; font-size:9px; padding:4px;")
+        notification_hint.setWordWrap(True)
+        adv_collapsible.addWidget(notification_hint)
+        
         v.addWidget(adv_collapsible)
         
         return card
@@ -1938,6 +2113,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         act_clear = menu.addAction("🗑️ 清空日志")
         act_clear.triggered.connect(self._clear_logs)
         menu.addSeparator()
+        # v2.2.0 新增：查看失败文件
+        act_view_failed = menu.addAction("📋 查看失败文件")
+        act_view_failed.triggered.connect(self._show_failed_files)
+        menu.addSeparator()
         act_disk_cleanup = menu.addAction("💿 磁盘清理")
         act_disk_cleanup.triggered.connect(self._show_disk_cleanup)
         menu.addSeparator()
@@ -1957,6 +2136,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
     def _logout(self):
         """退出登录"""
         self.current_role = 'guest'
+        # v2.2.0 更新权限管理器
+        if self.perm_manager:
+            self.perm_manager.set_role('guest')
+            self.perm_manager.set_running(self.is_running)
         self.role_label.setText("🔒 未登录")
         self.role_label.setStyleSheet("background:#FFF3E0; color:#E67E22; padding:6px 12px; border-radius:6px; font-weight:700;")
         self._update_ui_permissions()
@@ -2011,6 +2194,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         # 保存配置按钮
         self.btn_save.setEnabled(is_user_or_admin)
         
+        # v2.2.0 新增：协议选择框权限控制
+        # 未登录或运行中时禁用协议选择
+        if hasattr(self, 'combo_protocol'):
+            self.combo_protocol.setEnabled(is_user_or_admin and not self.is_running)
+        
         # 上传控制按钮：所有人都可以使用（包括未登录状态）
         # 开始按钮：未运行时启用
         self.btn_start.setEnabled(not self.is_running)
@@ -2025,6 +2213,143 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             self._toast('已清空日志', 'info')
         except Exception:
             pass
+    
+    def _show_failed_files(self):
+        """v2.2.0 显示失败文件清单对话框"""
+        # 获取失败文件列表
+        failed_files = []
+        if self.worker and hasattr(self.worker, 'failed_files'):
+            failed_files = self.worker.failed_files
+        
+        if not failed_files:
+            QtWidgets.QMessageBox.information(
+                self,
+                '失败文件清单',
+                '暂无失败文件记录。',
+                QtWidgets.QMessageBox.StandardButton.Ok  # type: ignore
+            )
+            return
+        
+        # 创建对话框
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(f"📋 失败文件清单 ({len(failed_files)} 个)")
+        dialog.setModal(True)
+        dialog.resize(900, 600)
+        
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.setSpacing(15)
+        
+        # 标题
+        title = QtWidgets.QLabel(f"共 {len(failed_files)} 个文件上传失败")
+        title.setStyleSheet("font-size:14pt; font-weight:bold; color:#1976D2;")
+        layout.addWidget(title)
+        
+        # 表格
+        table = QtWidgets.QTableWidget()
+        table.setColumnCount(5)
+        table.setHorizontalHeaderLabels(['类型', '文件名', '完整路径', '失败原因', '失败时间'])
+        table.setRowCount(len(failed_files))
+        table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)  # type: ignore
+        table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)  # type: ignore
+        
+        # v2.2.0 使用错误分类器
+        if CORE_MODULES_AVAILABLE:
+            from core.error_classifier import ErrorClassifier
+        
+        # 填充数据
+        for i, item in enumerate(failed_files):
+            error_msg = item.get('error', '')
+            
+            # 错误分类图标
+            if CORE_MODULES_AVAILABLE:
+                error_icon = ErrorClassifier.get_error_icon(error_msg)
+                error_type, _, _ = ErrorClassifier.classify_error(error_msg)
+            else:
+                error_icon = '❌'
+                error_type = 'unknown'
+            
+            table.setItem(i, 0, QtWidgets.QTableWidgetItem(f"{error_icon} {error_type}"))
+            table.setItem(i, 1, QtWidgets.QTableWidgetItem(item.get('filename', '')))
+            table.setItem(i, 2, QtWidgets.QTableWidgetItem(item.get('file', '')))
+            table.setItem(i, 3, QtWidgets.QTableWidgetItem(error_msg))
+            table.setItem(i, 4, QtWidgets.QTableWidgetItem(item.get('time', '')))
+        
+        # 调整列宽
+        table.setColumnWidth(0, 120)
+        table.setColumnWidth(1, 180)
+        table.setColumnWidth(2, 280)
+        table.setColumnWidth(3, 230)
+        table.setColumnWidth(4, 140)
+        
+        layout.addWidget(table)
+        
+        # 按钮区域
+        btn_layout = QtWidgets.QHBoxLayout()
+        
+        # 导出到CSV按钮
+        btn_export = QtWidgets.QPushButton("💾 导出到CSV")
+        btn_export.setStyleSheet("background:#1976D2; color:#FFFFFF; border:none; border-radius:8px; padding:8px 16px; font-weight:bold;")
+        btn_export.clicked.connect(lambda: self._export_failed_files_csv(failed_files))
+        
+        # 关闭按钮
+        btn_close = QtWidgets.QPushButton("关闭")
+        btn_close.setStyleSheet("background:#F1F5F9; color:#0F172A; border:1px solid #64B5F6; border-radius:8px; padding:8px 16px;")
+        btn_close.clicked.connect(dialog.accept)
+        
+        btn_layout.addStretch(1)
+        btn_layout.addWidget(btn_export)
+        btn_layout.addWidget(btn_close)
+        
+        layout.addLayout(btn_layout)
+        
+        dialog.exec() if hasattr(dialog, 'exec') else dialog.exec_()
+    
+    def _export_failed_files_csv(self, failed_files: list):
+        """v2.2.0 导出失败文件到CSV"""
+        try:
+            import csv
+            
+            # 选择保存路径
+            file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                '导出失败文件清单',
+                f'failed_files_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
+                'CSV Files (*.csv);;All Files (*)'
+            )
+            
+            if not file_path:
+                return
+            
+            # v2.2.0 使用错误分类器
+            if CORE_MODULES_AVAILABLE:
+                from core.error_classifier import ErrorClassifier
+            
+            # 写入CSV
+            with open(file_path, 'w', encoding='utf-8-sig', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['错误类型', '文件名', '完整路径', '失败原因', '失败时间'])
+                
+                for item in failed_files:
+                    error_msg = item.get('error', '')
+                    if CORE_MODULES_AVAILABLE:
+                        error_type, _, _ = ErrorClassifier.classify_error(error_msg)
+                    else:
+                        error_type = 'unknown'
+                    
+                    writer.writerow([
+                        error_type,
+                        item.get('filename', ''),
+                        item.get('file', ''),
+                        error_msg,
+                        item.get('time', '')
+                    ])
+            
+            self._toast(f'已导出 {len(failed_files)} 条记录', 'success')
+            self._append_log(f"✓ 失败文件清单已导出到: {file_path}")
+            
+        except Exception as e:
+            self._toast(f'导出失败: {e}', 'danger')
+            self._append_log(f"❌ 导出失败文件清单失败: {e}")
     
     def _show_disk_cleanup(self):
         """显示磁盘清理对话框"""
@@ -2092,6 +2417,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             if "用户" in role_text:
                 if pwd_hash == self.user_password:
                     self.current_role = 'user'
+                    # v2.2.0 更新权限管理器
+                    if self.perm_manager:
+                        self.perm_manager.set_role('user')
+                        self.perm_manager.set_running(self.is_running)
                     self.role_label.setText("👤 用户")
                     self.role_label.setStyleSheet("background:#E3F2FD; color:#1976D2; padding:6px 12px; border-radius:6px; font-weight:700;")
                     self._toast('用户登录成功！', 'success')
@@ -2102,6 +2431,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             elif "管理员" in role_text:
                 if pwd_hash == self.admin_password:
                     self.current_role = 'admin'
+                    # v2.2.0 更新权限管理器
+                    if self.perm_manager:
+                        self.perm_manager.set_role('admin')
+                        self.perm_manager.set_running(self.is_running)
                     self.role_label.setText("👑 管理员")
                     self.role_label.setStyleSheet("background:#DCFCE7; color:#166534; padding:6px 12px; border-radius:6px; font-weight:700;")
                     self._toast('管理员登录成功！', 'success')
@@ -2277,6 +2610,22 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             self._append_log("🔍 已启用智能去重")
         else:
             self._append_log("⚪ 已禁用智能去重")
+    
+    def _on_notification_toggled(self, checked: bool):
+        """v2.2.0 切换通知开关"""
+        self.enable_notifications = checked
+        # 启用/禁用级别选择
+        self.combo_notification_level.setEnabled(checked)
+        
+        if checked:
+            self._append_log("🔔 已启用系统通知")
+        else:
+            self._append_log("🔕 已禁用系统通知")
+    
+    def _get_notification_level_value(self) -> str:
+        """v2.2.0 获取通知级别配置值"""
+        level_map = {'全部通知': 'all', '仅重要': 'important', '仅错误': 'errors'}
+        return level_map.get(self.combo_notification_level.currentText(), 'all')
 
     def _choose_ftp_share(self):
         """选择 FTP 共享目录"""
@@ -3475,6 +3824,18 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
 
     def _save_config(self):
         """保存配置到文件"""
+        # v2.2.0 权限检查：仅登录用户可保存配置
+        if self.current_role == 'guest':
+            self._append_log("❌ 未登录用户无权保存配置")
+            self._toast('请先登录后再保存配置', 'warning')
+            return
+        
+        # v2.2.0 安全检查：上传运行中不允许保存配置
+        if self.is_running:
+            self._append_log("❌ 上传运行中不允许保存配置")
+            self._toast('请先停止上传再保存配置', 'warning')
+            return
+        
         self._append_log("💾 正在保存配置...")
         
         # 保留现有用户密码
@@ -3525,6 +3886,8 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             'auto_delete_check_interval': self.spin_auto_del_interval.value(),
             # v2.0 新增：FTP 协议配置
             'upload_protocol': self.upload_protocol,
+            # v2.2.0 新增：保存当前使用的协议模式
+            'current_protocol': self.current_protocol,
             'ftp_server': {
                 'host': self.ftp_server_host.text(),
                 'port': self.ftp_server_port.value(),
@@ -3549,6 +3912,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
                 'passive_mode': self.cb_client_passive.isChecked(),
                 'enable_tls': self.cb_client_tls.isChecked(),
             },
+            # v2.2.0 新增：通知配置
+            'enable_notifications': self.cb_enable_notifications.isChecked(),
+            'notification_level': self._get_notification_level_value(),
             'users': users,
         }
         try:
@@ -3674,6 +4040,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             }
             self.combo_protocol.setCurrentIndex(protocol_map.get(protocol, 0))
             
+            # v2.2.0 新增：加载上次使用的协议模式
+            saved_protocol = cfg.get('current_protocol', protocol)
+            self.current_protocol = saved_protocol
+            self._append_log(f"✓ 已加载上次协议模式: {saved_protocol}")
+            # 更新协议状态显示
+            self._update_protocol_status()
+            
             # 加载 FTP 服务器配置
             ftp_server = cfg.get('ftp_server', {})
             self.ftp_server_host.setText(ftp_server.get('host', '0.0.0.0'))
@@ -3705,6 +4078,28 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             # 保存已加载的配置（用于回退）
             self.saved_config = cfg.copy()
             self.config_modified = False
+            
+            # v2.2.0 新增：加载通知配置
+            self.enable_notifications = cfg.get('enable_notifications', True)
+            self.notification_level = cfg.get('notification_level', 'all')
+            self._append_log(f"✓ 通知配置: 开关={self.enable_notifications}, 级别={self.notification_level}")
+            
+            # v2.2.0 新增：加载通知配置
+            self.enable_notifications = cfg.get('enable_notifications', True)
+            self.notification_level = cfg.get('notification_level', 'all')
+            self._append_log(f"✓ 通知配置: 开关={self.enable_notifications}, 级别={self.notification_level}")
+            
+            # 更新UI
+            self.cb_enable_notifications.blockSignals(True)
+            self.cb_enable_notifications.setChecked(self.enable_notifications)
+            self.cb_enable_notifications.blockSignals(False)
+            self._set_checkbox_mark(self.cb_enable_notifications, self.enable_notifications)
+            
+            # 映射通知级别到UI
+            level_map = {'all': '全部通知', 'important': '仅重要', 'errors': '仅错误'}
+            level_text = level_map.get(self.notification_level, '全部通知')
+            self.combo_notification_level.setCurrentText(level_text)
+            self.combo_notification_level.setEnabled(self.enable_notifications)
             
             self._append_log(f"✓ 已加载配置: 源={cfg.get('source_folder', '未设置')}")
             self._append_log(f"✓ 已加载配置: 目标={cfg.get('target_folder', '未设置')}")
@@ -3758,50 +4153,76 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         if self.config_modified:
             self._append_log("⚠ 检测到配置已修改但未保存")
             
-            msg_box = QtWidgets.QMessageBox(self)
-            msg_box.setIcon(QtWidgets.QMessageBox.Icon.Question)
-            msg_box.setWindowTitle("配置未保存")
-            msg_box.setText("检测到路径配置已修改但未保存！")
-            msg_box.setInformativeText('是否保存当前配置并使用新路径上传？\n\n选择"是"：保存配置并使用新路径\n选择"否"：放弃修改，使用已保存的路径')
-            msg_box.setStandardButtons(
-                QtWidgets.QMessageBox.StandardButton.Yes | 
-                QtWidgets.QMessageBox.StandardButton.No |
-                QtWidgets.QMessageBox.StandardButton.Cancel
-            )
-            msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
-            
-            result = msg_box.exec() if hasattr(msg_box, 'exec') else msg_box.exec_()
-            
-            if result == QtWidgets.QMessageBox.StandardButton.Yes:
-                # 保存配置
-                self._append_log("✓ 用户选择保存配置")
-                self._save_config()
-            elif result == QtWidgets.QMessageBox.StandardButton.No:
-                # 回退到保存的配置
-                self._append_log("⚠ 用户选择放弃修改，恢复已保存的配置")
+            # v2.2.0 权限检查：未登录用户无权保存配置，直接恢复已保存配置
+            if self.current_role == 'guest':
+                self._append_log("⚠ 未登录用户无权保存配置，自动恢复已保存的配置")
                 if self.saved_config:
                     self.src_edit.setText(self.saved_config.get('source_folder', ''))
                     self.tgt_edit.setText(self.saved_config.get('target_folder', ''))
                     self.bak_edit.setText(self.saved_config.get('backup_folder', ''))
                     self.config_modified = False
-                    self._append_log("✓ 配置已恢复")
+                    self._append_log("✓ 配置已恢复到已保存状态")
                     
                     # 重新验证路径
                     is_valid, errors = self._validate_paths()
                     if not is_valid:
                         error_msg = "\n".join(errors)
-                        self._append_log(f"❌ 恢复的配置路径验证失败:\n{error_msg}")
-                        self._toast('已保存的配置路径无效', 'danger')
+                        self._append_log(f"❌ 已保存的配置路径验证失败:\n{error_msg}")
+                        self._toast('配置路径无效，请联系管理员', 'danger')
                         return
+                else:
+                    self._append_log("❌ 未找到已保存的配置")
+                    self._toast('无可用配置，请联系管理员', 'danger')
+                    return
             else:
-                # 取消
-                self._append_log("✗ 用户取消开始上传")
-                return
+                # 登录用户：询问是否保存配置
+                msg_box = QtWidgets.QMessageBox(self)
+                msg_box.setIcon(QtWidgets.QMessageBox.Icon.Question)
+                msg_box.setWindowTitle("配置未保存")
+                msg_box.setText("检测到路径配置已修改但未保存！")
+                msg_box.setInformativeText('是否保存当前配置并使用新路径上传？\n\n选择"是"：保存配置并使用新路径\n选择"否"：放弃修改，使用已保存的路径')
+                msg_box.setStandardButtons(
+                    QtWidgets.QMessageBox.StandardButton.Yes | 
+                    QtWidgets.QMessageBox.StandardButton.No |
+                    QtWidgets.QMessageBox.StandardButton.Cancel
+                )
+                msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
+                
+                result = msg_box.exec() if hasattr(msg_box, 'exec') else msg_box.exec_()
+                
+                if result == QtWidgets.QMessageBox.StandardButton.Yes:
+                    # 保存配置
+                    self._append_log("✓ 用户选择保存配置")
+                    self._save_config()
+                elif result == QtWidgets.QMessageBox.StandardButton.No:
+                    # 回退到保存的配置
+                    self._append_log("⚠ 用户选择放弃修改，恢复已保存的配置")
+                    if self.saved_config:
+                        self.src_edit.setText(self.saved_config.get('source_folder', ''))
+                        self.tgt_edit.setText(self.saved_config.get('target_folder', ''))
+                        self.bak_edit.setText(self.saved_config.get('backup_folder', ''))
+                        self.config_modified = False
+                        self._append_log("✓ 配置已恢复")
+                        
+                        # 重新验证路径
+                        is_valid, errors = self._validate_paths()
+                        if not is_valid:
+                            error_msg = "\n".join(errors)
+                            self._append_log(f"❌ 恢复的配置路径验证失败:\n{error_msg}")
+                            self._toast('已保存的配置路径无效', 'danger')
+                            return
+                else:
+                    # 取消
+                    self._append_log("✗ 用户取消开始上传")
+                    return
         
         self._append_log("✓ 配置验证通过，开始启动上传任务...")
         
         self.is_running = True
         self.is_paused = False
+        # v2.2.0 更新权限管理器运行状态
+        if self.perm_manager:
+            self.perm_manager.set_running(True)
         self.start_time = time.time()
         self._update_status_pill()
         # 按钮状态：开始禁用，暂停和停止启用
@@ -3969,9 +4390,20 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.worker.finished.connect(self._on_worker_finished, QtCore.Qt.ConnectionType.QueuedConnection)
         self.worker.status.connect(self._on_worker_status, QtCore.Qt.ConnectionType.QueuedConnection)
         self.worker.ask_user_duplicate.connect(self._on_ask_duplicate, QtCore.Qt.ConnectionType.QueuedConnection)
+        # v2.2.0 新增：连接错误通知信号
+        self.worker.upload_error.connect(self._on_upload_error, QtCore.Qt.ConnectionType.QueuedConnection)
+        # v2.2.0 新增：连接磁盘空间警告信号
+        self.worker.disk_warning.connect(self._on_disk_warning, QtCore.Qt.ConnectionType.QueuedConnection)
         self.worker_thread.start()
         self._toast('开始上传', 'success')
         self._append_log("✓ 上传任务已启动")
+        
+        # v2.2.0 新增：显示通知
+        self._show_notification(
+            "上传已开始",
+            f"正在上传文件到: {self.tgt_edit.text()}",
+            level='important'
+        )
 
     def _on_pause_resume(self):
         if not self.worker:
@@ -3982,12 +4414,24 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             self.worker.resume()
             self.btn_pause.setText("⏸ 暂停上传")
             self._toast('已恢复', 'info')
+            # v2.2.0 系统托盘通知
+            self._show_notification(
+                "上传已恢复",
+                "继续上传任务...",
+                level='info'
+            )
         else:
             # 暂停上传
             self.is_paused = True
             self.worker.pause()
             self.btn_pause.setText("▶ 恢复上传")
             self._toast('已暂停', 'warning')
+            # v2.2.0 系统托盘通知
+            self._show_notification(
+                "上传已暂停",
+                f"已上传: {self.uploaded}个文件",
+                level='info'
+            )
         self._update_status_pill()
 
     def _on_stop(self):
@@ -4014,6 +4458,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         
         self.is_running = False
         self.is_paused = False
+        # v2.2.0 更新权限管理器运行状态
+        if self.perm_manager:
+            self.perm_manager.set_running(False)
         self.worker.stop()
         # 立即恢复UI（不等待线程完全退出，提升响应速度）
         self._restore_ui_after_stop()
@@ -4077,6 +4524,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self._toast('已停止', 'danger')
         self._append_log("✓ 上传任务已停止")
         self._append_log("=" * 50)
+        
+        # v2.2.0 系统托盘通知
+        self._show_notification(
+            "上传已停止",
+            f"已上传: {self.uploaded}个 | 失败: {self.failed}个 | 跳过: {self.skipped}个",
+            level='important'
+        )
 
     def _on_stats(self, uploaded: int, failed: int, skipped: int, rate: str):
         self.lbl_uploaded.setValue(str(uploaded))
@@ -4291,8 +4745,44 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self._update_status_pill()
 
     def _on_worker_finished(self):
+        # v2.2.0 系统托盘通知：上传任务完成
+        if self.uploaded > 0 or self.failed > 0:
+            self._show_notification(
+                "上传任务完成",
+                f"成功: {self.uploaded}个 | 失败: {self.failed}个 | 跳过: {self.skipped}个",
+                level='important'
+            )
         # keep thread objects for GC safety
         pass
+    
+    def _on_upload_error(self, filename: str, error_message: str):
+        """v2.2.0 处理上传错误通知"""
+        # 限制错误通知频率（每个文件只通知一次最新错误）
+        if not hasattr(self, '_error_notified_files'):
+            self._error_notified_files = set()
+        
+        if filename not in self._error_notified_files:
+            self._error_notified_files.add(filename)
+            # 截断过长的错误信息
+            short_error = error_message[:50] + '...' if len(error_message) > 50 else error_message
+            self._show_notification(
+                "上传错误",
+                f"{filename}: {short_error}",
+                icon_type=get_qt_enum(QtWidgets.QSystemTrayIcon, 'Warning', 2),
+                level='error'
+            )
+        
+        # 定期清理已通知文件集合（避免内存泄漏）
+        if len(self._error_notified_files) > 100:
+            self._error_notified_files.clear()
+    
+    def _on_disk_warning(self, target_percent: float, backup_percent: float, threshold: int):
+        """v2.2.0 处理磁盘空间警告通知"""
+        self._show_notification(
+            "磁盘空间不足",
+            f"目标: {target_percent:.0f}% | 备份: {backup_percent:.0f}% | 阈值: {threshold}%",
+            icon_type=get_qt_enum(QtWidgets.QSystemTrayIcon, 'Warning', 2)
+        )
 
     def _append_log(self, line: str): 
         # If autoscroll is disabled, preserve the current scrollbar position.
@@ -4326,31 +4816,16 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
                 vsb.setValue(prev)
     
     def _write_log_to_file(self, line: str):
-        """将日志写入文件（异步，不阻塞主线程）"""
-        if self.log_file_path is None:
+        """v2.2.0 将日志写入文件（使用 logging 模块，支持日志轮转）"""
+        if not hasattr(self, 'logger') or self.logger is None:
             return
         
-        # 保存当前日志文件路径（避免在线程中访问 self）
-        current_log_path = self.log_file_path
-        app_dir = self.app_dir
-        
+        # 使用异步方式写入日志（不阻塞主线程）
         def write_log():
             try:
-                # 检查日期是否变更
-                today = datetime.datetime.now().strftime('%Y-%m-%d')
-                expected_filename = f'upload_{today}.txt'
-                
-                log_path = current_log_path
-                if log_path.name != expected_filename:
-                    # 创建新的日志文件
-                    log_dir = app_dir / "logs"
-                    log_dir.mkdir(parents=True, exist_ok=True)
-                    log_path = log_dir / expected_filename
-                
-                # 写入日志（带时间戳）
-                timestamp = datetime.datetime.now().strftime('%H:%M:%S')
-                with open(log_path, 'a', encoding='utf-8') as f:
-                    f.write(f"[{timestamp}] {line}\n")
+                # 使用 logger 写入（自动处理日志轮转）
+                if self.logger:  # type: ignore
+                    self.logger.info(line)  # type: ignore
             except Exception as e:
                 # 静默失败，不影响程序运行
                 print(f"写入日志文件失败: {e}")
@@ -4582,8 +5057,197 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
                 else:
                     self.lbl_backup_disk.setStyleSheet("QFrame{background:#F1F8E9; border-radius:8px;} QLabel{color:#33691E;}")
     
+    # ========== v2.2.0 新增：系统托盘功能 ==========
+    
+    def _init_tray_icon(self):
+        """初始化系统托盘图标和菜单"""
+        # 创建托盘图标
+        self.tray_icon = QtWidgets.QSystemTrayIcon(self)
+        
+        # 设置托盘图标（使用应用图标或默认图标）
+        icon = self.windowIcon()
+        if icon.isNull():
+            # 如果没有窗口图标，创建一个简单的图标
+            pixmap = QtGui.QPixmap(64, 64)
+            pixmap.fill(QtGui.QColor("#4CAF50"))
+            painter = QtGui.QPainter(pixmap)
+            painter.setPen(QtGui.QColor("white"))
+            font = QtGui.QFont("Arial", 24)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.drawText(pixmap.rect(), get_qt_enum(QtCore.Qt, 'AlignCenter', 0x0084), "图")
+            painter.end()
+            icon = QtGui.QIcon(pixmap)
+        
+        self.tray_icon.setIcon(icon)
+        self.tray_icon.setToolTip(APP_TITLE)
+        
+        # 创建托盘菜单
+        tray_menu = QtWidgets.QMenu()
+        
+        # 显示/隐藏主窗口
+        show_action = tray_menu.addAction("📱 显示主窗口")
+        show_action.triggered.connect(self._show_window)
+        
+        tray_menu.addSeparator()
+        
+        # 上传控制
+        self.tray_start_action = tray_menu.addAction("▶️ 开始上传")
+        self.tray_start_action.triggered.connect(self._on_start)
+        
+        self.tray_pause_action = tray_menu.addAction("⏸️ 暂停上传")
+        self.tray_pause_action.triggered.connect(self._on_pause_resume)
+        self.tray_pause_action.setEnabled(False)
+        
+        self.tray_stop_action = tray_menu.addAction("⏹️ 停止上传")
+        self.tray_stop_action.triggered.connect(self._on_stop)
+        self.tray_stop_action.setEnabled(False)
+        
+        tray_menu.addSeparator()
+        
+        # 统计信息
+        stats_action = tray_menu.addAction("📊 查看统计")
+        stats_action.triggered.connect(self._show_stats)
+        
+        tray_menu.addSeparator()
+        
+        # 退出程序
+        quit_action = tray_menu.addAction("❌ 退出程序")
+        quit_action.triggered.connect(self._quit_application)
+        
+        self.tray_icon.setContextMenu(tray_menu)
+        
+        # 双击托盘图标显示主窗口
+        self.tray_icon.activated.connect(self._on_tray_activated)
+        
+        # 显示托盘图标
+        self.tray_icon.show()
+        
+        self._append_log("✓ 系统托盘已初始化")
+    
+    def _on_tray_activated(self, reason):
+        """托盘图标激活事件"""
+        if reason == get_qt_enum(QtWidgets.QSystemTrayIcon, 'DoubleClick', 2):
+            self._show_window()
+    
+    def _show_window(self):
+        """显示主窗口"""
+        self.show()
+        # WindowMinimized=0x00000001, WindowActive=0x00000004
+        window_minimized = get_qt_enum(QtCore.Qt, 'WindowMinimized', 0x00000001)
+        window_active = get_qt_enum(QtCore.Qt, 'WindowActive', 0x00000004)
+        self.setWindowState(self.windowState() & ~window_minimized | window_active)
+        self.activateWindow()
+        self.raise_()
+    
+    def _show_stats(self):
+        """显示统计信息对话框"""
+        stats_text = f"""
+📊 上传统计信息
+
+运行状态: {'🟢 运行中' if self.is_running else '⚪ 已停止'}
+已上传: {self.uploaded} 个文件
+失败: {self.failed} 个文件
+跳过: {self.skipped} 个文件
+
+网络状态: {self._get_network_status_text()}
+协议模式: {self.current_protocol.upper()}
+"""
+        if self.is_running and self.start_time:
+            elapsed = time.time() - self.start_time
+            hours = int(elapsed // 3600)
+            minutes = int((elapsed % 3600) // 60)
+            seconds = int(elapsed % 60)
+            stats_text += f"运行时间: {hours:02d}:{minutes:02d}:{seconds:02d}\n"
+        
+        msg_box = QtWidgets.QMessageBox(self)
+        msg_box.setWindowTitle("统计信息")
+        msg_box.setText(stats_text)
+        msg_box.setIcon(get_qt_enum(QtWidgets.QMessageBox, 'Information', 1))  # type: ignore
+        msg_box.exec()
+    
+    def _get_network_status_text(self):
+        """获取网络状态文本"""
+        status_map = {
+            'good': '🟢 正常',
+            'unstable': '🟡 不稳定',
+            'disconnected': '🔴 已断开',
+            'unknown': '⚪ 未知'
+        }
+        return status_map.get(self.network_status, '⚪ 未知')
+    
+    def _quit_application(self):
+        """退出应用程序"""
+        btn_yes = get_qt_enum(QtWidgets.QMessageBox, 'Yes', 0x00004000)
+        btn_no = get_qt_enum(QtWidgets.QMessageBox, 'No', 0x00010000)
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            '确认退出',
+            '确定要退出程序吗？\n\n如果有上传任务正在运行，将会被中止。',
+            btn_yes | btn_no,  # type: ignore
+            btn_no  # type: ignore
+        )
+        
+        if reply == btn_yes:
+            if self.tray_icon:
+                self.tray_icon.hide()
+            QtWidgets.QApplication.quit()
+    
+    def _show_notification(self, title: str, message: str, icon_type=None, level: str = 'info'):
+        """显示系统通知
+        
+        Args:
+            title: 通知标题
+            message: 通知消息
+            icon_type: 图标类型
+            level: 通知级别 ('info', 'important', 'error')
+        """
+        # v2.2.0 检查通知开关（使用UI控件状态）
+        if hasattr(self, 'cb_enable_notifications') and not self.cb_enable_notifications.isChecked():
+            return
+        
+        # v2.2.0 检查通知级别过滤（使用UI控件状态）
+        if hasattr(self, 'combo_notification_level'):
+            notification_level = self._get_notification_level_value()
+            if notification_level == 'errors' and level != 'error':
+                return
+            if notification_level == 'important' and level == 'info':
+                return
+        
+        if self.show_notifications and self.tray_icon and self.tray_icon.isVisible():
+            if icon_type is None:
+                icon_type = get_qt_enum(QtWidgets.QSystemTrayIcon, 'Information', 1)
+            self.tray_icon.showMessage(title, message, icon_type, 3000)  # type: ignore
+    
+    def changeEvent(self, event):
+        """窗口状态改变事件"""
+        if event.type() == get_qt_enum(QtCore.QEvent, 'WindowStateChange', 105):
+            if self.minimize_to_tray and self.isMinimized():
+                # 最小化时隐藏到托盘
+                event.ignore()
+                self.hide()
+                if self.show_notifications:
+                    self._show_notification(
+                        "已最小化到托盘",
+                        "程序仍在后台运行\n双击托盘图标可恢复窗口"
+                    )
+                return
+        super().changeEvent(event)
+    
     def closeEvent(self, event):
         """窗口关闭事件，清理资源"""
+        # 如果启用托盘且不是真正退出，则隐藏到托盘
+        if self.minimize_to_tray and self.tray_icon and self.tray_icon.isVisible():
+            event.ignore()
+            self.hide()
+            if self.show_notifications:
+                self._show_notification(
+                    "程序已隐藏",
+                    "程序仍在后台运行\n右键托盘图标可选择退出"
+                )
+            return
+        
+        # 真正退出时清理资源
         # 停止上传任务
         if self.worker:
             self.worker.stop()
@@ -4600,6 +5264,21 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
+    
+    # v2.2.0 单实例检查
+    if CORE_MODULES_AVAILABLE:
+        instance_manager = SingleInstanceManager("ImageUploadTool_v2.2.0")
+        if instance_manager.is_already_running():
+            # 尝试激活已存在的窗口
+            instance_manager.activate_existing_instance()
+            QtWidgets.QMessageBox.information(
+                None,
+                '程序已运行',
+                '检测到程序已在运行中！\n\n将激活已有窗口，当前窗口即将关闭。',
+                QtWidgets.QMessageBox.StandardButton.Ok  # type: ignore
+            )
+            return 0
+    
     w = MainWindow()
     w.show()
     # 兼容 PyQt5 和 PySide6
