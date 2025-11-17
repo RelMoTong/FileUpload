@@ -39,7 +39,7 @@ except ImportError:
 # 统一访问 Qt 枚举（兼容 Qt6 的强类型枚举命名）
 QtEnum = QtCore.Qt
 
-APP_TITLE = "图片异步上传工具 (PyQt)"
+APP_TITLE = "图片异步上传工具"
 
 
 def get_app_dir() -> Path:
@@ -1667,12 +1667,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         if hasattr(self, 'btn_choose_tgt'):
             self.btn_choose_tgt.setEnabled(is_user_or_admin and not self.is_running)
         if hasattr(self, 'btn_choose_bak'):
-            self.btn_choose_bak.setEnabled(is_user_or_admin and not self.is_running)
+            # 备份浏览按钮：需要登录 + 未运行 + 备份已启用
+            self.btn_choose_bak.setEnabled(is_user_or_admin and not self.is_running and self.enable_backup)
         
-        # 2. 文件夹路径输入框：未登录时全部只读
+        # 2. 文件夹路径输入框：未登录时全部只读，备份路径还需要检查是否启用备份
         self.src_edit.setReadOnly(is_guest or self.is_running)
         self.tgt_edit.setReadOnly(is_guest or self.is_running)
-        self.bak_edit.setReadOnly(is_guest or self.is_running)
+        # 备份路径：未登录、运行中或备份未启用时都只读
+        self.bak_edit.setReadOnly(is_guest or self.is_running or not self.enable_backup)
         
         # 3. 备份启用复选框：仅登录用户可用
         if hasattr(self, 'cb_enable_backup'):
@@ -2276,6 +2278,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             self._append_log("⚪ 已禁用备份功能（上传成功后将删除源文件）")
         
         self._mark_config_modified()
+        
+        # 刷新UI权限状态，确保备份路径输入框和浏览按钮状态正确
+        self._update_ui_permissions()
     
     def _choose_source(self):
         """选择源文件夹"""
@@ -2494,9 +2499,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             self.cb_enable_backup.blockSignals(True)
             self.cb_enable_backup.setChecked(self.enable_backup)
             self.cb_enable_backup.blockSignals(False)
-            # 设置备份路径输入框启用状态
-            self.bak_edit.setEnabled(self.enable_backup)
-            self.btn_choose_bak.setEnabled(self.enable_backup)
+            # 备份路径输入框和浏览按钮的启用状态由 _update_ui_permissions() 统一管理
             
             self.spin_interval.setValue(int(cfg.get('upload_interval', 30)))
             self.spin_disk.setValue(int(cfg.get('disk_threshold_percent', 10)))
