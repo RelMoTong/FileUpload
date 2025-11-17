@@ -1511,8 +1511,8 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.bak_edit, self.btn_choose_bak = self._path_row(v, "备份文件夹", self._choose_backup)
         
         # v2.1.1 新增：启用备份复选框
-        self.cb_enable_backup = QtWidgets.QCheckBox("✓ 启用备份功能")
-        self.cb_enable_backup.setProperty('orig_text', "✓ 启用备份功能")
+        self.cb_enable_backup = QtWidgets.QCheckBox(" 启用备份功能")
+        self.cb_enable_backup.setProperty('orig_text', " 启用备份功能")
         self.cb_enable_backup.setChecked(True)
         self.cb_enable_backup.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_enable_backup, checked))
         self.cb_enable_backup.toggled.connect(self._on_backup_toggled)
