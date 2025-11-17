@@ -158,6 +158,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore
     ask_user_duplicate = Signal(object)  # payload dict: {'file': str, 'duplicate': str, 'event': threading.Event, 'result': dict}
     upload_error = Signal(str, str)      # v2.2.0 新增：filename, error_message
     disk_warning = Signal(float, float, int)  # v2.2.0 新增：target_percent, backup_percent, threshold
+    speed_update = Signal(float)         # v2.2.0 新增：实时上传速度（MB/s）
 
     def __init__(self, source: str, target: str, backup: str,
                  interval: int, mode: str, disk_threshold_percent: int, retry_count: int,
@@ -166,12 +167,12 @@ class UploadWorker(QtCore.QObject):  # type: ignore
                  duplicate_strategy: str = 'ask',
                  network_check_interval: int = 10, network_auto_pause: bool = True,
                  network_auto_resume: bool = True,
-                 enable_auto_delete: bool = False, auto_delete_folder: str = '',
-                 auto_delete_threshold: int = 80, auto_delete_keep_days: int = 10,
-                 auto_delete_check_interval: int = 300,
                  # v2.0 新增：协议相关参数
                  upload_protocol: str = 'smb',
-                 ftp_client_config: Optional[dict] = None):
+                 ftp_client_config: Optional[dict] = None,
+                 # v2.2.0 新增：限速参数
+                 enable_speed_limit: bool = False,
+                 speed_limit_mbps: int = 10):
         super().__init__()
         self.source = source
         self.target = target
@@ -190,16 +191,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore
         self.network_check_interval = network_check_interval
         self.network_auto_pause = network_auto_pause
         self.network_auto_resume = network_auto_resume
-        # 自动删除配置
-        self.enable_auto_delete = enable_auto_delete
-        self.auto_delete_folder = auto_delete_folder
-        self.auto_delete_threshold = auto_delete_threshold
-        self.auto_delete_keep_days = auto_delete_keep_days
-        self.auto_delete_check_interval = auto_delete_check_interval
         # v2.0 新增：协议配置
         self.upload_protocol = upload_protocol  # 'smb', 'ftp_client', 'both'
         self.ftp_client_config = ftp_client_config or {}
         self.ftp_client = None  # FTP客户端实例
+        # v2.2.0 新增：限速配置
+        self.enable_speed_limit = enable_speed_limit
+        self.speed_limit_mbps = speed_limit_mbps
+        self.speed_limit_bytes_per_sec = speed_limit_mbps * 1024 * 1024 if enable_speed_limit else 0
         
         self._running = False
         self._paused = False
@@ -633,8 +632,11 @@ class UploadWorker(QtCore.QObject):  # type: ignore
                     continue
                 # 创建目录
                 self._safe_path_operation(lambda: os.makedirs(os.path.dirname(tgt), exist_ok=True), timeout=3.0, default=False)
-                # 复制文件
-                copy_success = self._safe_path_operation(lambda: shutil.copy2(file_path, tgt) or True, timeout=10.0, default=False)
+                # v2.2.0 使用带限速的复制函数
+                if self.enable_speed_limit:
+                    copy_success = self._copy_file_with_speed_limit(file_path, tgt)
+                else:
+                    copy_success = self._safe_path_operation(lambda: shutil.copy2(file_path, tgt) or True, timeout=10.0, default=False)
                 if not copy_success:
                     raise Exception("文件复制超时")
                 # 成功
@@ -658,6 +660,80 @@ class UploadWorker(QtCore.QObject):  # type: ignore
                     item['next'] = time.time() + wait_time
                     self.retry_queue[file_path] = item
                     self.log.emit(f"⚠ 重试失败，已重新排队 ({item['count']}/{self.retry_count})，等待{wait_time}秒: {os.path.basename(file_path)}")
+
+    def _copy_file_with_speed_limit(self, src: str, dst: str, chunk_size: int = 1024 * 1024) -> bool:
+        """
+        v2.2.0 带限速的文件复制
+        src: 源文件路径
+        dst: 目标文件路径
+        chunk_size: 每次读写的块大小(默认1MB)
+        """
+        try:
+            file_size = os.path.getsize(src)
+            self.current_file_size = file_size
+            self.current_file_uploaded = 0
+            
+            # v2.2.0 新增：实时速度计算变量
+            speed_window = []  # 用于存储最近几次的速度采样
+            last_speed_update_time = time.time()
+            
+            with open(src, 'rb') as fsrc:
+                with open(dst, 'wb') as fdst:
+                    while self._running and not self._paused:
+                        # 记录块开始时间
+                        chunk_start_time = time.time()
+                        
+                        # 读取数据块
+                        chunk = fsrc.read(chunk_size)
+                        if not chunk:
+                            break
+                        
+                        # 写入数据块
+                        fdst.write(chunk)
+                        chunk_len = len(chunk)
+                        self.current_file_uploaded += chunk_len
+                        
+                        # 发送文件进度信号
+                        if file_size > 0:
+                            progress_percent = int((self.current_file_uploaded / file_size) * 100)
+                            self.file_progress.emit(os.path.basename(src), progress_percent)
+                        
+                        # v2.2.0 新增：计算实时速度（每块）
+                        chunk_time = time.time() - chunk_start_time
+                        if chunk_time > 0:
+                            instant_speed_mbps = (chunk_len / chunk_time) / (1024 * 1024)
+                            speed_window.append(instant_speed_mbps)
+                            # 保持最近5次采样
+                            if len(speed_window) > 5:
+                                speed_window.pop(0)
+                            
+                            # 每0.5秒更新一次速度显示
+                            if time.time() - last_speed_update_time > 0.5:
+                                avg_speed = sum(speed_window) / len(speed_window)
+                                self.speed_update.emit(avg_speed)
+                                last_speed_update_time = time.time()
+                        
+                        # 如果启用限速，计算需要等待的时间
+                        if self.enable_speed_limit and self.speed_limit_bytes_per_sec > 0:
+                            # 计算理论传输时间
+                            expected_time = chunk_len / self.speed_limit_bytes_per_sec
+                            # 计算实际传输时间
+                            actual_time = time.time() - chunk_start_time
+                            # 如果实际时间小于理论时间，需要等待
+                            if actual_time < expected_time:
+                                time.sleep(expected_time - actual_time)
+            
+            # 发送最终速度（0表示传输完成）
+            self.speed_update.emit(0.0)
+            
+            # 保留文件元数据
+            shutil.copystat(src, dst)
+            return True
+        except Exception as e:
+            self.log.emit(f"❌ 文件复制失败: {e}")
+            # 传输失败也重置速度
+            self.speed_update.emit(0.0)
+            return False
 
     def _log_failed_file(self, file_path: str, reason: str):
         """v2.2.0 记录失败文件到日志文件和内存列表"""
@@ -768,8 +844,15 @@ class UploadWorker(QtCore.QObject):  # type: ignore
             return False
     
     def _upload_via_smb(self, src: str, dst: str) -> bool:
-        """通过SMB协议上传文件（使用shutil.copy2）"""
+        """
+        通过SMB协议上传文件（使用shutil.copy2）
+        v2.2.0 支持限速
+        """
         try:
+            # v2.2.0 使用带限速的复制函数
+            if self.enable_speed_limit:
+                return self._copy_file_with_speed_limit(src, dst)
+            
             # 对于大文件，显示上传进度
             if self.current_file_size > 10 * 1024 * 1024:  # 大于10MB
                 self._copy_with_progress(src, dst)
@@ -789,7 +872,10 @@ class UploadWorker(QtCore.QObject):  # type: ignore
             return False
     
     def _upload_via_ftp(self, src: str, dst: str) -> bool:
-        """通过FTP协议上传文件"""
+        """
+        通过FTP协议上传文件
+        v2.2.0 支持限速和实时速度回调
+        """
         try:
             # 初始化FTP客户端（如果还未初始化）
             if not self.ftp_client and self.ftp_client_config:
@@ -811,8 +897,58 @@ class UploadWorker(QtCore.QObject):  # type: ignore
             remote_path = self.ftp_client_config.get('remote_path', '/upload')
             remote_file = f"{remote_path}/{rel_path}".replace('\\', '/')
             
-            # 上传文件
-            success = self.ftp_client.upload_file(Path(src), remote_file)
+            # v2.2.0 新增：FTP进度回调和速度计算
+            file_size = os.path.getsize(src)
+            self.current_file_size = file_size
+            self.current_file_uploaded = 0
+            
+            speed_window = []
+            last_speed_update_time = time.time()
+            last_bytes = 0
+            last_time = time.time()
+            
+            def ftp_progress_callback(uploaded_bytes: int, total_bytes: int):
+                """FTP上传进度回调"""
+                nonlocal last_bytes, last_time, speed_window, last_speed_update_time
+                
+                self.current_file_uploaded = uploaded_bytes
+                
+                # 发送文件进度信号
+                if total_bytes > 0:
+                    progress_percent = int((uploaded_bytes / total_bytes) * 100)
+                    self.file_progress.emit(os.path.basename(src), progress_percent)
+                
+                # 计算实时速度
+                current_time = time.time()
+                time_diff = current_time - last_time
+                if time_diff > 0:
+                    bytes_diff = uploaded_bytes - last_bytes
+                    instant_speed_mbps = (bytes_diff / time_diff) / (1024 * 1024)
+                    speed_window.append(instant_speed_mbps)
+                    if len(speed_window) > 5:
+                        speed_window.pop(0)
+                    
+                    # 每0.5秒更新一次速度显示
+                    if current_time - last_speed_update_time > 0.5:
+                        avg_speed = sum(speed_window) / len(speed_window) if speed_window else 0
+                        self.speed_update.emit(avg_speed)
+                        last_speed_update_time = current_time
+                    
+                    last_bytes = uploaded_bytes
+                    last_time = current_time
+            
+            # v2.2.0 上传文件（带限速参数）
+            success = self.ftp_client.upload_file(
+                Path(src), 
+                remote_file,
+                progress_callback=ftp_progress_callback,
+                enable_speed_limit=self.enable_speed_limit,
+                speed_limit_mbps=self.speed_limit_mbps
+            )
+            
+            # 重置速度显示
+            self.speed_update.emit(0.0)
+            
             if success:
                 self.log.emit(f"✓ FTP上传成功: {os.path.basename(remote_file)}")
                 return True
@@ -825,6 +961,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore
             # v2.0 增强：详细错误日志，包含异常类型
             error_type = type(e).__name__
             self.log.emit(f"❌ [FTP-ERROR] {error_type}: {e}")
+            # 重置速度显示
+            self.speed_update.emit(0.0)
             return False
     
     def _calculate_file_hash(self, file_path: str, buffer_size: int = 8192) -> str:
@@ -2056,6 +2194,42 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         notification_hint.setWordWrap(True)
         adv_collapsible.addWidget(notification_hint)
         
+        # 添加分隔线
+        adv_collapsible.addWidget(self._hline())
+        
+        # v2.2.0 新增：上传限速设置
+        speed_limit_sub_lab = QtWidgets.QLabel("⚡ 上传限速")
+        speed_limit_sub_lab.setStyleSheet("color:#666; font-size:10px; font-weight:700;")
+        adv_collapsible.addWidget(speed_limit_sub_lab)
+        
+        # 限速开关
+        self.cb_enable_speed_limit = QtWidgets.QCheckBox("🚦 启用速度限制")
+        self.cb_enable_speed_limit.setProperty('orig_text', "🚦 启用速度限制")
+        self.cb_enable_speed_limit.setChecked(False)
+        self.cb_enable_speed_limit.toggled.connect(self._on_speed_limit_toggled)
+        self.cb_enable_speed_limit.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_enable_speed_limit, checked))
+        self._set_checkbox_mark(self.cb_enable_speed_limit, self.cb_enable_speed_limit.isChecked())
+        adv_collapsible.addWidget(self.cb_enable_speed_limit)
+        
+        # 速度限制值设置
+        speed_limit_row = QtWidgets.QHBoxLayout()
+        speed_limit_lab = QtWidgets.QLabel("最大速度:")
+        self.spin_speed_limit = QtWidgets.QSpinBox()
+        self.spin_speed_limit.setRange(1, 1000)
+        self.spin_speed_limit.setValue(10)
+        self.spin_speed_limit.setSuffix(" MB/s")
+        self.spin_speed_limit.setEnabled(False)
+        speed_limit_row.addWidget(speed_limit_lab)
+        speed_limit_row.addWidget(self.spin_speed_limit)
+        speed_limit_row.addStretch()
+        adv_collapsible.addLayout(speed_limit_row)
+        
+        # 说明文本
+        speed_limit_hint = QtWidgets.QLabel("💡 限制上传速度可避免占用过多带宽，不勾选则不限速")
+        speed_limit_hint.setStyleSheet("color:#757575; font-size:9px; padding:4px;")
+        speed_limit_hint.setWordWrap(True)
+        adv_collapsible.addWidget(speed_limit_hint)
+        
         v.addWidget(adv_collapsible)
         
         return card
@@ -2146,65 +2320,67 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self._toast('已退出登录', 'info')
 
     def _update_ui_permissions(self):
-        """根据当前角色更新UI控件的启用状态"""
-        self._append_log(f"🔐 更新权限: 当前角色={self.current_role}, 运行状态={'运行中' if self.is_running else '已停止'}")
+        """
+        v2.2.0 根据当前角色和运行状态更新UI控件的启用状态
         
-        # 未登录：禁用所有配置相关控件
+        权限规则：
+        - Guest（未登录）：可查看源路径、启动/暂停/停止上传
+        - User/Admin（已登录）：可配置所有参数并保存
+        - 运行中：路径不可编辑，部分配置项可查看但不可保存
+        """
         is_guest = self.current_role == 'guest'
         is_user_or_admin = self.current_role in ['user', 'admin']
         
-        # 文件夹选择按钮：源文件夹所有人可用，目标和备份文件夹仅登录用户可用
-        # 未登录时：禁用目标文件夹和备份文件夹的浏览按钮
+        self._append_log(f"🔐 更新权限: 角色={self.current_role}, 运行={'是' if self.is_running else '否'}, 暂停={'是' if self.is_paused else '否'}")
+        
+        # ============ 路径配置区域 ============
+        # 源路径：任何角色都可以配置（未运行时）
+        self.src_edit.setReadOnly(self.is_running)
         if hasattr(self, 'btn_choose_src'):
-            # 源文件夹浏览按钮：所有人可用（除非运行中）
-            self.btn_choose_src.setEnabled(is_user_or_admin and not self.is_running)
+            self.btn_choose_src.setEnabled(not self.is_running)
+        
+        # 目标路径：需要登录且未运行
+        self.tgt_edit.setReadOnly(is_guest or self.is_running)
         if hasattr(self, 'btn_choose_tgt'):
-            # 目标文件夹浏览按钮：登录用户且未运行中可用
             self.btn_choose_tgt.setEnabled(is_user_or_admin and not self.is_running)
+        
+        # 备份路径：需要登录、未运行且备份已启用
+        self.bak_edit.setReadOnly(is_guest or self.is_running or not self.enable_backup)
         if hasattr(self, 'btn_choose_bak'):
-            # v2.1.1：备份浏览按钮：需要登录 + 未运行 + 备份已启用
             self.btn_choose_bak.setEnabled(is_user_or_admin and not self.is_running and self.enable_backup)
         
-        # 输入框：未登录时源文件夹可编辑，目标和备份文件夹只读
-        # 运行中时全部只读
-        self.src_edit.setReadOnly(is_guest or self.is_running)
-        self.tgt_edit.setReadOnly(is_guest or self.is_running)
-        # v2.1.1：备份路径：未登录、运行中或备份未启用时都只读
-        self.bak_edit.setReadOnly(is_guest or self.is_running or not self.enable_backup)
-
-        # v2.1.1：备份启用复选框：仅登录用户可用
+        # 备份启用开关：需要登录且未运行
         if hasattr(self, 'cb_enable_backup'):
             self.cb_enable_backup.setEnabled(is_user_or_admin and not self.is_running)
-
-        # 设置项：未登录时禁用
-        self.spin_interval.setEnabled(is_user_or_admin)
-        self.spin_disk.setEnabled(is_user_or_admin)
-        self.spin_retry.setEnabled(is_user_or_admin)
-        # 磁盘检查间隔：未登录时禁用
-        self.spin_disk_check.setEnabled(is_user_or_admin)
+        
+        # ============ 配置参数区域 ============
+        # 所有配置项：需要登录（运行中可查看但通过保存按钮禁用来阻止保存）
+        config_enabled = is_user_or_admin
+        
+        self.spin_interval.setEnabled(config_enabled)
+        self.spin_disk.setEnabled(config_enabled)
+        self.spin_retry.setEnabled(config_enabled)
+        self.spin_disk_check.setEnabled(config_enabled)
         
         # 文件类型复选框
         for cb in self.cb_ext.values():
-            cb.setEnabled(is_user_or_admin)
+            cb.setEnabled(config_enabled)
         
-        # 开机自启和自动运行复选框（用户和管理员均可设置）
-        self.cb_auto_start_windows.setEnabled(is_user_or_admin)
-        self.cb_auto_run_on_startup.setEnabled(is_user_or_admin)
+        # 开机自启和自动运行
+        self.cb_auto_start_windows.setEnabled(config_enabled)
+        self.cb_auto_run_on_startup.setEnabled(config_enabled)
         
-        # 保存配置按钮
-        self.btn_save.setEnabled(is_user_or_admin)
-        
-        # v2.2.0 新增：协议选择框权限控制
-        # 未登录或运行中时禁用协议选择
+        # 协议选择：需要登录且未运行
         if hasattr(self, 'combo_protocol'):
             self.combo_protocol.setEnabled(is_user_or_admin and not self.is_running)
         
-        # 上传控制按钮：所有人都可以使用（包括未登录状态）
-        # 开始按钮：未运行时启用
+        # 保存配置按钮：需要登录且未运行
+        self.btn_save.setEnabled(is_user_or_admin and not self.is_running)
+        
+        # ============ 上传控制按钮 ============
+        # 任何角色都可以控制上传
         self.btn_start.setEnabled(not self.is_running)
-        # 暂停按钮：正在运行时启用
         self.btn_pause.setEnabled(self.is_running)
-        # 停止按钮：正在运行时启用
         self.btn_stop.setEnabled(self.is_running)
 
     def _clear_logs(self):
@@ -2622,6 +2798,15 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         else:
             self._append_log("🔕 已禁用系统通知")
     
+    def _on_speed_limit_toggled(self, checked: bool):
+        """v2.2.0 切换上传限速开关"""
+        self.spin_speed_limit.setEnabled(checked)
+        if checked:
+            speed = self.spin_speed_limit.value()
+            self._append_log(f"🚦 已启用上传限速: {speed} MB/s")
+        else:
+            self._append_log("⚡ 已禁用上传限速")
+    
     def _get_notification_level_value(self) -> str:
         """v2.2.0 获取通知级别配置值"""
         level_map = {'全部通知': 'all', '仅重要': 'important', '仅错误': 'errors'}
@@ -2932,7 +3117,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.lbl_uploaded = self._chip("已上传", "0", "#E3F2FD", "#1976D2")
         self.lbl_failed = self._chip("失败", "0", "#FFEBEE", "#C62828")
         self.lbl_skipped = self._chip("跳过", "0", "#FFF9C3", "#F57F17")
-        self.lbl_rate = self._chip("速率", "0 MB/s", "#E8F5E9", "#2E7D32")
+        self.lbl_rate = self._chip("平均速率", "0 MB/s", "#E8F5E9", "#2E7D32")
+        # v2.2.0 新增：实时速度芯片
+        self.lbl_current_speed = self._chip("实时速度", "0 MB/s", "#E0F2F1", "#00796B")
         self.lbl_queue = self._chip("归档队列", "0", "#F3E5F5", "#6A1B9A")
         self.lbl_time = self._chip("运行时间", "00:00:00", "#FFF3E0", "#E65100")
         # 新增：磁盘空间芯片
@@ -2947,7 +3134,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         
         # 4列布局，在高分辨率下显示更好
         for i, w in enumerate([self.lbl_uploaded, self.lbl_failed, self.lbl_skipped, 
-                               self.lbl_rate, self.lbl_queue, self.lbl_time,
+                               self.lbl_rate, self.lbl_current_speed, self.lbl_queue, self.lbl_time,
                                self.lbl_target_disk, self.lbl_backup_disk, self.lbl_network,
                                self.lbl_protocol, self.lbl_ftp_server, self.lbl_ftp_client]):
             grid.addWidget(w, i//4, i%4)
@@ -3878,14 +4065,8 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             'network_check_interval': self.spin_network_check.value(),
             'network_auto_pause': self.cb_network_auto_pause.isChecked(),
             'network_auto_resume': self.cb_network_auto_resume.isChecked(),
-            # v1.9 新增：自动删除
-            'enable_auto_delete': self.cb_enable_auto_delete.isChecked(),
-            'auto_delete_folder': self.auto_del_folder_edit.text(),
-            'auto_delete_threshold': self.spin_auto_del_threshold.value(),
-            'auto_delete_keep_days': self.spin_auto_del_keep_days.value(),
-            'auto_delete_check_interval': self.spin_auto_del_interval.value(),
             # v2.0 新增：FTP 协议配置
-            'upload_protocol': self.upload_protocol,
+            'upload_protocol': self.current_protocol,  # v2.2.0 修复：使用 current_protocol
             # v2.2.0 新增：保存当前使用的协议模式
             'current_protocol': self.current_protocol,
             'ftp_server': {
@@ -3915,11 +4096,16 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             # v2.2.0 新增：通知配置
             'enable_notifications': self.cb_enable_notifications.isChecked(),
             'notification_level': self._get_notification_level_value(),
+            # v2.2.0 新增：限速配置
+            'enable_speed_limit': self.cb_enable_speed_limit.isChecked(),
+            'speed_limit_mbps': self.spin_speed_limit.value(),
             'users': users,
         }
         try:
+            self._append_log(f"📝 准备写入配置文件: {path}")
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(cfg, f, indent=2, ensure_ascii=False)
+            self._append_log(f"✓ 配置文件已写入磁盘")
             
             # 保存成功后清除修改标记并更新保存的配置
             self.config_modified = False
@@ -3928,7 +4114,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             self._append_log("✓ 配置已成功保存到文件")
             self._toast('配置已保存', 'success')
         except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
             self._append_log(f"❌ 配置保存失败: {e}")
+            self._append_log(f"详细错误:\n{error_details}")
             self._toast(f'保存失败: {e}', 'danger')
 
     def _load_config(self):
@@ -4007,29 +4196,6 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             self.cb_network_auto_pause.setChecked(self.network_auto_pause)
             self.cb_network_auto_resume.setChecked(self.network_auto_resume)
             
-            # v1.9 新增：加载自动删除配置
-            self.enable_auto_delete = cfg.get('enable_auto_delete', False)
-            self.auto_delete_folder = cfg.get('auto_delete_folder', '')
-            self.auto_delete_threshold = cfg.get('auto_delete_threshold', 80)
-            self.auto_delete_keep_days = cfg.get('auto_delete_keep_days', 10)
-            self.auto_delete_check_interval = cfg.get('auto_delete_check_interval', 300)
-            
-            self.cb_enable_auto_delete.blockSignals(True)
-            self.cb_enable_auto_delete.setChecked(self.enable_auto_delete)
-            self.cb_enable_auto_delete.blockSignals(False)
-            
-            self.auto_del_folder_edit.setText(self.auto_delete_folder)
-            self.spin_auto_del_threshold.setValue(self.auto_delete_threshold)
-            self.spin_auto_del_keep_days.setValue(self.auto_delete_keep_days)
-            self.spin_auto_del_interval.setValue(self.auto_delete_check_interval)
-            
-            # 根据开关状态启用/禁用子选项
-            self.auto_del_folder_edit.setEnabled(self.enable_auto_delete)
-            self.btn_choose_auto_del.setEnabled(self.enable_auto_delete)
-            self.spin_auto_del_threshold.setEnabled(self.enable_auto_delete)
-            self.spin_auto_del_keep_days.setEnabled(self.enable_auto_delete)
-            self.spin_auto_del_interval.setEnabled(self.enable_auto_delete)
-            
             # v2.0 新增：加载协议配置
             protocol = cfg.get('upload_protocol', 'smb')
             protocol_map = {
@@ -4084,11 +4250,6 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             self.notification_level = cfg.get('notification_level', 'all')
             self._append_log(f"✓ 通知配置: 开关={self.enable_notifications}, 级别={self.notification_level}")
             
-            # v2.2.0 新增：加载通知配置
-            self.enable_notifications = cfg.get('enable_notifications', True)
-            self.notification_level = cfg.get('notification_level', 'all')
-            self._append_log(f"✓ 通知配置: 开关={self.enable_notifications}, 级别={self.notification_level}")
-            
             # 更新UI
             self.cb_enable_notifications.blockSignals(True)
             self.cb_enable_notifications.setChecked(self.enable_notifications)
@@ -4100,6 +4261,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             level_text = level_map.get(self.notification_level, '全部通知')
             self.combo_notification_level.setCurrentText(level_text)
             self.combo_notification_level.setEnabled(self.enable_notifications)
+            
+            # v2.2.0 新增：加载限速配置
+            self.cb_enable_speed_limit.setChecked(cfg.get('enable_speed_limit', False))
+            self.spin_speed_limit.setValue(cfg.get('speed_limit_mbps', 10))
+            self.spin_speed_limit.setEnabled(self.cb_enable_speed_limit.isChecked())
             
             self._append_log(f"✓ 已加载配置: 源={cfg.get('source_folder', '未设置')}")
             self._append_log(f"✓ 已加载配置: 目标={cfg.get('target_folder', '未设置')}")
@@ -4368,15 +4534,12 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             self.spin_network_check.value(),
             self.cb_network_auto_pause.isChecked(),
             self.cb_network_auto_resume.isChecked(),
-            # v1.9 新增：自动删除参数
-            self.cb_enable_auto_delete.isChecked(),
-            self.auto_del_folder_edit.text(),
-            self.spin_auto_del_threshold.value(),
-            self.spin_auto_del_keep_days.value(),
-            self.spin_auto_del_interval.value(),
             # v2.0 新增：协议参数
             self.current_protocol,
-            self.ftp_client_config if self.current_protocol in ['ftp_client', 'both'] else None
+            self.ftp_client_config if self.current_protocol in ['ftp_client', 'both'] else None,
+            # v2.2.0 新增：限速参数
+            self.cb_enable_speed_limit.isChecked(),
+            self.spin_speed_limit.value()
         )
         self.worker_thread = QtCore.QThread(self)
         self.worker.moveToThread(self.worker_thread)
@@ -4394,6 +4557,8 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.worker.upload_error.connect(self._on_upload_error, QtCore.Qt.ConnectionType.QueuedConnection)
         # v2.2.0 新增：连接磁盘空间警告信号
         self.worker.disk_warning.connect(self._on_disk_warning, QtCore.Qt.ConnectionType.QueuedConnection)
+        # v2.2.0 新增：连接实时速度更新信号
+        self.worker.speed_update.connect(self._on_speed_update, QtCore.Qt.ConnectionType.QueuedConnection)
         self.worker_thread.start()
         self._toast('开始上传', 'success')
         self._append_log("✓ 上传任务已启动")
@@ -4493,14 +4658,21 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         # 恢复路径编辑权限和按钮状态：与权限策略一致
         # 上传控制按钮：所有人都可以使用（包括未登录状态）
         is_user_or_admin = self.current_role in ['user', 'admin']
-        self.src_edit.setReadOnly(not is_user_or_admin)
+        # 源路径：停止后任何角色可编辑
+        self.src_edit.setReadOnly(False)
+        # 目标/备份：需登录
         self.tgt_edit.setReadOnly(not is_user_or_admin)
-        self.bak_edit.setReadOnly(not is_user_or_admin)
-        for btn in [self.src_edit.parent().findChild(QtWidgets.QPushButton),
-                    self.tgt_edit.parent().findChild(QtWidgets.QPushButton),
-                    self.bak_edit.parent().findChild(QtWidgets.QPushButton)]:
-            if btn and btn.text() == "浏览":
-                btn.setEnabled(is_user_or_admin)
+        self.bak_edit.setReadOnly(not is_user_or_admin or not self.enable_backup)
+        # “浏览”按钮启用：源对所有人、目标/备份需登录
+        try:
+            if hasattr(self, 'btn_choose_src'):
+                self.btn_choose_src.setEnabled(True)
+            if hasattr(self, 'btn_choose_tgt'):
+                self.btn_choose_tgt.setEnabled(is_user_or_admin)
+            if hasattr(self, 'btn_choose_bak'):
+                self.btn_choose_bak.setEnabled(is_user_or_admin and self.enable_backup)
+        except Exception:
+            pass
 
         # 关键：停止后“开始”立刻可点（不受角色限制）
         self.btn_start.setEnabled(True)
@@ -4783,6 +4955,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             f"目标: {target_percent:.0f}% | 备份: {backup_percent:.0f}% | 阈值: {threshold}%",
             icon_type=get_qt_enum(QtWidgets.QSystemTrayIcon, 'Warning', 2)
         )
+    
+    def _on_speed_update(self, speed_mbps: float):
+        """v2.2.0 更新实时上传速度显示"""
+        if speed_mbps > 0:
+            self.lbl_current_speed.setValue(f"{speed_mbps:.2f} MB/s")
+        else:
+            self.lbl_current_speed.setValue("0 MB/s")
 
     def _append_log(self, line: str): 
         # If autoscroll is disabled, preserve the current scrollbar position.

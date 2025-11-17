@@ -423,7 +423,9 @@ class FTPClientUploader:
         self,
         local_path: Path,
         remote_path: Optional[str] = None,
-        progress_callback: Optional[Callable[[int, int], None]] = None
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        enable_speed_limit: bool = False,
+        speed_limit_mbps: int = 10
     ) -> bool:
         """
         上传单个文件
@@ -432,6 +434,8 @@ class FTPClientUploader:
             local_path: 本地文件路径
             remote_path: 远程文件路径（可选，默认使用配置中的路径）
             progress_callback: 进度回调函数 callback(uploaded_bytes, total_bytes)
+            enable_speed_limit: v2.2.0 是否启用速度限制
+            speed_limit_mbps: v2.2.0 速度限制（MB/s）
         
         Returns:
             bool: 上传是否成功
@@ -459,12 +463,26 @@ class FTPClientUploader:
             file_size = local_file.stat().st_size
             uploaded_bytes = 0
             
-            # 定义进度回调
+            # v2.2.0 限速相关变量
+            speed_limit_bytes_per_sec = speed_limit_mbps * 1024 * 1024 if enable_speed_limit else 0
+            last_chunk_time = time.time()
+            
+            # 定义进度回调（带限速）
             def callback(block):
-                nonlocal uploaded_bytes
+                nonlocal uploaded_bytes, last_chunk_time
+                chunk_start = last_chunk_time
                 uploaded_bytes += len(block)
                 if progress_callback:
                     progress_callback(uploaded_bytes, file_size)
+                
+                # v2.2.0 限速：在每个块传输后等待
+                if enable_speed_limit and speed_limit_bytes_per_sec > 0:
+                    expected_time = len(block) / speed_limit_bytes_per_sec
+                    actual_time = time.time() - chunk_start
+                    if actual_time < expected_time:
+                        time.sleep(expected_time - actual_time)
+                
+                last_chunk_time = time.time()
             
             # 上传文件（二进制模式）
             if self.ftp:
