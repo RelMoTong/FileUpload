@@ -2,7 +2,7 @@
 setlocal enableextensions enabledelayedexpansion
 
 :: ========================================
-::  图片异步上传工具 v2.1.2 - 一键打包脚本
+::  图片异步上传工具 v2.1.3 - 一键打包脚本
 :: ========================================
 :: 功能：生成免安装的 .exe 可执行文件
 :: 日期：2025-11-17
@@ -13,7 +13,7 @@ chcp 65001 >nul 2>&1
 
 echo.
 echo ========================================
-echo   图片异步上传工具 v2.1.2 - 打包程序
+echo   图片异步上传工具 v2.1.3 - 打包程序
 echo ========================================
 echo.
 echo [信息] 开始准备打包环境...
@@ -155,7 +155,7 @@ echo.
 :: ========================================
 echo [5/7] 配置打包参数...
 set APP_NAME=图片异步上传工具
-set VERSION=2.1.2
+set VERSION=2.1.3
 set OUTPUT_NAME=%APP_NAME%_v%VERSION%
 set DIST_DIR=dist-%VERSION%
 set ENTRY=pyqt_app.py
