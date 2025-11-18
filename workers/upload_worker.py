@@ -16,18 +16,25 @@ import shutil
 import hashlib
 import threading
 from pathlib import Path
-from typing import Optional, Callable, List, Tuple
+from typing import Optional, Callable, List, Tuple, TYPE_CHECKING
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
-try:
-    from PySide6 import QtCore
+# 跨版本Qt兼容
+if TYPE_CHECKING:
     from PySide6.QtCore import Signal, QObject
-except ImportError:
-    from PyQt5 import QtCore
-    from PyQt5.QtCore import pyqtSignal as Signal, QObject
+else:
+    try:
+        from PySide6 import QtCore
+        from PySide6.QtCore import Signal, QObject
+    except ImportError:
+        try:
+            from PyQt5 import QtCore  # type: ignore
+            from PyQt5.QtCore import pyqtSignal as Signal, QObject  # type: ignore
+        except ImportError:
+            raise ImportError("需要安装PySide6或PyQt5")
 
 
-class UploadWorker(QObject):
+class UploadWorker(QObject):  # type: ignore
     """上传Worker - 纯IO操作层"""
     
     # 信号定义
