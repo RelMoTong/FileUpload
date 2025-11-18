@@ -298,3 +298,80 @@ class UploadManager:
     def on_progress_updated(self, callback: Callable[[float, str], None]):
         """注册进度更新回调"""
         self._on_progress_updated = callback
+    
+    # ============ 简化的控制接口（适配Worker） ============
+    
+    def pause(self):
+        """暂停上传"""
+        if self._status == UploadStatus.RUNNING:
+            self.set_status(UploadStatus.PAUSED)
+    
+    def resume(self):
+        """恢复上传"""
+        if self._status == UploadStatus.PAUSED:
+            self.set_status(UploadStatus.RUNNING)
+    
+    def stop(self):
+        """停止上传"""
+        self.end_session()
+    
+    def mark_task_success(self, task: UploadTask):
+        """标记任务成功（简化接口）"""
+        self.complete_task(task, success=True)
+    
+    def mark_task_failed(self, task: UploadTask, error_msg: str):
+        """标记任务失败（简化接口）"""
+        self.complete_task(task, success=False, error=error_msg)
+    
+    def mark_task_skipped(self, task: UploadTask, reason: str):
+        """标记任务跳过（简化接口）"""
+        self.skip_task(task, reason)
+    
+    def on_upload_started(self, callback: Callable[[], None]):
+        """注册上传开始回调"""
+        # 使用status_changed回调来实现
+        original_callback = self._on_status_changed
+        
+        def wrapper(status: UploadStatus):
+            if status == UploadStatus.RUNNING:
+                callback()
+            if original_callback:
+                original_callback(status)
+        
+        self._on_status_changed = wrapper
+    
+    def on_upload_completed(self, callback: Callable[[UploadResult], None]):
+        """注册上传完成回调"""
+        original_callback = self._on_status_changed
+        
+        def wrapper(status: UploadStatus):
+            if status in (UploadStatus.COMPLETED, UploadStatus.FAILED):
+                callback(self._result)
+            if original_callback:
+                original_callback(status)
+        
+        self._on_status_changed = wrapper
+    
+    def on_upload_failed(self, callback: Callable[[str], None]):
+        """注册上传失败回调"""
+        original_callback = self._on_status_changed
+        
+        def wrapper(status: UploadStatus):
+            if status == UploadStatus.FAILED:
+                error_msg = f"上传失败：{self._result.failed_count}个文件失败"
+                callback(error_msg)
+            if original_callback:
+                original_callback(status)
+        
+        self._on_status_changed = wrapper
+    
+    def on_upload_progress(self, callback: Callable[[int, int], None]):
+        """注册上传进度回调"""
+        original_callback = self._on_progress_updated
+        
+        def wrapper(progress: float, current_file: str):
+            callback(self._result.processed_files, self._result.total_files)
+            if original_callback:
+                original_callback(progress, current_file)
+        
+        self._on_progress_updated = wrapper

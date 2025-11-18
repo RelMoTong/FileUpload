@@ -46,10 +46,10 @@ class CleanupRule:
 @dataclass
 class CleanupResult:
     """清理结果"""
-    deleted_files: List[str] = None
+    deleted_files: List[str] = None  # type: ignore
     deleted_size: int = 0  # 删除的总大小（字节）
     freed_space: int = 0  # 释放的磁盘空间（字节）
-    errors: List[Tuple[str, str]] = None  # 错误列表 (file, error)
+    errors: List[Tuple[str, str]] = None  # type: ignore  # 错误列表 (file, error)
     
     def __post_init__(self):
         if self.deleted_files is None:
@@ -143,6 +143,8 @@ class CleanupManager:
         
         try:
             rule = self._cleanup_rule
+            if rule is None:
+                return result
             
             # 收集需要清理的文件
             files_to_delete = self._collect_files_for_cleanup(rule)
@@ -233,7 +235,7 @@ class CleanupManager:
         Returns:
             (file_count, total_size_bytes)
         """
-        if not self.has_valid_rule():
+        if not self.has_valid_rule() or self._cleanup_rule is None:
             return 0, 0
         
         files_to_delete = self._collect_files_for_cleanup(self._cleanup_rule)
