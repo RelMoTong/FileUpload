@@ -96,6 +96,10 @@ class ProtocolClient:
     
     def _connect_ftp(self) -> Tuple[bool, Optional[str]]:
         """连接 FTP 服务器"""
+        # 检查配置是否完整
+        if not self._ftp_host or not self._ftp_user or not self._ftp_password:
+            return False, "FTP配置不完整"
+        
         try:
             self.set_connection_status(ConnectionStatus.CONNECTING)
             
@@ -229,6 +233,10 @@ class ProtocolClient:
             if not success:
                 return False, error
         
+        # 再次检查客户端是否已连接
+        if not self._ftp_client:
+            return False, "FTP客户端未初始化"
+        
         try:
             # 确保远程目录存在
             remote_dir = os.path.dirname(target_path).replace('\\', '/')
@@ -259,7 +267,7 @@ class ProtocolClient:
     
     def _ensure_ftp_directory(self, remote_dir: str):
         """确保 FTP 远程目录存在"""
-        if not remote_dir or remote_dir == '/':
+        if not remote_dir or remote_dir == '/' or not self._ftp_client:
             return
         
         dirs = remote_dir.split('/')
