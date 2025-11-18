@@ -1,10 +1,63 @@
 # -*- coding: utf-8 -*-
 """
-v2.2.0 错误分类器
-对上传错误进行分类，提供针对性的错误提示
+错误分类器 - 智能错误分类和用户建议系统
+
+v2.2.0+ 增强版：
+- 支持异常对象分类
+- 细粒度错误严重程度
+- 智能重试建议
+- 更详细的用户指导
 """
+import errno
 import re
-from typing import Tuple
+from typing import Tuple, Optional
+from enum import Enum
+
+
+class ErrorCategory(Enum):
+    """错误类别枚举"""
+    NETWORK = "network"  # 网络错误
+    PERMISSION = "permission"  # 权限错误
+    DISK = "disk"  # 磁盘错误
+    FTP = "ftp"  # FTP特定错误
+    FILE = "file"  # 文件错误
+    CONFIGURATION = "configuration"  # 配置错误
+    UNKNOWN = "unknown"  # 未知错误
+
+
+class ErrorSeverity(Enum):
+    """错误严重程度"""
+    LOW = "low"  # 低：可忽略或自动恢复
+    MEDIUM = "medium"  # 中：需要用户注意
+    HIGH = "high"  # 高：阻止操作继续
+    CRITICAL = "critical"  # 严重：需要立即处理
+
+
+class ErrorInfo:
+    """错误信息数据类"""
+    
+    def __init__(self,
+                 category: ErrorCategory,
+                 severity: ErrorSeverity,
+                 message: str,
+                 suggestion: str,
+                 is_retryable: bool = False,
+                 original_error: Optional[str] = None):
+        self.category = category
+        self.severity = severity
+        self.message = message
+        self.suggestion = suggestion
+        self.is_retryable = is_retryable
+        self.original_error = original_error
+    
+    def get_user_message(self) -> str:
+        """获取用户友好的完整消息"""
+        parts = [f"❌ {self.message}"]
+        if self.suggestion:
+            parts.append(f"\n💡 建议：{self.suggestion}")
+        if self.is_retryable:
+            parts.append("\n🔄 此错误可以重试")
+        return "".join(parts)
 
 
 class ErrorClassifier:
@@ -145,3 +198,143 @@ class ErrorClassifier:
         }
         
         return icons.get(error_type, '❌')
+    
+    # ========== 增强方法 (v2.2.0+) ==========
+    
+    @staticmethod
+    def classify_exception(exception: Exception, context: str = "") -> ErrorInfo:
+        """分类异常对象（增强版）
+        
+        Args:
+            exception: 异常对象
+            context: 上下文信息
+        
+        Returns:
+            ErrorInfo 对象
+        """
+        error_str = str(exception)
+        
+        # 导入FTP异常（延迟导入避免循环依赖）
+        try:
+            from ftplib import error_perm, error_temp, error_proto
+            
+            if isinstance(exception, error_perm):
+                if '530' in error_str:
+                    return ErrorInfo(
+                        category=ErrorCategory.FTP,
+                        severity=ErrorSeverity.HIGH,
+                        message="FTP登录失败：用户名或密码错误",
+                        suggestion="请检查FTP用户名和密码是否正确",
+                        is_retryable=False,
+                        original_error=error_str
+                    )
+                if '550' in error_str:
+                    return ErrorInfo(
+                        category=ErrorCategory.PERMISSION,
+                        severity=ErrorSeverity.HIGH,
+                        message="FTP权限不足：无法访问目标路径",
+                        suggestion="请确认FTP用户对目标目录有写入权限",
+                        is_retryable=False,
+                        original_error=error_str
+                    )
+            
+            if isinstance(exception, error_temp):
+                return ErrorInfo(
+                    category=ErrorCategory.FTP,
+                    severity=ErrorSeverity.MEDIUM,
+                    message=f"FTP临时错误：{error_str}",
+                    suggestion="这是临时性错误，稍后会自动重试",
+                    is_retryable=True,
+                    original_error=error_str
+                )
+        except ImportError:
+            pass
+        
+        # 权限错误
+        if isinstance(exception, PermissionError):
+            return ErrorInfo(
+                category=ErrorCategory.PERMISSION,
+                severity=ErrorSeverity.HIGH,
+                message="权限不足",
+                suggestion="请检查文件/目录权限，或以管理员身份运行程序",
+                is_retryable=False,
+                original_error=error_str
+            )
+        
+        # 磁盘错误
+        if isinstance(exception, OSError):
+            if hasattr(exception, 'errno'):
+                if exception.errno == errno.ENOSPC or exception.errno == 28:
+                    return ErrorInfo(
+                        category=ErrorCategory.DISK,
+                        severity=ErrorSeverity.CRITICAL,
+                        message="目标磁盘空间不足",
+                        suggestion="请清理磁盘空间或选择其他存储位置",
+                        is_retryable=False,
+                        original_error=error_str
+                    )
+        
+        # 网络错误
+        if isinstance(exception, (ConnectionError, TimeoutError)):
+            return ErrorInfo(
+                category=ErrorCategory.NETWORK,
+                severity=ErrorSeverity.HIGH,
+                message=f"网络错误：{error_str}",
+                suggestion="请检查网络连接状态，确保目标服务器可访问",
+                is_retryable=True,
+                original_error=error_str
+            )
+        
+        # 文件错误
+        if isinstance(exception, FileNotFoundError):
+            return ErrorInfo(
+                category=ErrorCategory.FILE,
+                severity=ErrorSeverity.MEDIUM,
+                message=f"文件不存在：{error_str}",
+                suggestion="请检查文件路径是否正确，或文件是否已被移动/删除",
+                is_retryable=False,
+                original_error=error_str
+            )
+        
+        # 默认：使用字符串分类
+        error_type, short_msg, advice = ErrorClassifier.classify_error(error_str)
+        return ErrorInfo(
+            category=ErrorCategory.UNKNOWN,
+            severity=ErrorSeverity.MEDIUM,
+            message=short_msg,
+            suggestion=advice,
+            is_retryable=error_type not in ['permission', 'disk_full', 'file_not_found'],
+            original_error=error_str
+        )
+    
+    @staticmethod
+    def should_retry(error_info: ErrorInfo, retry_count: int, max_retries: int = 3) -> bool:
+        """判断是否应该重试
+        
+        Args:
+            error_info: 错误信息
+            retry_count: 当前重试次数
+            max_retries: 最大重试次数
+        
+        Returns:
+            True: 应该重试, False: 不应该重试
+        """
+        if not error_info.is_retryable:
+            return False
+        
+        if retry_count >= max_retries:
+            return False
+        
+        if error_info.severity == ErrorSeverity.CRITICAL:
+            return error_info.category == ErrorCategory.NETWORK
+        
+        return True
+    
+    @staticmethod
+    def get_retry_suggestion(retry_count: int, max_retries: int = 3) -> str:
+        """获取重试建议"""
+        if retry_count >= max_retries:
+            return f"已达到最大重试次数（{max_retries}次），建议检查错误原因后手动重试"
+        
+        remaining = max_retries - retry_count
+        return f"将在稍后自动重试（剩余{remaining}次机会）"
