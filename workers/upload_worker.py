@@ -194,8 +194,14 @@ class UploadWorker(QObject):  # type: ignore
             error_msg = str(e)
             self.log.emit(f"❌ 失败: {filename} - {error_msg}")
             
+            # 传递异常对象给Manager进行智能分类
             if self._on_task_failed:
-                self._on_task_failed(task, error_msg)
+                # 如果_on_task_failed支持exception参数，传递异常对象
+                try:
+                    self._on_task_failed(task, error_msg, e)
+                except TypeError:
+                    # 兼容旧接口（不支持exception参数）
+                    self._on_task_failed(task, error_msg)
     
     # ============ IO操作 ============
     

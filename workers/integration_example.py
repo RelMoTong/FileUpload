@@ -98,9 +98,9 @@ class UploadController:
         # 可选：归档源文件
         # self._archive_file(task.source_path, task.backup_path)
     
-    def _on_task_failed(self, task, error_msg):
+    def _on_task_failed(self, task, error_msg, exception=None):
         """Worker通知任务失败"""
-        self.manager.mark_task_failed(task, error_msg)
+        self.manager.mark_task_failed(task, error_msg, exception)
     
     def _on_task_skipped(self, task, reason):
         """Worker通知任务跳过"""
@@ -125,10 +125,73 @@ class UploadController:
             result.skipped_count,
             f"{result.average_speed_mbps:.2f} MB/s"
         )
+        
+        # 如果有失败文件，导出清单
+        if result.failed_count > 0:
+            self.export_failed_report()
     
     def _on_upload_failed(self, error_msg):
         """上传失败"""
         self.worker.log.emit(f"❌ 上传失败: {error_msg}")
+    
+    # ============ 失败文件处理 ============
+    
+    def export_failed_report(self, filename: str = "failed_files_report.txt"):
+        """导出失败文件清单"""
+        from pathlib import Path
+        output_path = Path.cwd() / filename
+        
+        if self.manager.export_failed_files_report(str(output_path)):
+            self.worker.log.emit(f"📋 失败文件清单已导出: {output_path}")
+            return True
+        else:
+            self.worker.log.emit("❌ 导出失败文件清单失败")
+            return False
+    
+    def retry_all_failed_files(self, only_retryable: bool = True):
+        """重试所有失败的文件
+        
+        Args:
+            only_retryable: 是否只重试可重试的文件（根据ErrorInfo判断）
+        """
+        retried, kept = self.manager.retry_failed_tasks(only_retryable=only_retryable)
+        
+        if retried > 0:
+            self.worker.log.emit(f"🔄 已将 {retried} 个文件加入重试队列")
+            if kept > 0:
+                self.worker.log.emit(f"⚠️ {kept} 个文件不可重试，已保留在失败列表")
+        else:
+            self.worker.log.emit("ℹ️ 没有可重试的文件")
+        
+        return retried, kept
+    
+    def retry_specific_files(self, task_ids: list):
+        """重试指定的文件
+        
+        Args:
+            task_ids: 任务ID列表
+        """
+        retried, not_found = self.manager.retry_specific_tasks(task_ids)
+        
+        if retried > 0:
+            self.worker.log.emit(f"🔄 已将 {retried} 个文件加入重试队列")
+        if not_found > 0:
+            self.worker.log.emit(f"⚠️ {not_found} 个任务未找到")
+        
+        return retried, not_found
+    
+    def get_failed_files_summary(self):
+        """获取失败文件摘要信息"""
+        stats = self.manager.get_statistics()
+        
+        summary = {
+            'total_failed': stats['failed_count'],
+            'retryable': stats.get('retryable_failed_count', 0),
+            'non_retryable': stats['failed_count'] - stats.get('retryable_failed_count', 0),
+            'error_categories': stats.get('error_categories', {}),
+        }
+        
+        return summary
 
 
 # ============ 使用示例 ============
@@ -153,6 +216,35 @@ def example_usage():
     
     # 停止
     # controller.stop()
+    
+    # ========== 失败处理示例 ==========
+    
+    # 1. 获取失败文件摘要
+    # summary = controller.get_failed_files_summary()
+    # print(f"失败文件: {summary['total_failed']}")
+    # print(f"可重试: {summary['retryable']}")
+    # print(f"错误类型: {summary['error_categories']}")
+    
+    # 2. 导出失败文件清单
+    # controller.export_failed_report("failed_2025-11-18.txt")
+    
+    # 3. 重试所有可重试的失败文件
+    # retried, kept = controller.retry_all_failed_files(only_retryable=True)
+    # print(f"重试: {retried}, 保留: {kept}")
+    
+    # 4. 重试指定的文件
+    # task_ids = ["1234567890_hash1", "1234567891_hash2"]
+    # controller.retry_specific_files(task_ids)
+    
+    # 5. 获取特定类别的失败文件
+    # from core.error_classifier import ErrorCategory
+    # network_failures = controller.manager.get_failed_tasks_by_category(ErrorCategory.NETWORK)
+    # print(f"网络错误: {len(network_failures)} 个文件")
+    
+    # 6. 获取高严重程度的失败文件
+    # from core.error_classifier import ErrorSeverity
+    # critical_failures = controller.manager.get_failed_tasks_by_severity(ErrorSeverity.HIGH)
+    # print(f"严重错误: {len(critical_failures)} 个文件")
 
 
 if __name__ == "__main__":

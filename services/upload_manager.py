@@ -18,6 +18,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime
 
+# 导入错误分类器
+from core.error_classifier import ErrorClassifier, ErrorInfo, ErrorCategory, ErrorSeverity
+
 
 class UploadStatus(Enum):
     """上传状态枚举"""
@@ -48,6 +51,8 @@ class UploadTask:
     max_retries: int = 3  # 最大重试次数
     task_id: Optional[str] = None  # 任务ID
     created_at: Optional[datetime] = None  # 创建时间
+    error_info: Optional[ErrorInfo] = None  # 错误信息（失败时记录）
+    last_error_time: Optional[datetime] = None  # 最后一次错误时间
     
     def __post_init__(self):
         if self.task_id is None:
@@ -62,6 +67,7 @@ class UploadResult:
     success_files: List[str] = field(default_factory=list)  # 成功文件列表
     failed_files: List[Tuple[str, str]] = field(default_factory=list)  # 失败文件列表 (path, error)
     skipped_files: List[Tuple[str, str]] = field(default_factory=list)  # 跳过文件列表 (path, reason)
+    failed_tasks: List[UploadTask] = field(default_factory=list)  # 失败任务列表（包含详细ErrorInfo）
     total_size: int = 0  # 总大小（字节）
     uploaded_size: int = 0  # 已上传大小
     total_files: int = 0  # 总文件数
@@ -106,6 +112,9 @@ class UploadManager:
         self._failed_tasks: List[UploadTask] = []  # 失败任务列表
         self._continuous_failures: int = 0  # 连续失败次数
         self._max_continuous_failures: int = 3  # 最大连续失败次数
+        
+        # 错误分类器
+        self._error_classifier = ErrorClassifier()
         
         # 回调函数
         self._on_status_changed: Optional[Callable[[UploadStatus], None]] = None
@@ -184,23 +193,67 @@ class UploadManager:
         if self._on_task_started:
             self._on_task_started(task)
     
-    def complete_task(self, task: UploadTask, success: bool, error: Optional[str] = None):
-        """完成任务"""
+    def complete_task(self, task: UploadTask, success: bool, error: Optional[str] = None, 
+                     exception: Optional[Exception] = None):
+        """完成任务
+        
+        Args:
+            task: 上传任务
+            success: 是否成功
+            error: 错误消息（字符串）
+            exception: 异常对象（用于分类）
+        """
         self._result.processed_files += 1
         
         if success:
             self._result.success_files.append(task.source_path)
             self._continuous_failures = 0  # 重置连续失败计数
         else:
-            # 检查是否需要重试
-            if task.retry_count < task.max_retries:
+            # 使用ErrorClassifier分类错误
+            if exception:
+                error_info = self._error_classifier.classify_exception(exception, task.source_path)
+            elif error:
+                # 字符串错误，使用旧接口
+                error_type, short_msg, advice = self._error_classifier.classify_error(error)
+                error_info = ErrorInfo(
+                    category=ErrorCategory.UNKNOWN,
+                    severity=ErrorSeverity.MEDIUM,
+                    message=short_msg,
+                    suggestion=advice,
+                    is_retryable=error_type not in ['permission', 'disk_full', 'file_not_found'],
+                    original_error=error
+                )
+            else:
+                error_info = ErrorInfo(
+                    category=ErrorCategory.UNKNOWN,
+                    severity=ErrorSeverity.MEDIUM,
+                    message="未知错误",
+                    suggestion="请检查网络连接和文件权限",
+                    is_retryable=True,
+                    original_error="Unknown error"
+                )
+            
+            # 保存错误信息
+            task.error_info = error_info
+            task.last_error_time = datetime.now()
+            
+            # 判断是否应该重试
+            should_retry = self._error_classifier.should_retry(
+                error_info, 
+                task.retry_count, 
+                task.max_retries
+            )
+            
+            if should_retry and task.retry_count < task.max_retries:
                 task.retry_count += 1
                 # 重新加入队列（降低优先级）
                 task.priority = TaskPriority.LOW
                 self._task_queue.append(task)
             else:
-                # 超过重试次数，标记为失败
-                self._result.failed_files.append((task.source_path, error or "Unknown error"))
+                # 超过重试次数或不应重试，标记为失败
+                error_msg = error_info.get_user_message()
+                self._result.failed_files.append((task.source_path, error_msg))
+                self._result.failed_tasks.append(task)  # 保存完整任务信息
                 self._failed_tasks.append(task)
                 self._continuous_failures += 1
         
@@ -232,13 +285,133 @@ class UploadManager:
         """获取所有失败任务"""
         return self._failed_tasks.copy()
     
-    def retry_failed_tasks(self):
-        """重试所有失败的任务"""
+    def export_failed_files_report(self, output_path: str) -> bool:
+        """导出失败文件清单
+        
+        Args:
+            output_path: 输出文件路径
+        
+        Returns:
+            是否成功导出
+        """
+        try:
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write("===== 上传失败文件清单 =====\n")
+                f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"失败文件总数: {len(self._failed_tasks)}\n")
+                f.write("=" * 60 + "\n\n")
+                
+                for idx, task in enumerate(self._failed_tasks, 1):
+                    f.write(f"[{idx}] 文件: {task.source_path}\n")
+                    f.write(f"    目标: {task.target_path}\n")
+                    f.write(f"    重试次数: {task.retry_count}/{task.max_retries}\n")
+                    
+                    if task.error_info:
+                        f.write(f"    错误类别: {task.error_info.category.value}\n")
+                        f.write(f"    严重程度: {task.error_info.severity.value}\n")
+                        f.write(f"    错误消息: {task.error_info.message}\n")
+                        f.write(f"    建议: {task.error_info.suggestion}\n")
+                        f.write(f"    可重试: {'是' if task.error_info.is_retryable else '否'}\n")
+                        if task.error_info.original_error:
+                            f.write(f"    原始错误: {task.error_info.original_error}\n")
+                    
+                    if task.last_error_time:
+                        f.write(f"    最后错误时间: {task.last_error_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    
+                    f.write("\n")
+                
+                f.write("=" * 60 + "\n")
+                f.write("统计信息:\n")
+                
+                # 按错误类别统计
+                category_count: Dict[ErrorCategory, int] = {}
+                for task in self._failed_tasks:
+                    if task.error_info:
+                        cat = task.error_info.category
+                        category_count[cat] = category_count.get(cat, 0) + 1
+                
+                for cat, count in category_count.items():
+                    f.write(f"  {cat.value}: {count} 个文件\n")
+                
+                # 统计可重试的文件
+                retryable_count = sum(1 for task in self._failed_tasks 
+                                     if task.error_info and task.error_info.is_retryable)
+                f.write(f"\n可重试文件: {retryable_count} 个\n")
+                f.write(f"不可重试文件: {len(self._failed_tasks) - retryable_count} 个\n")
+            
+            return True
+        except Exception as e:
+            print(f"导出失败文件清单失败: {e}")
+            return False
+    
+    def retry_failed_tasks(self, only_retryable: bool = True):
+        """重试失败的任务
+        
+        Args:
+            only_retryable: 是否只重试可重试的任务（根据ErrorInfo.is_retryable判断）
+        """
+        tasks_to_retry = []
+        tasks_to_keep = []
+        
         for task in self._failed_tasks:
-            task.retry_count = 0  # 重置重试计数
+            # 判断是否应该重试
+            should_retry = True
+            if only_retryable and task.error_info:
+                should_retry = task.error_info.is_retryable
+            
+            if should_retry:
+                task.retry_count = 0  # 重置重试计数
+                task.error_info = None  # 清除错误信息
+                task.priority = TaskPriority.NORMAL  # 恢复正常优先级
+                tasks_to_retry.append(task)
+            else:
+                # 不可重试的任务保留在失败列表
+                tasks_to_keep.append(task)
+        
+        # 重新加入队列
+        for task in tasks_to_retry:
             self.add_task(task)
-        self._failed_tasks.clear()
+        
+        # 更新失败任务列表
+        self._failed_tasks = tasks_to_keep
         self._continuous_failures = 0
+        
+        return len(tasks_to_retry), len(tasks_to_keep)
+    
+    def retry_specific_tasks(self, task_ids: List[str]):
+        """重试指定的任务
+        
+        Args:
+            task_ids: 要重试的任务ID列表
+        
+        Returns:
+            (成功重试数, 未找到数)
+        """
+        retried = 0
+        not_found = 0
+        
+        tasks_to_retry = []
+        remaining_tasks = []
+        
+        for task in self._failed_tasks:
+            if task.task_id in task_ids:
+                task.retry_count = 0
+                task.error_info = None
+                task.priority = TaskPriority.HIGH  # 手动重试使用高优先级
+                tasks_to_retry.append(task)
+                retried += 1
+            else:
+                remaining_tasks.append(task)
+        
+        not_found = len(task_ids) - retried
+        
+        # 重新加入队列
+        for task in tasks_to_retry:
+            self.add_task(task)
+        
+        self._failed_tasks = remaining_tasks
+        
+        return retried, not_found
     
     def reset_continuous_failures(self):
         """重置连续失败计数（用于重连后）"""
@@ -267,6 +440,13 @@ class UploadManager:
     
     def get_statistics(self) -> Dict:
         """获取统计信息"""
+        # 统计错误类别
+        error_categories = {}
+        for task in self._failed_tasks:
+            if task.error_info:
+                cat = task.error_info.category.value
+                error_categories[cat] = error_categories.get(cat, 0) + 1
+        
         return {
             'total_files': self._result.total_files,
             'processed_files': self._result.processed_files,
@@ -279,7 +459,45 @@ class UploadManager:
             'duration_seconds': self._result.duration_seconds,
             'queue_size': self.queue_size,
             'continuous_failures': self._continuous_failures,
+            'error_categories': error_categories,
+            'retryable_failed_count': sum(1 for t in self._failed_tasks if t.error_info and t.error_info.is_retryable),
         }
+    
+    def get_failed_tasks_by_category(self, category: ErrorCategory) -> List[UploadTask]:
+        """按错误类别获取失败任务
+        
+        Args:
+            category: 错误类别
+        
+        Returns:
+            符合条件的失败任务列表
+        """
+        return [
+            task for task in self._failed_tasks
+            if task.error_info and task.error_info.category == category
+        ]
+    
+    def get_failed_tasks_by_severity(self, min_severity: ErrorSeverity) -> List[UploadTask]:
+        """按严重程度获取失败任务
+        
+        Args:
+            min_severity: 最低严重程度
+        
+        Returns:
+            符合条件的失败任务列表
+        """
+        severity_order = {
+            ErrorSeverity.LOW: 0,
+            ErrorSeverity.MEDIUM: 1,
+            ErrorSeverity.HIGH: 2,
+            ErrorSeverity.CRITICAL: 3
+        }
+        min_level = severity_order.get(min_severity, 0)
+        
+        return [
+            task for task in self._failed_tasks
+            if task.error_info and severity_order.get(task.error_info.severity, 0) >= min_level
+        ]
     
     # ============ 回调注册 ============
     
@@ -319,9 +537,15 @@ class UploadManager:
         """标记任务成功（简化接口）"""
         self.complete_task(task, success=True)
     
-    def mark_task_failed(self, task: UploadTask, error_msg: str):
-        """标记任务失败（简化接口）"""
-        self.complete_task(task, success=False, error=error_msg)
+    def mark_task_failed(self, task: UploadTask, error_msg: str, exception: Optional[Exception] = None):
+        """标记任务失败（简化接口）
+        
+        Args:
+            task: 上传任务
+            error_msg: 错误消息
+            exception: 异常对象（可选，用于更精确的错误分类）
+        """
+        self.complete_task(task, success=False, error=error_msg, exception=exception)
     
     def mark_task_skipped(self, task: UploadTask, reason: str):
         """标记任务跳过（简化接口）"""
