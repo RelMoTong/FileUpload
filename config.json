@@ -1,7 +1,7 @@
 {
   "source_folder": "D:/工作/2024年8月/常州汇川/常州汇川资料/T24013  常州汇川装配8线测量选垫设备/Image",
   "target_folder": "Y:/机器视觉/02-视觉项目/Test/常州汇川",
-  "backup_folder": "D:/工作/2024年8月/常州汇川/常州汇川资料/T24013  常州汇川装配8线测量选垫设备/Image",
+  "backup_folder": "D:/工作/2024年8月/常州汇川/常州汇川资料/T24013  常州汇川装配8线测量选垫设备",
   "enable_backup": false,
   "upload_interval": 30,
   "monitor_mode": "periodic",
@@ -16,12 +16,18 @@
   "filter_raw": false,
   "auto_start_windows": false,
   "auto_run_on_startup": false,
+  "show_notifications": false,
   "enable_deduplication": true,
   "hash_algorithm": "md5",
   "duplicate_strategy": "skip",
   "network_check_interval": 10,
   "network_auto_pause": false,
   "network_auto_resume": false,
+  "enable_auto_delete": false,
+  "auto_delete_folder": "",
+  "auto_delete_threshold": 80,
+  "auto_delete_keep_days": 10,
+  "auto_delete_check_interval": 300,
   "upload_protocol": "smb",
   "current_protocol": "smb",
   "ftp_server": {
@@ -48,9 +54,5 @@
     "passive_mode": true,
     "enable_tls": false
   },
-  "enable_notifications": false,
-  "notification_level": "all",
-  "enable_speed_limit": true,
-  "speed_limit_mbps": 10,
   "users": {}
 }

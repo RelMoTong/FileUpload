@@ -194,14 +194,14 @@ pyinstaller --noconfirm ^
   --add-data "config.json;." ^
   --add-data "assets;assets" ^
   --add-data "logs;logs" ^
-  --add-data "core;core" ^
   --hidden-import=PySide6.QtCore ^
   --hidden-import=PySide6.QtGui ^
   --hidden-import=PySide6.QtWidgets ^
-  --hidden-import=PySide6.QtNetwork ^
-  --exclude-module=PyQt5 ^
-  --exclude-module=PyQt6 ^
+  --hidden-import=PyQt5.QtCore ^
+  --hidden-import=PyQt5.QtGui ^
+  --hidden-import=PyQt5.QtWidgets ^
   --collect-all=PySide6 ^
+  --collect-all=PyQt5 ^
   %ICON_PARAM% ^
   %ENTRY%
 
