@@ -161,13 +161,19 @@ class UploadWorker(QtCore.QObject):  # type: ignore
                  upload_protocol: str = 'smb',
                  ftp_client_config: Optional[dict] = None,
                  # v2.2.0 新增：备份启用状态
-                 enable_backup: bool = True):
+                 enable_backup: bool = True,
+                 # v2.3.0 新增：速率限制参数
+                 limit_upload_rate: bool = False,
+                 max_upload_rate_mbps: float = 10.0):
         super().__init__()
         self.source = source
         self.target = target
         self.backup = backup
         # v2.2.0 新增：保存备份启用状态
         self.enable_backup = enable_backup
+        # v2.3.0 新增：速率限制配置
+        self.limit_upload_rate = limit_upload_rate
+        self.max_upload_rate_bytes = int(max_upload_rate_mbps * 1024 * 1024) if limit_upload_rate else 0
         self.interval = interval
         self.mode = mode
         self.disk_threshold_percent = max(5, disk_threshold_percent)
@@ -657,9 +663,13 @@ class UploadWorker(QtCore.QObject):  # type: ignore
             self.log.emit(f"写入失败日志出错: {e}")
     
     def _copy_with_progress(self, src: str, dst: str, buffer_size: int = 1024 * 1024):
-        """带进度的文件复制（适用于大文件），包含超时检测"""
+        """v2.3.0 带进度和速率限制的文件复制"""
         last_write_time = time.time()
         write_timeout = 5.0  # 5秒内没有写入视为超时
+        
+        # v2.3.0 速率限制：如果启用，减小buffer以提高精确度
+        if self.limit_upload_rate and self.max_upload_rate_bytes > 0:
+            buffer_size = min(buffer_size, 64 * 1024)  # 64KB chunks
         
         try:
             with open(src, 'rb') as fsrc:
@@ -673,6 +683,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore
                         if time.time() - last_write_time > write_timeout:
                             self.log.emit(f"⏱️ 文件写入超时（{write_timeout}秒），可能网络已断开")
                             raise Exception("文件写入超时")
+                        
+                        # v2.3.0 速率限制：记录开始时间
+                        chunk_start = time.time()
                         
                         buf = fsrc.read(buffer_size)
                         if not buf:
@@ -688,13 +701,25 @@ class UploadWorker(QtCore.QObject):  # type: ignore
                         
                         copied += len(buf)
                         
+                        # v2.3.0 速率限制：计算应该花费的时间
+                        if self.limit_upload_rate and self.max_upload_rate_bytes > 0:
+                            expected_time = len(buf) / self.max_upload_rate_bytes
+                            elapsed_time = time.time() - chunk_start
+                            if elapsed_time < expected_time:
+                                time.sleep(expected_time - elapsed_time)
+                        
                         # 更新进度（每复制1MB更新一次）
                         if self.current_file_size > 0:
                             progress = int(100 * copied / self.current_file_size)
                             self.file_progress.emit(self.current_file_name, progress)
                             # 每10%输出日志
                             if progress % 10 == 0 and progress > 0:
-                                self.log.emit(f"📊 上传进度: {progress}% ({copied/(1024*1024):.1f}MB/{self.current_file_size/(1024*1024):.1f}MB)")
+                                # v2.3.0 显示实时速率
+                                actual_speed_mbps = (copied / (1024 * 1024)) / (time.time() - chunk_start + 0.001)
+                                if self.limit_upload_rate:
+                                    self.log.emit(f"📊 上传进度: {progress}% ({copied/(1024*1024):.1f}MB/{self.current_file_size/(1024*1024):.1f}MB) [限速: {self.max_upload_rate_bytes/(1024*1024):.1f}MB/s]")
+                                else:
+                                    self.log.emit(f"📊 上传进度: {progress}% ({copied/(1024*1024):.1f}MB/{self.current_file_size/(1024*1024):.1f}MB)")
             
             # 复制文件元数据
             shutil.copystat(src, dst)
@@ -1275,6 +1300,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self.show_notifications = True  # 显示通知
         self.tray_icon = None  # 托盘图标对象
         
+        # v2.3.0 新增：速率限制配置
+        self.limit_upload_rate = False
+        self.max_upload_rate_mbps = 10.0
+        
         # v2.0 新增：FTP 协议管理器（延迟初始化，避免在UI创建前调用日志）
         self.ftp_manager = None
         
@@ -1846,6 +1875,30 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         self._set_checkbox_mark(self.cb_show_notifications, self.cb_show_notifications.isChecked())
         adv_collapsible.addWidget(self.cb_show_notifications)
         
+        # v2.3.0 新增：速率限制
+        rate_row = QtWidgets.QHBoxLayout()
+        self.cb_limit_rate = QtWidgets.QCheckBox("⚡ 限制上传速率")
+        self.cb_limit_rate.setProperty('orig_text', "⚡ 限制上传速率")
+        self.cb_limit_rate.setToolTip("启用后将限制最大上传速度，避免占用过多带宽")
+        self.cb_limit_rate.setChecked(False)
+        self.cb_limit_rate.toggled.connect(self._on_rate_limit_toggled)
+        self.cb_limit_rate.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_limit_rate, checked))
+        self._set_checkbox_mark(self.cb_limit_rate, self.cb_limit_rate.isChecked())
+        
+        self.spin_max_rate = QtWidgets.QDoubleSpinBox()
+        self.spin_max_rate.setRange(0.1, 1000.0)
+        self.spin_max_rate.setValue(10.0)
+        self.spin_max_rate.setSuffix(" MB/s")
+        self.spin_max_rate.setSingleStep(0.5)
+        self.spin_max_rate.setEnabled(False)
+        self.spin_max_rate.setToolTip("设置最大上传速率（单位：MB/秒）")
+        self.spin_max_rate.valueChanged.connect(lambda: setattr(self, 'config_modified', True))
+        
+        rate_row.addWidget(self.cb_limit_rate)
+        rate_row.addWidget(self.spin_max_rate)
+        rate_row.addStretch()
+        adv_collapsible.addLayout(rate_row)
+        
         # 添加分隔线
         adv_collapsible.addWidget(self._hline())
         
@@ -2045,6 +2098,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             'file_filters': is_user_or_admin,
             # 自启动设置
             'startup_settings': is_user_or_admin,
+            # v2.3.0 速率限制控件
+            'cb_limit_rate': can_edit_config,
+            'spin_max_rate': can_edit_config,
             # 上传控制按钮
             'btn_start': not is_running,
             'btn_pause': is_running,
@@ -2095,6 +2151,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         # v2.2.0 新增：通知开关（所有人可设置）
         if hasattr(self, 'cb_show_notifications'):
             self.cb_show_notifications.setEnabled(True)
+        # v2.3.0 新增：速率限制控件权限
+        if hasattr(self, 'cb_limit_rate'):
+            self.cb_limit_rate.setEnabled(states['cb_limit_rate'])
+            # spin_max_rate 需要同时满足：有权限 && checkbox已勾选
+            if states['spin_max_rate'] and self.cb_limit_rate.isChecked():
+                self.spin_max_rate.setEnabled(True)
+            else:
+                self.spin_max_rate.setEnabled(False)
         
         # 保存配置按钮
         self.btn_save.setEnabled(states['btn_save'])
@@ -2383,6 +2447,18 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             self._append_log("🔍 已启用智能去重")
         else:
             self._append_log("⚪ 已禁用智能去重")
+    
+    def _on_rate_limit_toggled(self, checked: bool):
+        """v2.3.0 切换速率限制开关"""
+        self.limit_upload_rate = checked
+        self.spin_max_rate.setEnabled(checked)
+        self.config_modified = True
+        
+        if checked:
+            rate = self.spin_max_rate.value()
+            self._append_log(f"⚡ 已启用速率限制: {rate} MB/s")
+        else:
+            self._append_log("⚪ 已禁用速率限制")
 
     def _choose_ftp_share(self):
         """选择 FTP 共享目录"""
@@ -3640,6 +3716,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             'auto_run_on_startup': self.cb_auto_run_on_startup.isChecked(),
             # v2.2.0 新增：托盘通知开关
             'show_notifications': self.cb_show_notifications.isChecked() if hasattr(self, 'cb_show_notifications') else True,
+            # v2.3.0 新增：速率限制
+            'limit_upload_rate': self.cb_limit_rate.isChecked() if hasattr(self, 'cb_limit_rate') else False,
+            'max_upload_rate_mbps': self.spin_max_rate.value() if hasattr(self, 'spin_max_rate') else 10.0,
             # v1.9 新增：去重
             'enable_deduplication': self.cb_dedup_enable.isChecked(),
             'hash_algorithm': self.combo_hash.currentText().lower(),
@@ -3751,6 +3830,17 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
                 self.cb_show_notifications.setChecked(self.show_notifications)
                 self.cb_show_notifications.blockSignals(False)
                 self._set_checkbox_mark(self.cb_show_notifications, self.show_notifications)
+            
+            # v2.3.0 新增：加载速率限制配置
+            self.limit_upload_rate = cfg.get('limit_upload_rate', False)
+            self.max_upload_rate_mbps = cfg.get('max_upload_rate_mbps', 10.0)
+            if hasattr(self, 'cb_limit_rate'):
+                self.cb_limit_rate.blockSignals(True)
+                self.cb_limit_rate.setChecked(self.limit_upload_rate)
+                self.cb_limit_rate.blockSignals(False)
+                self._set_checkbox_mark(self.cb_limit_rate, self.limit_upload_rate)
+                self.spin_max_rate.setValue(self.max_upload_rate_mbps)
+                self.spin_max_rate.setEnabled(self.limit_upload_rate)
             
             # v1.9 新增：加载去重配置
             self.enable_deduplication = cfg.get('enable_deduplication', False)
@@ -4100,7 +4190,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             self.current_protocol,
             self.ftp_client_config if self.current_protocol in ['ftp_client', 'both'] else None,
             # v2.2.0 新增：备份启用状态
-            self.enable_backup
+            self.enable_backup,
+            # v2.3.0 新增：速率限制参数
+            self.cb_limit_rate.isChecked(),
+            self.spin_max_rate.value()
         )
         self.worker_thread = QtCore.QThread(self)
         self.worker.moveToThread(self.worker_thread)
