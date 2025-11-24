@@ -1,0 +1,20 @@
+{
+  "include": [
+    "."
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/dist",
+    "**/build"
+  ],
+  "ignore": [],
+  "defineConstant": {},
+  "stubPath": "",
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": false,
+  "reportGeneralTypeIssues": "warning",
+  "pythonVersion": "3.8",
+  "pythonPlatform": "Windows",
+  "typeCheckingMode": "basic"
+}

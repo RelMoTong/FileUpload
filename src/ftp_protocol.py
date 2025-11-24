@@ -238,7 +238,8 @@ class FTPServerManager:
         # 获取当前连接数
         connection_count = 0
         try:
-            connection_count = len(self.server._map) if hasattr(self.server, '_map') else 0
+            # Note: _map 是 asyncore.dispatcher 的内部属性
+            connection_count = len(self.server._map) if hasattr(self.server, '_map') else 0  # type: ignore[attr-defined]
         except:
             pass
         

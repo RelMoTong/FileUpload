@@ -60,3 +60,7 @@ tests/ftp_test_data/
 
 # Config (comment out if you want to share config)
 # config.json
+
+# Release packages
+*_发布版.zip
+*_发布版/

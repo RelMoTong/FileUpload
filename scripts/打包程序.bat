@@ -2,10 +2,10 @@
 setlocal enableextensions enabledelayedexpansion
 
 :: ========================================
-::  图片异步上传工具 v2.3.0 - 一键打包脚本
+::  图片异步上传工具 v2.3.1 - 一键打包脚本
 :: ========================================
 :: 功能：生成免安装的 .exe 可执行文件
-:: 日期：2025-11-17
+:: 日期：2025-11-24
 :: ========================================
 
 :: 设置控制台为 UTF-8
@@ -155,7 +155,7 @@ echo.
 :: ========================================
 echo [5/7] 配置打包参数...
 set APP_NAME=图片异步上传工具
-set VERSION=2.3.0
+set VERSION=2.3.1
 set OUTPUT_NAME=%APP_NAME%_v%VERSION%
 set DIST_DIR=dist-%VERSION%
 set ENTRY=pyqt_app.py
@@ -197,11 +197,51 @@ pyinstaller --noconfirm ^
   --hidden-import=PySide6.QtCore ^
   --hidden-import=PySide6.QtGui ^
   --hidden-import=PySide6.QtWidgets ^
+  --hidden-import=PySide6.QtNetwork ^
   --hidden-import=PyQt5.QtCore ^
   --hidden-import=PyQt5.QtGui ^
   --hidden-import=PyQt5.QtWidgets ^
-  --collect-all=PySide6 ^
-  --collect-all=PyQt5 ^
+  --hidden-import=qt_types ^
+  --exclude-module=PySide6.QtWebEngine ^
+  --exclude-module=PySide6.QtWebEngineCore ^
+  --exclude-module=PySide6.QtWebEngineWidgets ^
+  --exclude-module=PySide6.Qt3DCore ^
+  --exclude-module=PySide6.Qt3DInput ^
+  --exclude-module=PySide6.Qt3DRender ^
+  --exclude-module=PySide6.Qt3DAnimation ^
+  --exclude-module=PySide6.Qt3DExtras ^
+  --exclude-module=PySide6.Qt3DLogic ^
+  --exclude-module=PySide6.QtQuick ^
+  --exclude-module=PySide6.QtQuick3D ^
+  --exclude-module=PySide6.QtQuickWidgets ^
+  --exclude-module=PySide6.QtQml ^
+  --exclude-module=PySide6.QtSql ^
+  --exclude-module=PySide6.QtTest ^
+  --exclude-module=PySide6.QtDesigner ^
+  --exclude-module=PySide6.QtHelp ^
+  --exclude-module=PySide6.QtMultimedia ^
+  --exclude-module=PySide6.QtMultimediaWidgets ^
+  --exclude-module=PySide6.QtNetworkAuth ^
+  --exclude-module=PySide6.QtNfc ^
+  --exclude-module=PySide6.QtOpenGL ^
+  --exclude-module=PySide6.QtOpenGLWidgets ^
+  --exclude-module=PySide6.QtPdf ^
+  --exclude-module=PySide6.QtPdfWidgets ^
+  --exclude-module=PySide6.QtPositioning ^
+  --exclude-module=PySide6.QtRemoteObjects ^
+  --exclude-module=PySide6.QtScxml ^
+  --exclude-module=PySide6.QtSensors ^
+  --exclude-module=PySide6.QtSerialBus ^
+  --exclude-module=PySide6.QtSerialPort ^
+  --exclude-module=PySide6.QtSpatialAudio ^
+  --exclude-module=PySide6.QtStateMachine ^
+  --exclude-module=PySide6.QtTextToSpeech ^
+  --exclude-module=PySide6.QtUiTools ^
+  --exclude-module=PySide6.QtWebChannel ^
+  --exclude-module=PySide6.QtWebSockets ^
+  --exclude-module=PySide6.QtWebView ^
+  --exclude-module=PySide6.QtXml ^
+  --exclude-module=tkinter ^
   %ICON_PARAM% ^
   %ENTRY%
 
@@ -279,6 +319,22 @@ echo.
 echo [信息] 正在打开输出目录...
 timeout /t 2 /nobreak >nul
 explorer %DIST_DIR%
+
+:: ========================================
+:: 8. 自动创建压缩包
+:: ========================================
+echo.
+echo [8/8] 创建发布压缩包...
+set ZIP_NAME=%OUTPUT_NAME%_发布版.zip
+
+:: 使用 PowerShell 创建 zip
+powershell -Command "Compress-Archive -Path '%DIST_DIR%\%OUTPUT_NAME%' -DestinationPath '%DIST_DIR%\%ZIP_NAME%' -Force"
+
+if exist "%DIST_DIR%\%ZIP_NAME%" (
+    echo [成功] 压缩包已创建：%DIST_DIR%\%ZIP_NAME%
+) else (
+    echo [警告] 压缩包创建失败
+)
 
 echo.
 echo 按任意键退出...

@@ -21,7 +21,7 @@ import queue
 import winreg
 import hashlib
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Any, TYPE_CHECKING
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 # v2.0 新增：导入 FTP 协议模块
@@ -32,17 +32,29 @@ except ImportError:
     FTP_AVAILABLE = False
     print("警告: FTP 模块导入失败，FTP 功能不可用")
 
+# v2.3.0 新增：导入类型安全的 Qt 枚举访问器
+from qt_types import MessageBoxIcon, MessageBoxButton, TrayIconType, EventType
+
+# 运行时导入 Qt 库
 try:
-    from PySide6 import QtCore, QtGui, QtWidgets  # type: ignore
+    from PySide6 import QtCore, QtGui, QtWidgets
+    from PySide6.QtNetwork import QLocalServer, QLocalSocket
     Signal = QtCore.Signal  # PySide6 信号
     QT_LIB = 'PySide6'
 except ImportError:
     try:
-        from PyQt5 import QtCore, QtGui, QtWidgets  # type: ignore
+        from PyQt5 import QtCore, QtGui, QtWidgets  # type: ignore[import-not-found]
+        from PyQt5.QtNetwork import QLocalServer, QLocalSocket  # type: ignore[import-not-found]
         Signal = QtCore.pyqtSignal  # PyQt5 信号
         QT_LIB = 'PyQt5'
     except ImportError:
         raise ImportError("Neither PySide6 nor PyQt5 is installed. Please install one of them.")
+
+# 类型检查时的额外导入（避免 Pylance 类继承误报）
+if TYPE_CHECKING:
+    # 确保类型检查器能识别 Qt 类作为有效基类
+    # 这不会影响运行时，只是帮助静态分析工具
+    pass
 
 # 统一访问 Qt 枚举（兼容 Qt6 的强类型枚举命名）
 QtEnum = QtCore.Qt
@@ -55,8 +67,8 @@ def get_qt_enum(enum_class, attr_name: str, fallback_value: int):
     except AttributeError:
         return fallback_value
 
-APP_TITLE = "图片异步上传工具 v2.2.0"
-APP_VERSION = "2.2.0"
+APP_TITLE = "图片异步上传工具 v2.3.1"
+APP_VERSION = "2.3.1"
 
 
 def get_app_dir() -> Path:
@@ -91,7 +103,12 @@ def get_resource_path(relative_path: str) -> Path:
     return base_path / relative_path
 
 
-class Toast(QtWidgets.QWidget):  # type: ignore
+class Toast(QtWidgets.QWidget):  # type: ignore[misc]
+    """Toast 通知组件
+    
+    Note: 使用 type: ignore[misc] 是因为 Qt 模块在 try-except 中动态导入，
+    Pylance 无法在静态分析时确定基类有效性，但运行时完全正确。
+    """
     def __init__(self, parent: QtWidgets.QWidget, message: str, kind: str = 'info', duration_ms: int = 2500):
         super().__init__(parent)
         wt = getattr(QtEnum, 'WindowType', QtEnum)
@@ -134,7 +151,7 @@ class Toast(QtWidgets.QWidget):  # type: ignore
         return super().showEvent(e)
 
 
-class UploadWorker(QtCore.QObject):  # type: ignore
+class UploadWorker(QtCore.QObject):  # type: ignore[misc]
     # signals
     log = Signal(str)
     stats = Signal(int, int, int, str)   # uploaded, failed, skipped, rate
@@ -1203,7 +1220,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore
             self.finished.emit()
 
 
-class MainWindow(QtWidgets.QMainWindow):  # type: ignore
+class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
     # 内部信号用于线程安全的UI更新
     _disk_update_signal = Signal(str, float)  # disk_type, free_percent
     
@@ -2834,8 +2851,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         return card
 
     # v2.1 磁盘清理对话框
-    class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore
-        """磁盘清理对话框 - 支持选择文件夹路径和文件格式"""
+    class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
+        """磁盘清理对话框 - 支持选择文件夹路径和文件格式
+        
+        Note: type: ignore[misc] - Qt 动态导入导致的 Pylance 误报
+        """
         
         def __init__(self, parent=None):
             super().__init__(parent)
@@ -3340,8 +3360,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
                 f"释放空间 {deleted_size / (1024*1024):.2f} MB"
             )
 
-    class CollapsibleBox(QtWidgets.QWidget):  # type: ignore
-        """可折叠的组件"""
+    class CollapsibleBox(QtWidgets.QWidget):  # type: ignore[misc]
+        """可折叠的组件
+        
+        Note: type: ignore[misc] - Qt 动态导入导致的 Pylance 误报
+        """
         def __init__(self, title: str = "", parent: QtWidgets.QWidget = None):
             super().__init__(parent)
             self.toggle_button = QtWidgets.QToolButton()
@@ -3388,7 +3411,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
             """添加layout到内容区域"""
             self.content_layout.addLayout(layout)
 
-    class ChipWidget(QtWidgets.QFrame):  # type: ignore
+    class ChipWidget(QtWidgets.QFrame):  # type: ignore[misc]
         value_label: QtWidgets.QLabel
         def __init__(self, title: str, val: str, bg: str, fg: str, parent: QtWidgets.QWidget = None):
             super().__init__(parent)
@@ -5015,7 +5038,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         msg_box = QtWidgets.QMessageBox(self)
         msg_box.setWindowTitle("统计信息")
         msg_box.setText(stats_text)
-        msg_box.setIcon(get_qt_enum(QtWidgets.QMessageBox, 'Information', 1))  # type: ignore
+        msg_box.setIcon(MessageBoxIcon.Information)
         msg_box.exec()
     
     def _get_network_status_text(self):
@@ -5030,31 +5053,32 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
     
     def _quit_application(self):
         """退出应用程序"""
-        btn_yes = get_qt_enum(QtWidgets.QMessageBox, 'Yes', 0x00004000)
-        btn_no = get_qt_enum(QtWidgets.QMessageBox, 'No', 0x00010000)
         reply = QtWidgets.QMessageBox.question(
             self,
             '确认退出',
             '确定要退出程序吗？\n\n如果有上传任务正在运行，将会被中止。',
-            btn_yes | btn_no,  # type: ignore
-            btn_no  # type: ignore
+            MessageBoxButton.Yes | MessageBoxButton.No,
+            MessageBoxButton.No
         )
         
-        if reply == btn_yes:
+        if reply == MessageBoxButton.Yes:
             if self.tray_icon:
                 self.tray_icon.hide()
             QtWidgets.QApplication.quit()
     
-    def _show_notification(self, title: str, message: str, icon_type=None):
-        """显示系统通知"""
+    def _show_notification(self, title: str, message: str, icon_type: Optional[Any] = None):
+        """显示系统通知
+        
+        Note: PySide6 6.x 的 showMessage API 有两种签名，我们使用 type: ignore[call-overload] 来忽略类型检查
+        """
         if self.show_notifications and self.tray_icon and self.tray_icon.isVisible():
             if icon_type is None:
-                icon_type = get_qt_enum(QtWidgets.QSystemTrayIcon, 'Information', 1)
-            self.tray_icon.showMessage(title, message, icon_type, 3000)  # type: ignore
+                icon_type = TrayIconType.Information
+            self.tray_icon.showMessage(title, message, icon_type, 3000)  # type: ignore[call-overload]
     
     def changeEvent(self, event):
         """窗口状态改变事件"""
-        if event.type() == get_qt_enum(QtCore.QEvent, 'WindowStateChange', 105):
+        if event.type() == EventType.WindowStateChange:
             if self.minimize_to_tray and self.isMinimized():
                 # 最小化时隐藏到托盘
                 event.ignore()
@@ -5093,22 +5117,103 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore
         
         # 接受关闭事件
         event.accept()
+    
+    def _setup_single_instance_server(self):
+        """设置单例唤醒服务器
+        
+        监听来自新实例的唤醒请求，收到后将窗口置顶激活
+        """
+        self.local_server = QLocalServer(self)
+        server_name = "ImageUploadTool_SingleInstance_Server"
+        
+        # 先移除可能残留的服务器（程序异常退出时可能遗留）
+        QLocalServer.removeServer(server_name)
+        
+        # 启动服务器
+        if not self.local_server.listen(server_name):
+            # 服务器启动失败，记录日志但不影响程序运行
+            self._log_message(f"警告: 单例服务器启动失败 - {self.local_server.errorString()}")
+            return
+        
+        # 连接新连接信号
+        self.local_server.newConnection.connect(self._handle_wakeup_request)
+        self._log_message("单例服务器已启动，可接收唤醒请求")
+    
+    def _handle_wakeup_request(self):
+        """处理来自新实例的唤醒请求"""
+        # 获取新连接
+        client_socket = self.local_server.nextPendingConnection()
+        if not client_socket:
+            return
+        
+        # 等待数据到达
+        if client_socket.waitForReadyRead(1000):  # 等待最多1秒
+            data = client_socket.readAll()
+            # 使用 Qt 的方法转换为 Python 字符串
+            message = bytes(data).decode('utf-8', errors='ignore')  # type: ignore[arg-type]
+            
+            if message == "WAKEUP":
+                # 收到唤醒请求，激活窗口
+                self._activate_window()
+                self._log_message("收到唤醒请求，已激活窗口")
+        
+        # 关闭连接
+        client_socket.disconnectFromServer()
+    
+    def _activate_window(self):
+        """激活并置顶窗口"""
+        # 如果窗口被隐藏，先显示
+        if self.isHidden():
+            self.show()
+        
+        # 如果窗口被最小化，恢复正常状态
+        if self.isMinimized():
+            self.showNormal()
+        
+        # 激活窗口（置顶并获得焦点）
+        self.activateWindow()
+        self.raise_()  # 确保窗口在最前面
+        
+        # 在 Windows 上，可能需要额外的操作来确保窗口真正置顶
+        # 设置窗口标志强制置顶，然后立即恢复
+        self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint)
+        self.show()
+        self.setWindowFlags(self.windowFlags() & ~QtCore.Qt.WindowType.WindowStaysOnTopHint)
+        self.show()
 
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
     
-    # v2.2.0 单例模式：防止重复启动
-    # 使用共享内存实现进程互斥
-    shared_mem = QtCore.QSharedMemory("ImageUploadTool_SingleInstance")
+    # v2.3.1 单例模式增强：使用 LocalSocket 尝试唤醒已运行的实例
+    server_name = "ImageUploadTool_SingleInstance_Server"
+    socket = QLocalSocket()
+    socket.connectToServer(server_name)
     
+    # 尝试连接到已运行的实例
+    if socket.waitForConnected(500):  # 等待500ms
+        # 连接成功，说明程序已在运行
+        # 发送唤醒消息
+        socket.write(b"WAKEUP")
+        socket.flush()
+        socket.waitForBytesWritten(1000)
+        socket.disconnectFromServer()
+        
+        # 显示提示（可选，也可以静默退出）
+        # 这里选择静默退出，因为已经唤醒了旧实例
+        return
+    
+    # 连接失败，说明没有其他实例在运行
+    # 使用共享内存作为辅助锁（防止极端情况下的竞态条件）
+    shared_mem = QtCore.QSharedMemory("ImageUploadTool_SingleInstance")
     if not shared_mem.create(1):
-        # 如果共享内存已存在，说明程序已运行
+        # 极少情况：LocalServer 未响应但共享内存存在
+        # 这可能是上次程序异常退出导致的，提示用户
         msg = QtWidgets.QMessageBox()
         msg.setIcon(QtWidgets.QMessageBox.Icon.Warning)
-        msg.setWindowTitle("程序已运行")
-        msg.setText("图片异步上传工具已在运行中！")
-        msg.setInformativeText("请在系统托盘中查找程序图标。\n\n如需重新启动，请先关闭已运行的实例。")
+        msg.setWindowTitle("程序启动异常")
+        msg.setText("检测到程序可能未正常退出")
+        msg.setInformativeText("建议：\n1. 检查任务管理器是否有残留进程\n2. 重启计算机后重试")
         msg.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
         msg.exec() if hasattr(msg, 'exec') else msg.exec_()
         return
