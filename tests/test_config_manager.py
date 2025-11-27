@@ -1,6 +1,9 @@
+# -*- coding: utf-8 -*-
 """
 配置管理器测试
-测试配置加载、升级、备份功能
+测试配置加载、保存功能
+
+v3.0.1 更新：适配新的模块化架构
 """
 
 import sys
@@ -9,9 +12,10 @@ import tempfile
 import json
 from pathlib import Path
 
+# 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config_manager import ConfigManager, DEFAULT_CONFIG_V20
+from src.config import ConfigManager
 
 
 class TestConfigManager(unittest.TestCase):
@@ -32,104 +36,125 @@ class TestConfigManager(unittest.TestCase):
         manager = ConfigManager(self.config_path)
         config = manager.load()
         
-        self.assertEqual(config['config_version'], '2.0')
-        self.assertEqual(config['protocol_type'], 'smb')
+        # 应该返回默认配置
+        self.assertEqual(config['source_folder'], '')
+        self.assertEqual(config['upload_interval'], 30)
+        self.assertTrue(config['enable_backup'])
         self.assertIn('ftp_client', config)
         self.assertIn('ftp_server', config)
-        
-        # 配置文件应该被创建
-        self.assertTrue(self.config_path.exists())
     
-    def test_upgrade_v19_config(self):
-        """测试从 v1.9 升级到 v2.0"""
-        # 创建 v1.9 配置
-        old_config = {
+    def test_load_existing_config(self):
+        """测试加载已存在的配置文件"""
+        # 创建测试配置
+        test_config = {
             "source_folder": "D:/test/source",
             "target_folder": "D:/test/target",
-            "backup_folder": "D:/test/backup",
-            "upload_interval": 30,
-            "enable_deduplication": True,
-            "hash_algorithm": "md5"
+            "upload_interval": 60
         }
         
         with open(self.config_path, 'w', encoding='utf-8') as f:
-            json.dump(old_config, f)
-        
-        # 加载并升级
-        manager = ConfigManager(self.config_path)
-        config = manager.load()
-        
-        # 版本应该是 2.0
-        self.assertEqual(config['config_version'], '2.0')
-        
-        # 旧配置应该被保留
-        self.assertEqual(config['source_folder'], 'D:/test/source')
-        self.assertEqual(config['target_folder'], 'D:/test/target')
-        self.assertEqual(config['enable_deduplication'], True)
-        
-        # 新字段应该存在
-        self.assertIn('protocol_type', config)
-        self.assertIn('ftp_client', config)
-        self.assertIn('ftp_server', config)
-        
-        # 备份文件应该被创建
-        backup_file = self.temp_dir / 'config_backup_v1.9.json'
-        self.assertTrue(backup_file.exists())
-    
-    def test_merge_new_fields(self):
-        """测试合并新字段"""
-        # 创建不完整的 v2.0 配置
-        partial_config = {
-            "config_version": "2.0",
-            "protocol_type": "ftp",
-            "source_folder": "D:/test"
-        }
-        
-        with open(self.config_path, 'w', encoding='utf-8') as f:
-            json.dump(partial_config, f)
+            json.dump(test_config, f)
         
         # 加载
         manager = ConfigManager(self.config_path)
         config = manager.load()
         
-        # 缺失的字段应该被补全
+        # 用户设置应该被保留
+        self.assertEqual(config['source_folder'], 'D:/test/source')
+        self.assertEqual(config['target_folder'], 'D:/test/target')
+        self.assertEqual(config['upload_interval'], 60)
+        
+        # 默认字段应该被补全
         self.assertIn('ftp_client', config)
-        self.assertIn('multi_source_paths', config)
-        self.assertEqual(config['protocol_type'], 'ftp')  # 保留用户设置
-    
-    def test_get_protocol_config(self):
-        """测试获取协议配置"""
-        manager = ConfigManager(self.config_path)
-        manager.load()
-        
-        # 测试 SMB 配置
-        manager.set('protocol_type', 'smb')
-        manager.set('target_folder', 'D:/test/target')
-        smb_config = manager.get_protocol_config()
-        self.assertEqual(smb_config['target_folder'], 'D:/test/target')
-        
-        # 测试 FTP 配置
-        manager.set('protocol_type', 'ftp')
-        manager.config['ftp_client']['host'] = 'ftp.example.com'
-        ftp_config = manager.get_protocol_config()
-        self.assertEqual(ftp_config['host'], 'ftp.example.com')
-        self.assertEqual(ftp_config['protocol_type'], 'ftp')
+        self.assertIn('ftp_server', config)
     
     def test_save_config(self):
         """测试保存配置"""
         manager = ConfigManager(self.config_path)
         manager.load()
         
-        manager.set('protocol_type', 'ftps')
-        manager.set('source_folder', 'D:/new/source')
-        manager.save()
+        # 修改配置
+        config = manager._config.copy()
+        config['source_folder'] = 'D:/new/source'
+        config['upload_interval'] = 45
+        
+        # 保存
+        result = manager.save(config)
+        self.assertTrue(result)
         
         # 重新加载验证
         manager2 = ConfigManager(self.config_path)
         config2 = manager2.load()
         
-        self.assertEqual(config2['protocol_type'], 'ftps')
         self.assertEqual(config2['source_folder'], 'D:/new/source')
+        self.assertEqual(config2['upload_interval'], 45)
+    
+    def test_get_set_methods(self):
+        """测试 get/set 方法"""
+        manager = ConfigManager(self.config_path)
+        manager.load()
+        
+        # 测试 set
+        manager.set('source_folder', 'D:/test')
+        
+        # 测试 get
+        self.assertEqual(manager.get('source_folder'), 'D:/test')
+        self.assertIsNone(manager.get('non_existent_key'))
+        self.assertEqual(manager.get('non_existent_key', 'default'), 'default')
+    
+    def test_get_default_config(self):
+        """测试获取默认配置"""
+        default = ConfigManager.get_default_config()
+        
+        self.assertIsInstance(default, dict)
+        self.assertIn('source_folder', default)
+        self.assertIn('ftp_server', default)
+        self.assertIn('ftp_client', default)
+    
+    def test_ftp_server_config(self):
+        """测试 FTP 服务器配置"""
+        manager = ConfigManager(self.config_path)
+        config = manager.load()
+        
+        ftp_server = config['ftp_server']
+        self.assertEqual(ftp_server['host'], '0.0.0.0')
+        self.assertEqual(ftp_server['port'], 2121)
+        self.assertEqual(ftp_server['username'], 'upload_user')
+        self.assertTrue(ftp_server['enable_passive'])
+    
+    def test_ftp_client_config(self):
+        """测试 FTP 客户端配置"""
+        manager = ConfigManager(self.config_path)
+        config = manager.load()
+        
+        ftp_client = config['ftp_client']
+        self.assertEqual(ftp_client['port'], 21)
+        self.assertEqual(ftp_client['remote_path'], '/upload')
+        self.assertEqual(ftp_client['timeout'], 30)
+        self.assertTrue(ftp_client['passive_mode'])
+    
+    def test_config_merge(self):
+        """测试配置合并（不完整配置补全）"""
+        # 创建不完整的配置
+        partial_config = {
+            "source_folder": "D:/test",
+            "ftp_server": {
+                "port": 3000  # 只设置端口
+            }
+        }
+        
+        with open(self.config_path, 'w', encoding='utf-8') as f:
+            json.dump(partial_config, f)
+        
+        manager = ConfigManager(self.config_path)
+        config = manager.load()
+        
+        # 用户设置应该被保留
+        self.assertEqual(config['source_folder'], 'D:/test')
+        
+        # 默认字段应该被补全
+        self.assertIn('target_folder', config)
+        self.assertIn('enable_backup', config)
 
 
 if __name__ == '__main__':

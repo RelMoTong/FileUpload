@@ -82,8 +82,8 @@ def get_qt_enum(enum_class, attr_name: str, fallback_value: int):
     except AttributeError:
         return fallback_value
 
-APP_TITLE = "图片异步上传工具 v3.0.0"
-APP_VERSION = "3.0.0"
+APP_TITLE = "图片异步上传工具 v3.0.1"
+APP_VERSION = "3.0.1"
 
 
 def get_app_dir() -> Path:

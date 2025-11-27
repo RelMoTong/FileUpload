@@ -388,13 +388,50 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         center.addLayout(middle, 1)
         center.addLayout(right, 1)
 
-        # left cards
-        left.addWidget(self._folder_card())
-        left.addWidget(self._settings_card(), 1)
+        # left cards - 使用 QSplitter 防止卡片互相影响大小
+        left_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        left_splitter.setChildrenCollapsible(False)  # 防止子部件被完全折叠
+        left_splitter.setHandleWidth(8)  # 分隔条宽度
+        left_splitter.setStyleSheet("""
+            QSplitter::handle {
+                background: #E5EAF0;
+                margin: 2px 0;
+            }
+            QSplitter::handle:hover {
+                background: #1976D2;
+            }
+        """)
+        
+        folder_card = self._folder_card()
+        settings_card = self._settings_card()
+        
+        left_splitter.addWidget(folder_card)
+        left_splitter.addWidget(settings_card)
+        
+        # 设置初始比例：文件夹卡片较小，设置卡片较大
+        left_splitter.setSizes([200, 500])
+        
+        left.addWidget(left_splitter)
 
-        # middle cards
-        middle.addWidget(self._control_card())
-        middle.addWidget(self._status_card(), 1)
+        # middle cards - 同样使用 QSplitter
+        middle_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        middle_splitter.setChildrenCollapsible(False)
+        middle_splitter.setHandleWidth(8)
+        middle_splitter.setStyleSheet("""
+            QSplitter::handle {
+                background: #E5EAF0;
+                margin: 2px 0;
+            }
+            QSplitter::handle:hover {
+                background: #1976D2;
+            }
+        """)
+        
+        middle_splitter.addWidget(self._control_card())
+        middle_splitter.addWidget(self._status_card())
+        middle_splitter.setSizes([250, 450])
+        
+        middle.addWidget(middle_splitter)
 
         # right - log card
         right.addWidget(self._log_card(), 1)
@@ -418,6 +455,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
 
     def _folder_card(self) -> QtWidgets.QFrame:
         card, v = self._card("📁 文件夹设置")
+        
         # source
         self.src_edit, self.btn_choose_src = self._path_row(v, "源文件夹", self._choose_source)
         # target
@@ -439,6 +477,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         backup_hint.setWordWrap(True)
         backup_hint.setStyleSheet("color: #666; font-size: 11px; padding: 5px 0;")
         v.addWidget(backup_hint)
+        
+        # v3.0.0 修复：设置固定高度，防止被其他卡片挤压
+        card.setFixedHeight(280)
         
         return card
 
@@ -467,10 +508,31 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
     def _settings_card(self) -> QtWidgets.QFrame:
         card, v = self._card("⚙️ 上传设置")
         
+        # v3.0.0 修复：将设置内容放入滚动区域，防止可折叠组件展开时影响其他卡片大小
+        scroll_area = QtWidgets.QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # 关键：设置尺寸策略，防止滚动区域随内容扩展
+        scroll_area.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding
+        )
+        # 设置滚动区域的最小高度，防止被压缩得太小
+        scroll_area.setMinimumHeight(200)
+        
+        # 创建滚动内容容器
+        scroll_content = QtWidgets.QWidget()
+        scroll_layout = QtWidgets.QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 8, 0)  # 右边留出滚动条空间
+        scroll_layout.setSpacing(10)
+        
+        # 将后续所有内容添加到 scroll_layout 而不是 v
         # ========== v2.0 新增：协议选择 ==========
         protocol_lab = QtWidgets.QLabel("📡 上传协议 (v2.0)")
         protocol_lab.setStyleSheet("color:#1976D2; font-size:11px; font-weight:700;")
-        v.addWidget(protocol_lab)
+        scroll_layout.addWidget(protocol_lab)
         
         # 协议选择下拉框
         protocol_row = QtWidgets.QHBoxLayout()
@@ -485,13 +547,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.combo_protocol.currentIndexChanged.connect(self._on_protocol_changed)
         protocol_row.addWidget(protocol_label)
         protocol_row.addWidget(self.combo_protocol, 1)
-        v.addLayout(protocol_row)
+        scroll_layout.addLayout(protocol_row)
         
         # 协议说明
         self.protocol_desc = QtWidgets.QLabel()
         self.protocol_desc.setWordWrap(True)
         self.protocol_desc.setStyleSheet("color: #6B7280; padding: 8px; background: #F3F4F6; border-radius: 6px; font-size: 10px;")
-        v.addWidget(self.protocol_desc)
+        scroll_layout.addWidget(self.protocol_desc)
         self._update_protocol_description(0)
         
         # FTP 配置容器（可折叠）
@@ -669,16 +731,16 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.ftp_client_collapsible.setContentLayout(client_layout)
         ftp_layout.addWidget(self.ftp_client_collapsible)
         
-        v.addWidget(self.ftp_config_widget)
+        scroll_layout.addWidget(self.ftp_config_widget)
         
-        v.addWidget(self._hline())
+        scroll_layout.addWidget(self._hline())
         # ========== v2.0 协议选择结束 ==========
         
         # interval
-        self.spin_interval = self._spin_row(v, "间隔时间(秒)", 10, 3600, 30)
-        self.spin_disk = self._spin_row(v, "磁盘阈值(%)", 5, 50, 10)
-        self.spin_retry = self._spin_row(v, "失败重试次数", 0, 10, 3)
-        self.spin_disk_check = self._spin_row(v, "磁盘检查间隔(秒)", 1, 60, 5)
+        self.spin_interval = self._spin_row(scroll_layout, "间隔时间(秒)", 10, 3600, 30)
+        self.spin_disk = self._spin_row(scroll_layout, "磁盘阈值(%)", 5, 50, 10)
+        self.spin_retry = self._spin_row(scroll_layout, "失败重试次数", 0, 10, 3)
+        self.spin_disk_check = self._spin_row(scroll_layout, "磁盘检查间隔(秒)", 1, 60, 5)
         # 绑定磁盘检查间隔变化事件
         self.spin_disk_check.valueChanged.connect(lambda val: setattr(self, 'disk_check_interval', val))
         
@@ -702,7 +764,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.cb_ext[ext] = cb
             grid.addWidget(cb, i//3, i%3)
         filter_collapsible.addLayout(grid)
-        v.addWidget(filter_collapsible)
+        scroll_layout.addWidget(filter_collapsible)
         
         # ========== 高级选项 - 可折叠 ==========
         adv_collapsible = MainWindow.CollapsibleBox("⚡ 高级选项", self)
@@ -833,7 +895,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         network_hint.setWordWrap(True)
         adv_collapsible.addWidget(network_hint)
         
-        v.addWidget(adv_collapsible)
+        scroll_layout.addWidget(adv_collapsible)
+        
+        # 添加弹性空间，使内容紧凑排列
+        scroll_layout.addStretch()
+        
+        # 设置滚动区域
+        scroll_area.setWidget(scroll_content)
+        v.addWidget(scroll_area, 1)  # stretch=1 让滚动区域填满剩余空间
         
         return card
 
@@ -850,6 +919,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
 
     def _control_card(self) -> QtWidgets.QFrame:
         card, v = self._card("🎮 操作控制")
+        
         # primary start - 优化按钮尺寸
         self.btn_start = QtWidgets.QPushButton("▶ 开始上传")
         self.btn_start.setProperty("class", "Primary")
@@ -904,6 +974,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         row2.addWidget(self.btn_save)
         row2.addWidget(self.btn_more)
         v.addLayout(row2)
+        
+        # v3.0.0 修复：设置固定高度，防止被其他卡片挤压
+        card.setFixedHeight(260)
+        
         return card
 
     def _logout(self):
