@@ -20,5 +20,5 @@ v3.0.1 - 模块化架构重构完成，布局优化
     - ftp.py: FTP 协议实现
 """
 
-__version__ = "3.0.1"
+__version__ = "3.0.2"
 __author__ = "RelMoTong"

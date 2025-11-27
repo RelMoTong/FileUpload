@@ -110,6 +110,7 @@ class ChipWidget(QtWidgets.QFrame):  # type: ignore[misc]
         parent: 父窗口
     """
     value_label: QtWidgets.QLabel
+    title_label: QtWidgets.QLabel
     
     def __init__(
         self,
@@ -127,11 +128,11 @@ class ChipWidget(QtWidgets.QFrame):  # type: ignore[misc]
         vv = QtWidgets.QVBoxLayout(self)
         vv.setSpacing(4)  # 增加标题和值之间的间距
         vv.setContentsMargins(10, 8, 10, 8)  # 增加内边距
-        t = QtWidgets.QLabel(title)
-        t.setStyleSheet("font-size:9.5pt; padding-top:2px;")
+        self.title_label = QtWidgets.QLabel(title)
+        self.title_label.setStyleSheet("font-size:9.5pt; padding-top:2px;")
         self.value_label = QtWidgets.QLabel(val)
         self.value_label.setStyleSheet("font-weight:700; font-size:11.5pt; padding-bottom:2px;")
-        vv.addWidget(t)
+        vv.addWidget(self.title_label)
         vv.addWidget(self.value_label)
     
     def setValue(self, text: str) -> None:

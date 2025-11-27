@@ -49,9 +49,9 @@ def get_app_version() -> str:
     """获取应用程序版本号
     
     Returns:
-        str: 版本号，如 "3.0.1"
+        str: 版本号，如 "3.0.2"
     """
-    return "3.0.1"
+    return "3.0.2"
 
 
 def get_app_title() -> str:

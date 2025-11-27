@@ -2,17 +2,21 @@
 """
 图片异步上传工具 - 主程序入口 (模块化版本)
 
-v3.0.1 - 模块化架构重构完成，布局优化
+v3.1.0 - 断点续传、中英文切换、配置加载修复
 - 使用新的模块化结构
 - 保持与 pyqt_app.py 的兼容性
 """
 import sys
+import os
 from pathlib import Path
 
 # 添加项目根目录到 Python 路径
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
+
+# 切换工作目录到项目根目录（确保配置文件能被正确找到）
+os.chdir(project_root)
 
 # 导入核心模块
 from src.core import get_app_dir, get_app_version, get_app_title

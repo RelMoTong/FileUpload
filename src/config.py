@@ -54,6 +54,11 @@ class ConfigManager:
         # 协议配置
         'upload_protocol': 'smb',
         'current_protocol': 'smb',
+        # v3.0.2 新增：语言设置
+        'language': 'zh_CN',
+        # v3.0.2 新增：断点续传设置
+        'enable_resume': True,
+        'resume_min_size_mb': 10,
         # FTP 服务器配置
         'ftp_server': {
             'host': '0.0.0.0',

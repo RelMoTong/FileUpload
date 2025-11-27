@@ -64,3 +64,6 @@ tests/ftp_test_data/
 # Release packages
 *_发布版.zip
 *_发布版/
+
+# Stable release folder
+※※dist*/

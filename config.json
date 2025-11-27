@@ -3,7 +3,7 @@
   "target_folder": "Y:/机器视觉/02-视觉项目/Test/常州汇川",
   "backup_folder": "D:/工作/2024年8月/常州汇川/常州汇川资料/T24013  常州汇川装配8线测量选垫设备",
   "enable_backup": false,
-  "upload_interval": 28,
+  "upload_interval": 33,
   "monitor_mode": "periodic",
   "disk_threshold_percent": 15,
   "retry_count": 3,
