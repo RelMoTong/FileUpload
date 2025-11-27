@@ -15,7 +15,7 @@ from datetime import datetime
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.ftp_protocol import FTPServerManager, FTPClientUploader
+from src.protocols.ftp import FTPServerManager, FTPClientUploader
 
 
 def print_header(title):
@@ -65,7 +65,7 @@ def test_performance_1_startup_time():
         start_time = time.time()
         
         # 导入模块
-        from src.ftp_protocol import FTPServerManager, FTPClientUploader
+        from src.protocols.ftp import FTPServerManager, FTPClientUploader
         
         # 创建配置
         server_config = {

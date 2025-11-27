@@ -1,207 +1,154 @@
 @echo off
 setlocal enableextensions enabledelayedexpansion
 
-:: ========================================
-::  图片异步上传工具 v2.3.1 - 一键打包脚本
-:: ========================================
-:: 功能：生成免安装的 .exe 可执行文件
-:: 日期：2025-11-24
-:: ========================================
+REM ============================================================
+REM  图片异步上传工具 - 自动打包脚本 v3.0.0
+REM  更新日期: 2025-11-27
+REM  v3.0.0: 模块化架构重构完成，使用 src/main.py 作为入口
+REM ============================================================
 
-:: 设置控制台为 UTF-8
-chcp 65001 >nul 2>&1
+set VERSION=3.0.0
+set APP_NAME=图片异步上传工具_v%VERSION%
+set DIST_DIR=dist-%VERSION%
 
 echo.
-echo ========================================
-echo   图片异步上传工具 v2.3.0 - 打包程序
-echo ========================================
-echo.
-echo [信息] 开始准备打包环境...
+echo ============================================================
+echo   图片异步上传工具 v%VERSION% 打包脚本 (模块化架构)
+echo ============================================================
 echo.
 
-:: 切换到项目根目录（脚本在scripts子目录下）
-cd /d "%~dp0.."
-echo [信息] 当前工作目录：%CD%
-echo.
-
-:: ========================================
-:: 1. 检查 Python 环境
-:: ========================================
-echo [1/7] 检查 Python 环境...
+REM [1/9] 检查Python环境
+echo [1/9] 检查Python环境...
 python --version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [错误] 未检测到 Python，请先安装 Python 3.8+
-    echo        下载地址：https://www.python.org/downloads/
+if errorlevel 1 (
+    echo 错误: Python 未安装或未添加到PATH
     pause
     exit /b 1
 )
-python --version
-echo.
+echo      Python 环境正常
 
-:: ========================================
-:: 2. 检查必要依赖
-:: ========================================
-echo [2/7] 检查必要依赖...
-
-:: 检查 PySide6/PyQt5
-python -c "import PySide6" >nul 2>&1
-if %errorlevel% neq 0 (
-    python -c "import PyQt5" >nul 2>&1
-    if %errorlevel% neq 0 (
-        echo [错误] 未检测到 PySide6 或 PyQt5
-        echo        请先安装：pip install PySide6
-        pause
-        exit /b 1
-    ) else (
-        echo [信息] 使用 PyQt5
-    )
-) else (
-    echo [信息] 使用 PySide6
-)
-
-:: 检查并安装 PyInstaller
+REM [2/9] 检查PyInstaller
+echo [2/9] 检查PyInstaller...
 python -c "import PyInstaller" >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [信息] 未检测到 PyInstaller，正在安装...
+if errorlevel 1 (
+    echo      PyInstaller 未安装，正在安装...
     pip install pyinstaller
-    if %errorlevel% neq 0 (
-        echo [错误] PyInstaller 安装失败
-        pause
-        exit /b 1
-    )
 )
-echo [信息] PyInstaller 已就绪
-echo.
+echo      PyInstaller 已就绪
 
-:: ========================================
-:: 3. 结束可能占用文件的进程
-:: ========================================
-echo [3/7] 检查并结束占用进程...
-
-:: 结束所有可能的进程
-taskkill /F /IM "图片异步上传工具*.exe" >nul 2>&1
-taskkill /F /IM "python.exe" /FI "WINDOWTITLE eq *pyqt_app*" >nul 2>&1
-taskkill /F /IM "pythonw.exe" /FI "WINDOWTITLE eq *pyqt_app*" >nul 2>&1
-
-echo [信息] 等待进程完全退出...
-timeout /t 3 /nobreak >nul
-echo.
-
-:: ========================================
-:: 4. 强力清理旧构建
-:: ========================================
-echo [4/7] 清理旧构建文件...
-
-:: 使用 Python 脚本强制删除（绕过 Windows 权限限制）
-python -c "import shutil, os, time; [shutil.rmtree(d, ignore_errors=True) if os.path.exists(d) else None for d in ['build', 'dist']]; time.sleep(1)"
-
-:: 再次尝试用批处理删除
-if exist build (
-    echo [信息] 删除 build 目录...
-    attrib -r -s -h build\*.* /s /d >nul 2>&1
-    rd /s /q build >nul 2>&1
+REM [3/9] 检查入口文件
+echo [3/9] 检查入口文件...
+cd /d "%~dp0.."
+if not exist "src\main.py" (
+    echo 错误: 找不到入口文件 src\main.py
+    pause
+    exit /b 1
 )
+echo      入口文件: src\main.py
+echo      工作目录: %CD%
 
-if exist dist (
-    echo [信息] 删除 dist 目录...
-    attrib -r -s -h dist\*.* /s /d >nul 2>&1
-    rd /s /q dist >nul 2>&1
-)
-
-:: 删除旧 spec 文件
-for %%f in (图片异步上传工具*.spec) do (
-    if exist "%%f" (
-        echo [信息] 删除旧 spec 文件: %%f
-        del /f /q "%%f" >nul 2>&1
-    )
-)
-
-:: 最后验证清理结果
-if exist build (
-    echo [警告] build 目录仍然存在，但将继续打包...
-)
-
-if exist dist (
-    echo [警告] dist 目录仍然存在，将尝试重命名...
-    
-    :: 重命名旧目录为备份
-    set BACKUP_NAME=dist_backup_%date:~0,4%%date:~5,2%%date:~8,2%_%time:~0,2%%time:~3,2%%time:~6,2%
-    set BACKUP_NAME=!BACKUP_NAME: =0!
-    
-    move dist "!BACKUP_NAME!" >nul 2>&1
-    
-    if exist dist (
-        echo [错误] 无法清理 dist 目录
-        echo.
-        echo 解决方案 1: 手动删除 dist 文件夹后重试
-        echo 解决方案 2: 重启电脑后重试
-        echo 解决方案 3: 使用管理员权限运行本脚本
-        echo.
-        echo 提示: 可以尝试使用 Unlocker 等工具解锁文件
-        echo       下载地址: https://www.iobit.com/en/iobit-unlocker.php
-        echo.
-        pause
-        exit /b 1
-    ) else (
-        echo [信息] 已将旧 dist 重命名为: !BACKUP_NAME!
-    )
-)
-
-echo [信息] 清理完成
-echo.
-
-:: ========================================
-:: 5. 配置打包参数
-:: ========================================
-echo [5/7] 配置打包参数...
-set APP_NAME=图片异步上传工具
-set VERSION=2.3.1
-set OUTPUT_NAME=%APP_NAME%_v%VERSION%
-set DIST_DIR=dist-%VERSION%
-set ENTRY=pyqt_app.py
-set ICON_PARAM=
-
-:: 检查图标文件
-if exist assets\app.ico (
-    set ICON_PARAM=--icon=assets\app.ico
-    echo [信息] 使用自定义图标：assets\app.ico
+REM 检查图标文件
+set ICON_FILE=
+if exist "assets\logo.ico" (
+    set ICON_FILE=assets\logo.ico
+    echo      图标文件: assets\logo.ico
+) else if exist "assets\logo.png" (
+    echo      警告: 未找到 logo.ico，尝试使用 logo.png
+    set ICON_FILE=assets\logo.png
 ) else (
-    echo [信息] 未找到图标文件，使用默认图标
+    echo      警告: 未找到图标文件，将使用默认图标
 )
 
-echo [信息] 应用名称：%APP_NAME%
-echo [信息] 版本号：v%VERSION%
-echo [信息] 输出文件名：%OUTPUT_NAME%.exe
-echo [信息] 输出目录：%DIST_DIR%\
+REM [4/9] 检查模块化组件
+echo [4/9] 检查模块化组件...
+set MISSING_MODULES=0
+if not exist "src\ui\main_window.py" (
+    echo      警告: 缺少 src\ui\main_window.py
+    set MISSING_MODULES=1
+)
+if not exist "src\ui\widgets.py" (
+    echo      警告: 缺少 src\ui\widgets.py
+    set MISSING_MODULES=1
+)
+if not exist "src\workers\upload_worker.py" (
+    echo      警告: 缺少 src\workers\upload_worker.py
+    set MISSING_MODULES=1
+)
+if not exist "src\protocols\ftp.py" (
+    echo      警告: 缺少 src\protocols\ftp.py
+    set MISSING_MODULES=1
+)
+if not exist "src\config.py" (
+    echo      警告: 缺少 src\config.py
+    set MISSING_MODULES=1
+)
+if not exist "src\core\utils.py" (
+    echo      警告: 缺少 src\core\utils.py
+    set MISSING_MODULES=1
+)
+if not exist "src\core\permissions.py" (
+    echo      警告: 缺少 src\core\permissions.py
+    set MISSING_MODULES=1
+)
+if %MISSING_MODULES%==1 (
+    echo      警告: 部分模块缺失，可能影响打包
+) else (
+    echo      所有模块化组件已就绪
+)
+
+REM [5/9] 清理旧的构建文件
+echo [5/9] 清理旧的构建文件...
+if exist "build" rmdir /s /q "build"
+if exist "%DIST_DIR%" rmdir /s /q "%DIST_DIR%"
+if exist "*.spec" del /q *.spec
+echo      清理完成
+
+REM [6/9] 执行打包
+echo [6/9] 执行打包 (模块化架构)...
+echo      入口: src\main.py
+echo      输出: %DIST_DIR%\%APP_NAME%
 echo.
 
-:: ========================================
-:: 6. 执行打包
-:: ========================================
-echo [6/7] 开始打包（这可能需要几分钟）...
-echo [信息] 使用目录模式打包（启动速度更快）...
-echo.
-echo ----------------------------------------
-echo PyInstaller 日志输出：
-echo ----------------------------------------
-echo.
+REM 构建图标参数
+set ICON_PARAM=
+if defined ICON_FILE (
+    set ICON_PARAM=--icon="%ICON_FILE%"
+)
 
-pyinstaller --noconfirm ^
-  --onedir ^
+pyinstaller ^
+  --name="%APP_NAME%" ^
   --windowed ^
-  --name "%OUTPUT_NAME%" ^
-  --distpath "%DIST_DIR%" ^
-  --add-data "config.json;." ^
-  --add-data "assets;assets" ^
-  --add-data "logs;logs" ^
+  --onedir ^
+  --distpath="%DIST_DIR%" ^
+  %ICON_PARAM% ^
+  --add-data="assets;assets" ^
+  --add-data="config.json;." ^
+  --add-data="version.txt;." ^
+  --add-data="qt_types.py;." ^
+  --add-data="src;src" ^
+  --hidden-import=PySide6 ^
   --hidden-import=PySide6.QtCore ^
   --hidden-import=PySide6.QtGui ^
   --hidden-import=PySide6.QtWidgets ^
   --hidden-import=PySide6.QtNetwork ^
-  --hidden-import=PyQt5.QtCore ^
-  --hidden-import=PyQt5.QtGui ^
-  --hidden-import=PyQt5.QtWidgets ^
+  --hidden-import=src ^
+  --hidden-import=src.main ^
+  --hidden-import=src.config ^
+  --hidden-import=src.ui ^
+  --hidden-import=src.ui.main_window ^
+  --hidden-import=src.ui.widgets ^
+  --hidden-import=src.workers ^
+  --hidden-import=src.workers.upload_worker ^
+  --hidden-import=src.core ^
+  --hidden-import=src.core.utils ^
+  --hidden-import=src.core.permissions ^
+  --hidden-import=src.protocols ^
+  --hidden-import=src.protocols.ftp ^
   --hidden-import=qt_types ^
+  --hidden-import=pyftpdlib ^
+  --hidden-import=pyftpdlib.handlers ^
+  --hidden-import=pyftpdlib.servers ^
+  --hidden-import=pyftpdlib.authorizers ^
   --exclude-module=PySide6.QtWebEngine ^
   --exclude-module=PySide6.QtWebEngineCore ^
   --exclude-module=PySide6.QtWebEngineWidgets ^
@@ -215,130 +162,112 @@ pyinstaller --noconfirm ^
   --exclude-module=PySide6.QtQuick3D ^
   --exclude-module=PySide6.QtQuickWidgets ^
   --exclude-module=PySide6.QtQml ^
+  --exclude-module=PySide6.QtQmlModels ^
   --exclude-module=PySide6.QtSql ^
   --exclude-module=PySide6.QtTest ^
   --exclude-module=PySide6.QtDesigner ^
   --exclude-module=PySide6.QtHelp ^
   --exclude-module=PySide6.QtMultimedia ^
   --exclude-module=PySide6.QtMultimediaWidgets ^
-  --exclude-module=PySide6.QtNetworkAuth ^
+  --exclude-module=PySide6.QtBluetooth ^
   --exclude-module=PySide6.QtNfc ^
-  --exclude-module=PySide6.QtOpenGL ^
-  --exclude-module=PySide6.QtOpenGLWidgets ^
-  --exclude-module=PySide6.QtPdf ^
-  --exclude-module=PySide6.QtPdfWidgets ^
   --exclude-module=PySide6.QtPositioning ^
+  --exclude-module=PySide6.QtLocation ^
+  --exclude-module=PySide6.QtSensors ^
+  --exclude-module=PySide6.QtSerialPort ^
   --exclude-module=PySide6.QtRemoteObjects ^
   --exclude-module=PySide6.QtScxml ^
-  --exclude-module=PySide6.QtSensors ^
-  --exclude-module=PySide6.QtSerialBus ^
-  --exclude-module=PySide6.QtSerialPort ^
-  --exclude-module=PySide6.QtSpatialAudio ^
+  --exclude-module=PySide6.QtCharts ^
+  --exclude-module=PySide6.QtDataVisualization ^
+  --exclude-module=PySide6.QtPdf ^
+  --exclude-module=PySide6.QtPdfWidgets ^
+  --exclude-module=PySide6.QtOpenGL ^
+  --exclude-module=PySide6.QtOpenGLWidgets ^
+  --exclude-module=PySide6.QtSvgWidgets ^
   --exclude-module=PySide6.QtStateMachine ^
   --exclude-module=PySide6.QtTextToSpeech ^
-  --exclude-module=PySide6.QtUiTools ^
   --exclude-module=PySide6.QtWebChannel ^
   --exclude-module=PySide6.QtWebSockets ^
-  --exclude-module=PySide6.QtWebView ^
-  --exclude-module=PySide6.QtXml ^
+  --exclude-module=PySide6.QtHttpServer ^
   --exclude-module=tkinter ^
-  %ICON_PARAM% ^
-  %ENTRY%
+  --exclude-module=matplotlib ^
+  --exclude-module=numpy ^
+  --exclude-module=pandas ^
+  --exclude-module=scipy ^
+  --exclude-module=PIL ^
+  --exclude-module=cv2 ^
+  --exclude-module=PyQt5 ^
+  --exclude-module=PyQt6 ^
+  --noconfirm ^
+  --clean ^
+  "src\main.py"
 
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo.
-    echo ========================================
-    echo [错误] 打包失败！
-    echo ========================================
-    echo.
-    echo 可能的原因：
-    echo   1. 缺少必要的依赖包
-    echo   2. 代码存在语法错误
-    echo   3. PyInstaller 版本不兼容
-    echo   4. 文件被占用或权限不足
-    echo.
-    echo 建议：
-    echo   1. 运行 pip install -r requirements.txt
-    echo   2. 检查 pyqt_app.py 是否有错误
-    echo   3. 尝试更新 PyInstaller：pip install -U pyinstaller
-    echo   4. 以管理员身份运行本脚本
-    echo.
+    echo 错误: 打包失败！
     pause
     exit /b 1
 )
 
-:: ========================================
-:: 7. 验证打包结果
-:: ========================================
 echo.
-echo [7/7] 验证打包结果...
+echo      打包完成
 
-if not exist "%DIST_DIR%\%OUTPUT_NAME%\%OUTPUT_NAME%.exe" (
-    echo [错误] 未找到输出文件：%DIST_DIR%\%OUTPUT_NAME%\%OUTPUT_NAME%.exe
-    echo [信息] 打包可能失败，请查看上方日志
+REM [7/9] 创建日志目录
+echo [7/9] 创建日志目录...
+if not exist "%DIST_DIR%\%APP_NAME%\logs" mkdir "%DIST_DIR%\%APP_NAME%\logs"
+echo      日志目录已创建
+
+REM [8/9] 验证打包结果
+echo [8/9] 验证打包结果...
+if not exist "%DIST_DIR%\%APP_NAME%\%APP_NAME%.exe" (
+    echo 错误: 可执行文件未生成
     pause
     exit /b 1
 )
 
-:: 获取文件大小
-for %%A in ("%DIST_DIR%\%OUTPUT_NAME%\%OUTPUT_NAME%.exe") do set FILE_SIZE=%%~zA
+for %%A in ("%DIST_DIR%\%APP_NAME%\%APP_NAME%.exe") do set EXE_SIZE=%%~zA
+set /a EXE_SIZE_MB=%EXE_SIZE% / 1048576
+echo      可执行文件: %APP_NAME%.exe (%EXE_SIZE_MB% MB)
 
-:: 计算MB大小（简化版）
-set /a SIZE_MB=%FILE_SIZE% / 1048576
+REM 计算 _internal 目录大小
+set INTERNAL_SIZE=0
+for /r "%DIST_DIR%\%APP_NAME%\_internal" %%F in (*) do set /a INTERNAL_SIZE+=%%~zF
+set /a INTERNAL_SIZE_MB=%INTERNAL_SIZE% / 1048576
+echo      依赖库大小: %INTERNAL_SIZE_MB% MB
 
-echo.
-echo ========================================
-echo [成功] 打包完成！
-echo ========================================
-echo.
-echo 输出目录：%DIST_DIR%\%OUTPUT_NAME%\
-echo 主程序：%OUTPUT_NAME%.exe
-echo 程序大小：%SIZE_MB% MB
-echo.
-echo 📦 打包内容：
-echo   ✓ 主程序：pyqt_app.py
-echo   ✓ 配置文件：config.json
-echo   ✓ 资源文件：assets\*
-echo   ✓ 日志目录：logs\
-echo   ✓ 依赖库：PySide6/PyQt5
-echo   ✓ 运行库：所有依赖 DLL 文件
-echo.
-echo 📝 使用说明：
-echo   1. 将整个 %DIST_DIR%\%OUTPUT_NAME%\ 目录复制给用户
-echo   2. 双击 %OUTPUT_NAME%.exe 运行（启动速度快）
-echo   3. 首次运行会自动创建配置和日志
-echo.
-echo 💡 提示：
-echo   - 目录模式启动速度比单文件模式快 5-10 倍
-echo   - 必须保持整个目录完整，不能只复制 .exe 文件
-echo   - 默认用户密码：123
-echo   - 默认管理员密码：Tops123
-echo.
+REM [9/9] 创建发布压缩包
+echo [9/9] 创建发布压缩包...
+set ZIP_NAME=%APP_NAME%_发布版.zip
+if exist "%ZIP_NAME%" del /q "%ZIP_NAME%"
 
-:: 打开输出目录
-echo [信息] 正在打开输出目录...
-timeout /t 2 /nobreak >nul
-explorer %DIST_DIR%
-
-:: ========================================
-:: 8. 自动创建压缩包
-:: ========================================
-echo.
-echo [8/8] 创建发布压缩包...
-set ZIP_NAME=%OUTPUT_NAME%_发布版.zip
-
-:: 使用 PowerShell 创建 zip
-powershell -Command "Compress-Archive -Path '%DIST_DIR%\%OUTPUT_NAME%' -DestinationPath '%DIST_DIR%\%ZIP_NAME%' -Force"
-
-if exist "%DIST_DIR%\%ZIP_NAME%" (
-    echo [成功] 压缩包已创建：%DIST_DIR%\%ZIP_NAME%
+REM 使用 PowerShell 创建压缩包
+powershell -Command "Compress-Archive -Path '%DIST_DIR%\%APP_NAME%\*' -DestinationPath '%ZIP_NAME%' -Force" 2>nul
+if exist "%ZIP_NAME%" (
+    for %%A in ("%ZIP_NAME%") do set ZIP_SIZE=%%~zA
+    set /a ZIP_SIZE_MB=!ZIP_SIZE! / 1048576
+    echo      压缩包: %ZIP_NAME% (!ZIP_SIZE_MB! MB)
 ) else (
-    echo [警告] 压缩包创建失败
+    echo      警告: 压缩包创建失败，请手动压缩
 )
 
 echo.
-echo 按任意键退出...
-pause >nul
-
-endlocal
+echo ============================================================
+echo   打包完成！
+echo ============================================================
+echo.
+echo   输出目录: %DIST_DIR%\%APP_NAME%
+echo   可执行文件: %APP_NAME%.exe
+echo   压缩包: %ZIP_NAME%
+echo.
+echo   架构: 模块化 (src/main.py 入口)
+echo   模块:
+echo     - src/ui/main_window.py (主窗口)
+echo     - src/ui/widgets.py (控件)
+echo     - src/workers/upload_worker.py (上传)
+echo     - src/protocols/ftp.py (FTP协议)
+echo     - src/config.py (配置)
+echo     - src/core/* (核心工具)
+echo.
+echo ============================================================
+pause
 exit /b 0

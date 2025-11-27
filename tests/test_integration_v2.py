@@ -10,7 +10,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.ftp_protocol import FTPProtocolManager, FTPServerManager, FTPClientUploader
+from src.protocols.ftp import FTPProtocolManager, FTPServerManager, FTPClientUploader
 
 def test_ftp_module_import():
     """测试1: FTP模块导入"""

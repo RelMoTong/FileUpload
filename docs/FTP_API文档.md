@@ -194,7 +194,7 @@ print(f"本机IP: {ip}")
 #### 基础用法
 
 ```python
-from src.ftp_protocol import FTPServerManager
+from src.protocols.ftp import FTPServerManager
 
 # 1. 创建服务器实例
 server = FTPServerManager(
@@ -409,7 +409,7 @@ def upload_file(self, local_path: str, remote_path: str = None) -> bool:
 #### 基础用法
 
 ```python
-from src.ftp_protocol import FTPClientUploader
+from src.protocols.ftp import FTPClientUploader
 
 # 1. 创建客户端实例
 uploader = FTPClientUploader(
@@ -549,7 +549,7 @@ else:
 ### 示例代码
 
 ```python
-from src.ftp_protocol import FTPServerManager, FTPClientUploader
+from src.protocols.ftp import FTPServerManager, FTPClientUploader
 
 # 1. 启动FTP服务器（接收其他设备上传）
 server = FTPServerManager(
