@@ -1,0 +1,1596 @@
+======================================================================
+  图片异步上传工具软件 V3.1.0
+  源代码文档（后 30 页）
+======================================================================
+  生成日期: 2025年11月27日
+  每页行数: 50 行
+  页码范围: 第 212 页 - 第 241 页
+======================================================================
+
+图片异步上传工具软件_V3.1.0 源代码                                第 212 页 / 共 241 页
+----------------------------------------------------------------------
+10488              ('.rar', '压缩'),
+10489              ('.tmp', '临时'),
+10490          ]
+10491          
+10492          for idx, (ext, category) in enumerate(formats):
+10493              cb = QtWidgets.QCheckBox(f"{ext} ({category})")
+10494              cb.setChecked(ext in ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.tif', '.raw'])  # 默认选中图片
+10495              self.format_checkboxes[ext] = cb
+10496              row = idx // 4
+10497              col = idx % 4
+10498              formats_grid.addWidget(cb, row, col)
+10499          
+10500          format_layout.addLayout(formats_grid)
+10501          
+10502          # 自定义格式
+10503          custom_format_row = QtWidgets.QHBoxLayout()
+10504          custom_format_label = QtWidgets.QLabel("自定义格式:")
+10505          self.edit_custom_format = QtWidgets.QLineEdit()
+10506          self.edit_custom_format.setPlaceholderText("例如: .bak 或 .old (以点开头)")
+10507          custom_format_row.addWidget(custom_format_label)
+10508          custom_format_row.addWidget(self.edit_custom_format, 1)
+10509          format_layout.addLayout(custom_format_row)
+10510          
+10511          return format_group
+10512      
+10513      def _create_auto_cleanup_group(self) -> QtWidgets.QGroupBox:
+10514          """创建自动清理配置区域"""
+10515          auto_group = QtWidgets.QGroupBox("⚙️ 自动清理配置")
+10516          auto_group.setStyleSheet(
+10517              "QGroupBox { font-weight: 700; border: 2px solid #FFA726; "
+10518              "border-radius: 8px; margin-top: 10px; padding-top: 15px; }"
+10519              "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }"
+10520          )
+10521          auto_layout = QtWidgets.QVBoxLayout(auto_group)
+10522          auto_layout.setSpacing(10)
+10523          
+10524          # 启用自动清理
+10525          self.cb_enable_auto = QtWidgets.QCheckBox("⏰ 启用自动清理")
+10526          auto_enabled = self.parent_window.enable_auto_delete if self.parent_window and hasattr(self.parent_window, 'enable_auto_delete') else False
+10527          self.cb_enable_auto.setChecked(auto_enabled)
+10528          self.cb_enable_auto.toggled.connect(self._on_auto_clean_toggled)
+10529          auto_layout.addWidget(self.cb_enable_auto)
+10530          
+10531          # 配置参数
+10532          config_grid = QtWidgets.QGridLayout()
+10533          config_grid.setSpacing(10)
+10534          
+10535          # 磁盘阈值
+10536          threshold_label = QtWidgets.QLabel("磁盘阈值:")
+10537          self.spin_threshold = QtWidgets.QSpinBox()
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 213 页 / 共 241 页
+----------------------------------------------------------------------
+10538          self.spin_threshold.setRange(50, 95)
+10539          auto_threshold = self.parent_window.auto_delete_threshold if self.parent_window and hasattr(self.parent_window, 'auto_delete_threshold') else 80
+10540          self.spin_threshold.setValue(auto_threshold)
+10541          self.spin_threshold.setSuffix(" %")
+10542          self.spin_threshold.setToolTip("磁盘使用率达到此值时自动清理")
+10543          self.spin_threshold.setEnabled(auto_enabled)
+10544          config_grid.addWidget(threshold_label, 0, 0)
+10545          config_grid.addWidget(self.spin_threshold, 0, 1)
+10546          
+10547          # 保留天数
+10548          days_label = QtWidgets.QLabel("保留天数:")
+10549          self.spin_keep_days = QtWidgets.QSpinBox()
+10550          self.spin_keep_days.setRange(1, 365)
+10551          auto_days = self.parent_window.auto_delete_keep_days if self.parent_window and hasattr(self.parent_window, 'auto_delete_keep_days') else 10
+10552          self.spin_keep_days.setValue(auto_days)
+10553          self.spin_keep_days.setSuffix(" 天")
+10554          self.spin_keep_days.setToolTip("只删除超过此天数的文件")
+10555          self.spin_keep_days.setEnabled(auto_enabled)
+10556          config_grid.addWidget(days_label, 0, 2)
+10557          config_grid.addWidget(self.spin_keep_days, 0, 3)
+10558          
+10559          # 检查间隔
+10560          interval_label = QtWidgets.QLabel("检查间隔:")
+10561          self.spin_check_interval = QtWidgets.QSpinBox()
+10562          self.spin_check_interval.setRange(60, 3600)
+10563          auto_interval = self.parent_window.auto_delete_check_interval if self.parent_window and hasattr(self.parent_window, 'auto_delete_check_interval') else 300
+10564          self.spin_check_interval.setValue(auto_interval)
+10565          self.spin_check_interval.setSuffix(" 秒")
+10566          self.spin_check_interval.setToolTip("自动检查的时间间隔")
+10567          self.spin_check_interval.setEnabled(auto_enabled)
+10568          config_grid.addWidget(interval_label, 1, 0)
+10569          config_grid.addWidget(self.spin_check_interval, 1, 1)
+10570          
+10571          auto_layout.addLayout(config_grid)
+10572          
+10573          # 说明文本
+10574          auto_hint = QtWidgets.QLabel(
+10575              "💡 启用后，程序会定期检查磁盘空间，当达到阈值时自动删除超过保留期限的文件"
+10576          )
+10577          auto_hint.setStyleSheet("color: #757575; font-size: 9px; padding: 8px;")
+10578          auto_hint.setWordWrap(True)
+10579          auto_layout.addWidget(auto_hint)
+10580          
+10581          # 保存配置按钮
+10582          btn_save_auto = QtWidgets.QPushButton("💾 保存自动清理配置")
+10583          btn_save_auto.setProperty("class", "Secondary")
+10584          btn_save_auto.clicked.connect(self._save_auto_config)
+10585          auto_layout.addWidget(btn_save_auto)
+10586          
+10587          return auto_group
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 214 页 / 共 241 页
+----------------------------------------------------------------------
+10588      
+10589      def _create_result_group(self) -> QtWidgets.QGroupBox:
+10590          """创建扫描结果区域"""
+10591          result_group = QtWidgets.QGroupBox("📊 扫描结果")
+10592          result_group.setStyleSheet(
+10593              "QGroupBox { font-weight: 700; border: 2px solid #64B5F6; "
+10594              "border-radius: 8px; margin-top: 10px; padding-top: 15px; }"
+10595              "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }"
+10596          )
+10597          result_layout = QtWidgets.QVBoxLayout(result_group)
+10598          
+10599          self.result_text = QtWidgets.QPlainTextEdit()
+10600          self.result_text.setReadOnly(True)
+10601          self.result_text.setMaximumHeight(120)
+10602          self.result_text.setPlainText("点击 '扫描文件' 开始查找可清理的文件...")
+10603          result_layout.addWidget(self.result_text)
+10604          
+10605          return result_group
+10606      
+10607      def _create_button_layout(self) -> QtWidgets.QHBoxLayout:
+10608          """创建按钮布局"""
+10609          button_layout = QtWidgets.QHBoxLayout()
+10610          button_layout.setSpacing(12)
+10611          
+10612          self.btn_scan = QtWidgets.QPushButton("🔍 扫描文件")
+10613          self.btn_scan.setProperty("class", "Primary")
+10614          self.btn_scan.setMinimumHeight(40)
+10615          self.btn_scan.clicked.connect(self._scan_files)
+10616          
+10617          self.btn_delete = QtWidgets.QPushButton("🗑️ 执行清理")
+10618          self.btn_delete.setProperty("class", "Danger")
+10619          self.btn_delete.setMinimumHeight(40)
+10620          self.btn_delete.setEnabled(False)
+10621          self.btn_delete.clicked.connect(self._delete_files)
+10622          
+10623          btn_close = QtWidgets.QPushButton("❌ 关闭")
+10624          btn_close.setProperty("class", "Secondary")
+10625          btn_close.setMinimumHeight(40)
+10626          btn_close.clicked.connect(self.reject)
+10627          
+10628          button_layout.addWidget(self.btn_scan)
+10629          button_layout.addWidget(self.btn_delete)
+10630          button_layout.addStretch()
+10631          button_layout.addWidget(btn_close)
+10632          
+10633          return button_layout
+10634      
+10635      # 事件处理方法
+10636      
+10637      def _choose_custom(self) -> None:
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 215 页 / 共 241 页
+----------------------------------------------------------------------
+10638          """选择自定义文件夹"""
+10639          path = QtWidgets.QFileDialog.getExistingDirectory(self, "选择自定义文件夹")
+10640          if path:
+10641              self.edit_custom.setText(path)
+10642      
+10643      def _choose_monitor(self) -> None:
+10644          """选择监控文件夹"""
+10645          path = QtWidgets.QFileDialog.getExistingDirectory(self, "选择监控文件夹")
+10646          if path:
+10647              self.edit_monitor.setText(path)
+10648      
+10649      def _select_all_formats(self) -> None:
+10650          """全选所有文件格式"""
+10651          for cb in self.format_checkboxes.values():
+10652              cb.setChecked(True)
+10653      
+10654      def _select_no_formats(self) -> None:
+10655          """取消选择所有文件格式"""
+10656          for cb in self.format_checkboxes.values():
+10657              cb.setChecked(False)
+10658      
+10659      def _select_image_formats(self) -> None:
+10660          """仅选择图片格式"""
+10661          image_formats = ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.tif', '.raw']
+10662          for ext, cb in self.format_checkboxes.items():
+10663              cb.setChecked(ext in image_formats)
+10664      
+10665      def _on_auto_clean_toggled(self, checked: bool) -> None:
+10666          """自动清理开关切换"""
+10667          self.spin_threshold.setEnabled(checked)
+10668          self.spin_keep_days.setEnabled(checked)
+10669          self.spin_check_interval.setEnabled(checked)
+10670      
+10671      def _save_auto_config(self) -> None:
+10672          """保存自动清理配置到父窗口"""
+10673          if not self.parent_window:
+10674              return
+10675          
+10676          try:
+10677              # 更新父窗口的自动删除配置
+10678              self.parent_window.enable_auto_delete = self.cb_enable_auto.isChecked()
+10679              self.parent_window.auto_delete_folder = self.edit_monitor.text().strip()  # 保存监控文件夹路径
+10680              self.parent_window.auto_delete_threshold = self.spin_threshold.value()
+10681              self.parent_window.auto_delete_keep_days = self.spin_keep_days.value()
+10682              self.parent_window.auto_delete_check_interval = self.spin_check_interval.value()
+10683              
+10684              # 保存配置到文件
+10685              self.parent_window._save_config()
+10686              
+10687              # 显示成功消息
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 216 页 / 共 241 页
+----------------------------------------------------------------------
+10688              QtWidgets.QMessageBox.information(
+10689                  self,
+10690                  "✅ 配置已保存",
+10691                  f"自动清理配置已成功保存！\n\n"
+10692                  f"启用状态: {'是' if self.cb_enable_auto.isChecked() else '否'}\n"
+10693                  f"监控文件夹: {self.edit_monitor.text().strip() or '未设置'}\n"
+10694                  f"磁盘阈值: {self.spin_threshold.value()}%\n"
+10695                  f"保留天数: {self.spin_keep_days.value()}天\n"
+10696                  f"检查间隔: {self.spin_check_interval.value()}秒"
+10697              )
+10698          except Exception as e:
+10699              QtWidgets.QMessageBox.warning(
+10700                  self,
+10701                  "❌ 保存失败",
+10702                  f"保存配置时出错：{e}"
+10703              )
+10704      
+10705      def _scan_files(self) -> None:
+10706          """扫描符合条件的文件"""
+10707          self.files_to_delete = []
+10708          self.result_text.clear()
+10709          
+10710          # 获取要扫描的文件夹（从父窗口输入框读取最新路径）
+10711          folders_to_scan = []
+10712          if self.cb_backup.isChecked() and self.parent_window and hasattr(self.parent_window, 'bak_edit'):
+10713              backup_path = self.parent_window.bak_edit.text().strip()
+10714              if backup_path:
+10715                  folders_to_scan.append(backup_path)
+10716          if self.cb_target.isChecked() and self.parent_window and hasattr(self.parent_window, 'tgt_edit'):
+10717              target_path = self.parent_window.tgt_edit.text().strip()
+10718              if target_path:
+10719                  folders_to_scan.append(target_path)
+10720          if self.cb_monitor.isChecked() and self.edit_monitor.text().strip():
+10721              monitor_path = self.edit_monitor.text().strip()
+10722              if monitor_path:
+10723                  folders_to_scan.append(monitor_path)
+10724          if self.cb_custom.isChecked() and self.edit_custom.text().strip():
+10725              folders_to_scan.append(self.edit_custom.text().strip())
+10726          
+10727          if not folders_to_scan:
+10728              self.result_text.setPlainText("❌ 错误：请至少选择一个文件夹！")
+10729              return
+10730          
+10731          # 获取要扫描的文件格式
+10732          formats_to_scan = []
+10733          for ext, cb in self.format_checkboxes.items():
+10734              if cb.isChecked():
+10735                  formats_to_scan.append(ext.lower())
+10736          
+10737          # 添加自定义格式
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 217 页 / 共 241 页
+----------------------------------------------------------------------
+10738          custom_format = self.edit_custom_format.text().strip()
+10739          if custom_format:
+10740              if not custom_format.startswith('.'):
+10741                  custom_format = '.' + custom_format
+10742              formats_to_scan.append(custom_format.lower())
+10743          
+10744          if not formats_to_scan:
+10745              self.result_text.setPlainText("❌ 错误：请至少选择一个文件格式！")
+10746              return
+10747          
+10748          # 开始扫描
+10749          self.result_text.appendPlainText("🔍 开始扫描...\n")
+10750          self.result_text.appendPlainText(f"扫描目录: {len(folders_to_scan)} 个")
+10751          self.result_text.appendPlainText(f"文件格式: {', '.join(formats_to_scan)}\n")
+10752          
+10753          total_size = 0
+10754          for folder in folders_to_scan:
+10755              if not os.path.exists(folder):
+10756                  self.result_text.appendPlainText(f"⚠️ 跳过不存在的路径: {folder}")
+10757                  continue
+10758              
+10759              self.result_text.appendPlainText(f"\n📁 扫描: {folder}")
+10760              folder_count = 0
+10761              folder_size = 0
+10762              
+10763              try:
+10764                  for root, dirs, files in os.walk(folder):
+10765                      for file in files:
+10766                          file_lower = file.lower()
+10767                          if any(file_lower.endswith(ext) for ext in formats_to_scan):
+10768                              file_path = os.path.join(root, file)
+10769                              try:
+10770                                  file_size = os.path.getsize(file_path)
+10771                                  self.files_to_delete.append((file_path, file_size))
+10772                                  folder_count += 1
+10773                                  folder_size += file_size
+10774                              except Exception as e:
+10775                                  self.result_text.appendPlainText(f"  ⚠️ 无法访问: {file} ({e})")
+10776                  
+10777                  self.result_text.appendPlainText(
+10778                      f"  找到 {folder_count} 个文件，"
+10779                      f"共 {folder_size / (1024*1024):.2f} MB"
+10780                  )
+10781                  total_size += folder_size
+10782              except Exception as e:
+10783                  self.result_text.appendPlainText(f"  ❌ 扫描失败: {e}")
+10784          
+10785          # 显示汇总
+10786          self.result_text.appendPlainText("\n" + "="*50)
+10787          self.result_text.appendPlainText(
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 218 页 / 共 241 页
+----------------------------------------------------------------------
+10788              f"📊 扫描完成！共找到 {len(self.files_to_delete)} 个文件"
+10789          )
+10790          self.result_text.appendPlainText(
+10791              f"💾 总大小: {total_size / (1024*1024):.2f} MB "
+10792              f"({total_size / (1024*1024*1024):.3f} GB)"
+10793          )
+10794          
+10795          # 启用删除按钮
+10796          self.btn_delete.setEnabled(len(self.files_to_delete) > 0)
+10797      
+10798      def _delete_files(self) -> None:
+10799          """删除扫描到的文件"""
+10800          if not self.files_to_delete:
+10801              return
+10802          
+10803          # 确认对话框
+10804          total_size = sum(size for _, size in self.files_to_delete)
+10805          reply = QtWidgets.QMessageBox.warning(
+10806              self,
+10807              "⚠️ 确认删除",
+10808              f"确定要删除 {len(self.files_to_delete)} 个文件吗？\n\n"
+10809              f"总大小: {total_size / (1024*1024):.2f} MB\n\n"
+10810              f"⚠️ 警告：此操作不可恢复！",
+10811              QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+10812              QtWidgets.QMessageBox.StandardButton.No
+10813          )
+10814          
+10815          if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+10816              return
+10817          
+10818          # 执行删除
+10819          self.result_text.appendPlainText("\n" + "="*50)
+10820          self.result_text.appendPlainText("🗑️ 开始删除文件...\n")
+10821          
+10822          deleted_count = 0
+10823          deleted_size = 0
+10824          failed_count = 0
+10825          
+10826          for file_path, file_size in self.files_to_delete:
+10827              try:
+10828                  os.remove(file_path)
+10829                  deleted_count += 1
+10830                  deleted_size += file_size
+10831              except Exception as e:
+10832                  failed_count += 1
+10833                  self.result_text.appendPlainText(f"❌ 删除失败: {file_path}\n   错误: {e}")
+10834          
+10835          # 显示结果
+10836          self.result_text.appendPlainText("\n" + "="*50)
+10837          self.result_text.appendPlainText("✅ 清理完成！\n")
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 219 页 / 共 241 页
+----------------------------------------------------------------------
+10838          self.result_text.appendPlainText(f"成功删除: {deleted_count} 个文件")
+10839          self.result_text.appendPlainText(
+10840              f"释放空间: {deleted_size / (1024*1024):.2f} MB "
+10841              f"({deleted_size / (1024*1024*1024):.3f} GB)"
+10842          )
+10843          if failed_count > 0:
+10844              self.result_text.appendPlainText(f"删除失败: {failed_count} 个文件")
+10845          
+10846          # 清空待删除列表并禁用删除按钮
+10847          self.files_to_delete = []
+10848          self.btn_delete.setEnabled(False)
+10849          
+10850          # 显示成功消息
+10851          QtWidgets.QMessageBox.information(
+10852              self,
+10853              "✅ 清理完成",
+10854              f"成功删除 {deleted_count} 个文件\n"
+10855              f"释放空间 {deleted_size / (1024*1024):.2f} MB"
+10856          )
+       
+       # ============================================================
+       # 文件: src\workers\__init__.py
+       # ============================================================
+10857  # -*- coding: utf-8 -*-
+10858  """
+10859  Workers 模块 - 后台工作线程
+10860  
+10861  包含：
+10862  - upload_worker.py: 上传工作线程（UploadWorker）
+10863  """
+10864  
+10865  from .upload_worker import UploadWorker
+10866  
+10867  __all__ = ['UploadWorker']
+       
+       # ============================================================
+       # 文件: src\workers\upload_worker.py
+       # ============================================================
+10868  """上传任务 Worker 模块
+10869  
+10870  包含文件上传的核心逻辑，支持：
+10871  - 多协议上传（SMB、FTP客户端）
+10872  - 网络监控和自动暂停/恢复
+10873  - 智能去重（MD5/SHA256）
+10874  - 速率限制
+10875  - 失败重试机制
+10876  - 异步归档
+10877  """
+10878  
+10879  import os
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 220 页 / 共 241 页
+----------------------------------------------------------------------
+10880  import sys
+10881  import time
+10882  import shutil
+10883  import threading
+10884  import datetime
+10885  import queue
+10886  import hashlib
+10887  from pathlib import Path
+10888  from typing import List, Tuple, Optional, Dict, Any
+10889  from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+10890  
+10891  # 导入 Qt 库
+10892  try:
+10893      from PySide6 import QtCore
+10894      Signal = QtCore.Signal
+10895  except ImportError:
+10896      from PyQt5 import QtCore  # type: ignore[import-not-found]
+10897      Signal = QtCore.pyqtSignal
+10898  
+10899  # 导入 FTP 客户端
+10900  try:
+10901      from src.protocols.ftp import FTPClientUploader
+10902      FTP_AVAILABLE = True
+10903  except ImportError:
+10904      FTP_AVAILABLE = False
+10905      FTPClientUploader = None  # type: ignore[assignment, misc]
+10906  
+10907  
+10908  class UploadWorker(QtCore.QObject):  # type: ignore[misc]
+10909      """文件上传 Worker
+10910      
+10911      后台线程执行文件上传任务，支持多种协议和高级功能。
+10912      
+10913      Signals:
+10914          log: 日志消息
+10915          stats: 统计信息 (uploaded, failed, skipped, rate)
+10916          progress: 进度信息 (current, total, filename)
+10917          file_progress: 单文件进度 (filename, percent)
+10918          network_status: 网络状态 ('good'|'unstable'|'disconnected')
+10919          finished: 任务完成
+10920          status: 运行状态 ('running'|'paused'|'stopped')
+10921          ask_user_duplicate: 请求用户处理重复文件
+10922          upload_error: 上传错误 (filename, error_message)
+10923          disk_warning: 磁盘空间警告 (target_percent, backup_percent, threshold)
+10924      
+10925      Note: type: ignore[misc] - Qt 动态导入导致的 Pylance 误报
+10926      """
+10927      
+10928      # Signals
+10929      log = Signal(str)
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 221 页 / 共 241 页
+----------------------------------------------------------------------
+10930      stats = Signal(int, int, int, str)   # uploaded, failed, skipped, rate
+10931      progress = Signal(int, int, str)     # current, total, filename
+10932      file_progress = Signal(str, int)     # current_file, progress_percent
+10933      network_status = Signal(str)         # 'good'|'unstable'|'disconnected'
+10934      finished = Signal()
+10935      status = Signal(str)                 # 'running'|'paused'|'stopped'
+10936      ask_user_duplicate = Signal(object)  # payload dict
+10937      upload_error = Signal(str, str)      # filename, error_message
+10938      disk_warning = Signal(float, float, int)  # target_percent, backup_percent, threshold
+10939  
+10940      def __init__(
+10941          self,
+10942          source: str,
+10943          target: str,
+10944          backup: str,
+10945          interval: int,
+10946          mode: str,
+10947          disk_threshold_percent: int,
+10948          retry_count: int,
+10949          filters: List[str],
+10950          app_dir: Path,
+10951          enable_deduplication: bool = False,
+10952          hash_algorithm: str = 'md5',
+10953          duplicate_strategy: str = 'ask',
+10954          network_check_interval: int = 10,
+10955          network_auto_pause: bool = True,
+10956          network_auto_resume: bool = True,
+10957          enable_auto_delete: bool = False,
+10958          auto_delete_folder: str = '',
+10959          auto_delete_threshold: int = 80,
+10960          auto_delete_keep_days: int = 10,
+10961          auto_delete_check_interval: int = 300,
+10962          upload_protocol: str = 'smb',
+10963          ftp_client_config: Optional[Dict[str, Any]] = None,
+10964          enable_backup: bool = True,
+10965          limit_upload_rate: bool = False,
+10966          max_upload_rate_mbps: float = 10.0
+10967      ):
+10968          """初始化上传 Worker
+10969          
+10970          Args:
+10971              source: 源文件夹路径
+10972              target: 目标文件夹路径
+10973              backup: 备份文件夹路径
+10974              interval: 上传间隔（秒）
+10975              mode: 运行模式 ('periodic' | 'once')
+10976              disk_threshold_percent: 磁盘空间阈值（百分比）
+10977              retry_count: 失败重试次数
+10978              filters: 文件扩展名过滤器列表
+10979              app_dir: 应用程序目录
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 222 页 / 共 241 页
+----------------------------------------------------------------------
+10980              enable_deduplication: 是否启用去重
+10981              hash_algorithm: 哈希算法 ('md5' | 'sha256')
+10982              duplicate_strategy: 重复处理策略 ('skip'|'rename'|'overwrite'|'ask')
+10983              network_check_interval: 网络检查间隔（秒）
+10984              network_auto_pause: 网络中断时自动暂停
+10985              network_auto_resume: 网络恢复时自动恢复
+10986              enable_auto_delete: 启用自动删除
+10987              auto_delete_folder: 自动删除监控文件夹
+10988              auto_delete_threshold: 自动删除磁盘阈值
+10989              auto_delete_keep_days: 自动删除保留天数
+10990              auto_delete_check_interval: 自动删除检查间隔
+10991              upload_protocol: 上传协议 ('smb'|'ftp_client'|'both')
+10992              ftp_client_config: FTP客户端配置
+10993              enable_backup: 是否启用备份
+10994              limit_upload_rate: 是否限制上传速率
+10995              max_upload_rate_mbps: 最大上传速率（MB/s）
+10996          """
+10997          super().__init__()
+10998          self.source = source
+10999          self.target = target
+11000          self.backup = backup
+11001          self.enable_backup = enable_backup
+11002          self.limit_upload_rate = limit_upload_rate
+11003          self.max_upload_rate_bytes = int(max_upload_rate_mbps * 1024 * 1024) if limit_upload_rate else 0
+11004          self.interval = interval
+11005          self.mode = mode
+11006          self.disk_threshold_percent = max(5, disk_threshold_percent)
+11007          self.retry_count = retry_count
+11008          self.filters = [ext.lower() for ext in filters]
+11009          self.app_dir = app_dir
+11010          
+11011          # 去重配置
+11012          self.enable_deduplication = enable_deduplication
+11013          self.hash_algorithm = hash_algorithm.lower()
+11014          self.duplicate_strategy = duplicate_strategy
+11015          
+11016          # 网络监控配置
+11017          self.network_check_interval = network_check_interval
+11018          self.network_auto_pause = network_auto_pause
+11019          self.network_auto_resume = network_auto_resume
+11020          
+11021          # 自动删除配置
+11022          self.enable_auto_delete = enable_auto_delete
+11023          self.auto_delete_folder = auto_delete_folder
+11024          self.auto_delete_threshold = auto_delete_threshold
+11025          self.auto_delete_keep_days = auto_delete_keep_days
+11026          self.auto_delete_check_interval = auto_delete_check_interval
+11027          
+11028          # 协议配置
+11029          self.upload_protocol = upload_protocol
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 223 页 / 共 241 页
+----------------------------------------------------------------------
+11030          self.ftp_client_config = ftp_client_config or {}
+11031          self.ftp_client = None
+11032          
+11033          # 运行状态
+11034          self._running = False
+11035          self._paused = False
+11036          self._thread = None
+11037          self._archive_thread = None
+11038          self._net_running = False
+11039          self._net_thread = None
+11040          
+11041          # 统计数据
+11042          self.uploaded = 0
+11043          self.failed = 0
+11044          self.skipped = 0
+11045          self.rate = "0 MB/s"
+11046          self.total_files = 0
+11047          self.current = 0
+11048          self.start_time = None
+11049          
+11050          # 当前文件信息
+11051          self.current_file_name = ""
+11052          self.current_file_size = 0
+11053          self.current_file_uploaded = 0
+11054          
+11055          # 队列
+11056          self.retry_queue: Dict[str, Dict[str, Any]] = {}
+11057          self.archive_queue: queue.Queue = queue.Queue()
+11058          
+11059          # 网络状态
+11060          self.network_retry_count = 0
+11061          self.network_auto_retry = True
+11062          self.last_network_check = 0.0
+11063          self.current_network_status = 'unknown'
+11064          self.network_pause_by_auto = False
+11065          self._last_space_warn = 0.0
+11066          
+11067          # 失败日志
+11068          self.failed_log_path = self.app_dir / "failed_files.log"
+11069          
+11070          # 线程池
+11071          self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="FileOp")
+11072          self._net_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="NetChk")
+11073          
+11074          # 去重询问模式的全局选择
+11075          self._duplicate_ask_choice: Optional[str] = None
+11076  
+11077      def start(self) -> None:
+11078          """启动上传任务"""
+11079          if self._running:
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 224 页 / 共 241 页
+----------------------------------------------------------------------
+11080              return
+11081          self._running = True
+11082          self._paused = False
+11083          self._thread = threading.Thread(target=self._run, daemon=True)
+11084          self._thread.start()
+11085          
+11086          # 启动网络监控线程
+11087          self._net_running = True
+11088          self._net_thread = threading.Thread(target=self._network_monitor_loop, daemon=True)
+11089          self._net_thread.start()
+11090          
+11091          self.status.emit('running')
+11092  
+11093      def pause(self) -> None:
+11094          """暂停上传任务"""
+11095          if not self._running:
+11096              return
+11097          self._paused = True
+11098          self.status.emit('paused')
+11099  
+11100      def resume(self) -> None:
+11101          """恢复上传任务"""
+11102          if not self._running:
+11103              return
+11104          self._paused = False
+11105          self.status.emit('running')
+11106  
+11107      def stop(self) -> None:
+11108          """停止上传任务"""
+11109          self._running = False
+11110          self._paused = False
+11111          
+11112          # 关闭FTP客户端
+11113          if self.ftp_client:
+11114              try:
+11115                  self.ftp_client.disconnect()
+11116                  self.ftp_client = None
+11117              except Exception:
+11118                  pass
+11119          
+11120          # 关闭线程池
+11121          try:
+11122              self._executor.shutdown(wait=False, cancel_futures=True)
+11123          except Exception:
+11124              pass
+11125          
+11126          # 停止网络监控
+11127          self._net_running = False
+11128          try:
+11129              self._net_executor.shutdown(wait=False, cancel_futures=True)
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 225 页 / 共 241 页
+----------------------------------------------------------------------
+11130          except Exception:
+11131              pass
+11132          
+11133          self.status.emit('stopped')
+11134  
+11135      def _network_monitor_loop(self) -> None:
+11136          """网络监控循环（独立线程）"""
+11137          last_status = 'unknown'
+11138          
+11139          while getattr(self, '_net_running', False):
+11140              try:
+11141                  # 检测网络状态
+11142                  target_ok = self._safe_net_check(self.target, timeout=0.3, default=False)
+11143                  if target_ok:
+11144                      status = 'good'
+11145                  else:
+11146                      backup_ok = self._safe_net_check(self.backup, timeout=0.3, default=False)
+11147                      status = 'unstable' if backup_ok else 'disconnected'
+11148              except Exception:
+11149                  status = 'disconnected'
+11150  
+11151              # 状态变化时发送日志和信号
+11152              if status != last_status:
+11153                  if status == 'good' and last_status in ('unstable', 'disconnected'):
+11154                      self.log.emit('✅ 网络已恢复正常')
+11155                  elif status == 'unstable':
+11156                      self.log.emit('⚠️ 网络不稳定：目标不可达，但备份可达')
+11157                  elif status == 'disconnected':
+11158                      self.log.emit('❌ 网络连接中断')
+11159                  
+11160                  self.network_status.emit(status)
+11161                  self.current_network_status = status
+11162                  last_status = status
+11163  
+11164                  # 自动暂停/恢复
+11165                  if status == 'disconnected' and self.network_auto_pause and not self._paused:
+11166                      self.network_pause_by_auto = True
+11167                      self.pause()
+11168                  if status == 'good' and self.network_auto_resume and self.network_pause_by_auto:
+11169                      self.network_pause_by_auto = False
+11170                      self.resume()
+11171  
+11172              # 断开状态心跳
+11173              if status == 'disconnected':
+11174                  self.network_retry_count += 1
+11175                  if self.network_retry_count % 3 == 0:
+11176                      self.log.emit(f"🔌 网络仍未恢复 (第{self.network_retry_count}次检测)")
+11177              else:
+11178                  self.network_retry_count = 0
+11179  
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 226 页 / 共 241 页
+----------------------------------------------------------------------
+11180              # 发送统计心跳
+11181              try:
+11182                  self.stats.emit(self.uploaded, self.failed, self.skipped, self.rate)
+11183              except Exception:
+11184                  pass
+11185  
+11186              # 自适应间隔
+11187              interval = 1 if status in ('unstable', 'disconnected') else max(1, int(self.network_check_interval))
+11188              time.sleep(interval)
+11189  
+11190      def _safe_net_check(self, path: str, timeout: float = 1.5, default: bool = False) -> bool:
+11191          """安全检查网络路径可达性
+11192          
+11193          优先使用 ping 检测网络路径（UNC/映射盘），避免 os.path.exists 阻塞。
+11194          """
+11195          def is_unc(p: str) -> bool:
+11196              return isinstance(p, str) and p.startswith('\\\\')
+11197  
+11198          def get_drive_root(p: str) -> str:
+11199              drive, _ = os.path.splitdrive(p)
+11200              return drive + '\\' if drive else ''
+11201  
+11202          def is_mapped_drive(p: str) -> bool:
+11203              try:
+11204                  root = get_drive_root(p)
+11205                  if not root:
+11206                      return False
+11207                  import ctypes
+11208                  DRIVE_REMOTE = 4
+11209                  GetDriveTypeW = ctypes.windll.kernel32.GetDriveTypeW
+11210                  GetDriveTypeW.argtypes = [ctypes.c_wchar_p]
+11211                  GetDriveTypeW.restype = ctypes.c_uint
+11212                  dtype = GetDriveTypeW(root)
+11213                  return dtype == DRIVE_REMOTE
+11214              except Exception:
+11215                  return False
+11216  
+11217          def mapped_to_unc(p: str) -> str:
+11218              try:
+11219                  import ctypes
+11220                  from ctypes import wintypes
+11221                  WNetGetConnectionW = ctypes.windll.mpr.WNetGetConnectionW
+11222                  WNetGetConnectionW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+11223                  WNetGetConnectionW.restype = wintypes.DWORD
+11224                  drive, _ = os.path.splitdrive(p)
+11225                  if not drive:
+11226                      return ''
+11227                  buf_len = wintypes.DWORD(1024)
+11228                  buf = ctypes.create_unicode_buffer(1024)
+11229                  rc = WNetGetConnectionW(drive + '\\', buf, ctypes.byref(buf_len))
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 227 页 / 共 241 页
+----------------------------------------------------------------------
+11230                  if rc == 0:
+11231                      unc_prefix = buf.value
+11232                      rel = p[len(drive):].lstrip('\\/')
+11233                      return os.path.join(unc_prefix, rel).replace('/', '\\')
+11234                  return ''
+11235              except Exception:
+11236                  return ''
+11237  
+11238          def extract_host_from_unc(unc: str) -> str:
+11239              try:
+11240                  parts = unc.split('\\')
+11241                  return parts[2] if len(parts) > 2 else ''
+11242              except Exception:
+11243                  return ''
+11244  
+11245          def ping_host(host: str, ms: int) -> bool:
+11246              try:
+11247                  import subprocess
+11248                  completed = subprocess.run(
+11249                      ['ping', '-n', '1', '-w', str(ms), host],
+11250                      stdout=subprocess.DEVNULL,
+11251                      stderr=subprocess.DEVNULL,
+11252                      timeout=max(0.2, ms/1000.0 + 0.5)
+11253                  )
+11254                  return completed.returncode == 0
+11255              except Exception:
+11256                  return False
+11257  
+11258          try:
+11259              if not path:
+11260                  return bool(default)
+11261              
+11262              # UNC 路径：直接 ping
+11263              if is_unc(path):
+11264                  host = extract_host_from_unc(path)
+11265                  if host:
+11266                      return ping_host(host, int(timeout*1000))
+11267                  return bool(default)
+11268              
+11269              # 映射盘：转换为 UNC 再 ping
+11270              if is_mapped_drive(path):
+11271                  unc = mapped_to_unc(path)
+11272                  host = extract_host_from_unc(unc) if unc else ''
+11273                  if host:
+11274                      return ping_host(host, int(timeout*1000))
+11275                  future = self._net_executor.submit(os.path.exists, path)
+11276                  return bool(future.result(timeout=timeout))
+11277              
+11278              # 本地路径：直接检查
+11279              future = self._net_executor.submit(os.path.exists, path)
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 228 页 / 共 241 页
+----------------------------------------------------------------------
+11280              return bool(future.result(timeout=timeout))
+11281          except Exception:
+11282              return bool(default)
+11283  
+11284      def _safe_path_operation(self, func, *args, timeout: float = 3.0, default=None):
+11285          """安全执行文件系统操作（带超时）"""
+11286          try:
+11287              future = self._executor.submit(func, *args)
+11288              result = future.result(timeout=timeout)
+11289              return result
+11290          except FuturesTimeoutError:
+11291              try:
+11292                  self.log.emit(f"⏱️ 文件操作超时（{timeout}秒），可能网络中断")
+11293              except Exception:
+11294                  pass
+11295              return default
+11296          except Exception as e:
+11297              try:
+11298                  self.log.emit(f"⚠️ 文件操作异常: {str(e)[:50]}")
+11299              except Exception:
+11300                  pass
+11301              return default
+11302  
+11303      def _check_network_connection(self) -> str:
+11304          """检查网络连接状态"""
+11305          if getattr(self, '_net_running', False):
+11306              now = time.time()
+11307              if now - self.last_network_check < self.network_check_interval:
+11308                  return self.current_network_status
+11309              
+11310              try:
+11311                  target_ok = self._safe_path_operation(os.path.exists, self.target, timeout=1.5, default=False)
+11312              except Exception:
+11313                  target_ok = False
+11314              
+11315              if target_ok:
+11316                  self.current_network_status = 'good'
+11317              else:
+11318                  try:
+11319                      backup_ok = self._safe_path_operation(os.path.exists, self.backup, timeout=1.0, default=False)
+11320                  except Exception:
+11321                      backup_ok = False
+11322                  self.current_network_status = 'unstable' if backup_ok else 'disconnected'
+11323              
+11324              self.last_network_check = now
+11325              return self.current_network_status
+11326  
+11327          now = time.time()
+11328          if now - self.last_network_check < self.network_check_interval:
+11329              return self.current_network_status
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 229 页 / 共 241 页
+----------------------------------------------------------------------
+11330          
+11331          self.last_network_check = now
+11332          
+11333          try:
+11334              target_ok = self._safe_path_operation(os.path.exists, self.target, timeout=2.0, default=False)
+11335          except Exception:
+11336              target_ok = False
+11337          
+11338          if target_ok:
+11339              old_status = self.current_network_status
+11340              self.current_network_status = 'good'
+11341              self.network_retry_count = 0
+11342              
+11343              if old_status == 'disconnected':
+11344                  self.log.emit("✅ 网络已恢复正常")
+11345                  if self.network_auto_resume and self.network_pause_by_auto:
+11346                      self.log.emit("🔄 网络恢复，自动继续上传...")
+11347                      time.sleep(1)
+11348                      self.network_pause_by_auto = False
+11349                      self.resume()
+11350              
+11351              self.network_status.emit('good')
+11352              return 'good'
+11353          
+11354          self.network_retry_count += 1
+11355          
+11356          try:
+11357              backup_ok = self._safe_path_operation(os.path.exists, self.backup, timeout=2.0, default=False)
+11358          except Exception:
+11359              backup_ok = False
+11360          
+11361          if backup_ok:
+11362              old_status = self.current_network_status
+11363              self.current_network_status = 'unstable'
+11364              
+11365              if old_status != 'unstable':
+11366                  self.log.emit(f"⚠️ 网络不稳定：目标文件夹不可访问，备份文件夹正常")
+11367              
+11368              self.network_status.emit('unstable')
+11369              return 'unstable'
+11370          
+11371          old_status = self.current_network_status
+11372          self.current_network_status = 'disconnected'
+11373          
+11374          if old_status != 'disconnected':
+11375              self.log.emit(f"❌ 网络连接中断（目标和备份文件夹均不可访问）")
+11376              
+11377              if self.network_auto_pause and not self._paused:
+11378                  self.log.emit("⏸️ 检测到网络中断，自动暂停上传...")
+11379                  self.network_pause_by_auto = True
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 230 页 / 共 241 页
+----------------------------------------------------------------------
+11380                  self.pause()
+11381          else:
+11382              if self.network_retry_count % 3 == 0:
+11383                  self.log.emit(f"🔌 网络仍未恢复 (第{self.network_retry_count}次检测)")
+11384          
+11385          self.network_status.emit('disconnected')
+11386          return 'disconnected'
+11387  
+11388      def _handle_upload_failure(self, file_path: str) -> None:
+11389          """处理上传失败（带重试调度）"""
+11390          item = self.retry_queue.get(file_path)
+11391          if item is None:
+11392              item = {'count': 1, 'next': 0.0}
+11393          else:
+11394              item['count'] += 1
+11395          
+11396          retry_count = item['count']
+11397          if retry_count > self.retry_count:
+11398              self._log_failed_file(file_path, f"重试{retry_count-1}次后仍然失败")
+11399              if file_path in self.retry_queue:
+11400                  del self.retry_queue[file_path]
+11401              self.log.emit(f"❌ 文件上传失败，已记录到失败日志: {os.path.basename(file_path)}")
+11402              return
+11403          
+11404          wait_times = [10, 30, 60]
+11405          wait_time = wait_times[min(retry_count - 1, len(wait_times) - 1)]
+11406          item['next'] = time.time() + wait_time
+11407          self.retry_queue[file_path] = item
+11408          self.log.emit(f"⚠ 文件将在稍后重试 ({retry_count}/{self.retry_count})，等待{wait_time}秒: {os.path.basename(file_path)}")
+11409  
+11410      def _process_retry_queue(self) -> None:
+11411          """处理重试队列"""
+11412          if not self.retry_queue:
+11413              return
+11414          
+11415          now = time.time()
+11416          retry_list = list(self.retry_queue.items())
+11417          
+11418          for file_path, item in retry_list:
+11419              if not self._running or self._paused:
+11420                  break
+11421              
+11422              if not os.path.exists(file_path):
+11423                  del self.retry_queue[file_path]
+11424                  continue
+11425              
+11426              retry_count = item.get('count', 1)
+11427              next_at = item.get('next', 0.0)
+11428              
+11429              if now < next_at:
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 231 页 / 共 241 页
+----------------------------------------------------------------------
+11430                  continue
+11431              
+11432              self.log.emit(f"📤 开始重试上传 ({retry_count}/{self.retry_count}): {os.path.basename(file_path)}")
+11433              rel = os.path.relpath(file_path, self.source)
+11434              tgt = os.path.join(self.target, rel)
+11435              bkp = os.path.join(self.backup, rel)
+11436              
+11437              try:
+11438                  tgt_exists = self._safe_path_operation(os.path.exists, tgt, timeout=2.0, default=False)
+11439                  if tgt_exists:
+11440                      del self.retry_queue[file_path]
+11441                      continue
+11442                  
+11443                  self._safe_path_operation(
+11444                      lambda: os.makedirs(os.path.dirname(tgt), exist_ok=True),
+11445                      timeout=3.0,
+11446                      default=False
+11447                  )
+11448                  
+11449                  copy_success = self._safe_path_operation(
+11450                      lambda: shutil.copy2(file_path, tgt) or True,
+11451                      timeout=10.0,
+11452                      default=False
+11453                  )
+11454                  
+11455                  if not copy_success:
+11456                      raise Exception("文件复制超时")
+11457                  
+11458                  self.archive_queue.put((file_path, bkp))
+11459                  del self.retry_queue[file_path]
+11460                  self.uploaded += 1
+11461                  self.stats.emit(self.uploaded, self.failed, self.skipped, self.rate)
+11462                  self.log.emit(f"✓ 重试成功: {os.path.basename(file_path)}")
+11463                  
+11464              except Exception as e:
+11465                  item['count'] = retry_count + 1
+11466                  if item['count'] > self.retry_count:
+11467                      self._log_failed_file(file_path, f"重试{retry_count}次后仍然失败: {str(e)[:50]}")
+11468                      del self.retry_queue[file_path]
+11469                      self.failed += 1
+11470                      self.stats.emit(self.uploaded, self.failed, self.skipped, self.rate)
+11471                      self.log.emit(f"❌ 文件上传失败，已记录到失败日志: {os.path.basename(file_path)}")
+11472                  else:
+11473                      wait_times = [10, 30, 60]
+11474                      wait_time = wait_times[min(item['count'] - 1, len(wait_times) - 1)]
+11475                      item['next'] = time.time() + wait_time
+11476                      self.retry_queue[file_path] = item
+11477                      self.log.emit(f"⚠ 重试失败，已重新排队 ({item['count']}/{self.retry_count})，等待{wait_time}秒: {os.path.basename(file_path)}")
+11478  
+11479      def _log_failed_file(self, file_path: str, reason: str) -> None:
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 232 页 / 共 241 页
+----------------------------------------------------------------------
+11480          """记录失败文件到日志"""
+11481          try:
+11482              timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+11483              with open(self.failed_log_path, 'a', encoding='utf-8') as f:
+11484                  f.write(f"[{timestamp}] {file_path} - {reason}\n")
+11485          except Exception as e:
+11486              self.log.emit(f"写入失败日志出错: {e}")
+11487  
+11488      def _copy_with_progress(self, src: str, dst: str, buffer_size: int = 1024 * 1024) -> None:
+11489          """带进度和速率限制的文件复制"""
+11490          last_write_time = time.time()
+11491          write_timeout = 5.0
+11492          
+11493          if self.limit_upload_rate and self.max_upload_rate_bytes > 0:
+11494              buffer_size = min(buffer_size, 64 * 1024)
+11495          
+11496          try:
+11497              with open(src, 'rb') as fsrc, open(dst, 'wb') as fdst:
+11498                  copied = 0
+11499                  
+11500                  while True:
+11501                      if not self._running or self._paused:
+11502                          break
+11503                      
+11504                      if time.time() - last_write_time > write_timeout:
+11505                          self.log.emit(f"⏱️ 文件写入超时（{write_timeout}秒），可能网络已断开")
+11506                          raise Exception("文件写入超时")
+11507                      
+11508                      chunk_start = time.time()
+11509                      buf = fsrc.read(buffer_size)
+11510                      if not buf:
+11511                          break
+11512                      
+11513                      try:
+11514                          fdst.write(buf)
+11515                          last_write_time = time.time()
+11516                      except Exception as e:
+11517                          self.log.emit(f"⚠️ 文件写入失败: {str(e)[:50]}")
+11518                          raise
+11519                      
+11520                      copied += len(buf)
+11521                      
+11522                      # 速率限制
+11523                      if self.limit_upload_rate and self.max_upload_rate_bytes > 0:
+11524                          expected_time = len(buf) / self.max_upload_rate_bytes
+11525                          elapsed_time = time.time() - chunk_start
+11526                          if elapsed_time < expected_time:
+11527                              time.sleep(expected_time - elapsed_time)
+11528                      
+11529                      # 更新进度
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 233 页 / 共 241 页
+----------------------------------------------------------------------
+11530                      if self.current_file_size > 0:
+11531                          progress = int(100 * copied / self.current_file_size)
+11532                          self.file_progress.emit(self.current_file_name, progress)
+11533                          
+11534                          if progress % 10 == 0 and progress > 0:
+11535                              if self.limit_upload_rate:
+11536                                  self.log.emit(
+11537                                      f"📊 上传进度: {progress}% "
+11538                                      f"({copied/(1024*1024):.1f}MB/{self.current_file_size/(1024*1024):.1f}MB) "
+11539                                      f"[限速: {self.max_upload_rate_bytes/(1024*1024):.1f}MB/s]"
+11540                                  )
+11541                              else:
+11542                                  self.log.emit(
+11543                                      f"📊 上传进度: {progress}% "
+11544                                      f"({copied/(1024*1024):.1f}MB/{self.current_file_size/(1024*1024):.1f}MB)"
+11545                                  )
+11546              
+11547              shutil.copystat(src, dst)
+11548              
+11549          except Exception as e:
+11550              if os.path.exists(dst):
+11551                  try:
+11552                      os.remove(dst)
+11553                  except Exception:
+11554                      pass
+11555              raise e
+11556  
+11557      def _upload_file_by_protocol(self, src: str, dst: str) -> bool:
+11558          """根据协议上传文件"""
+11559          if self.upload_protocol == 'smb':
+11560              return self._upload_via_smb(src, dst)
+11561          elif self.upload_protocol == 'ftp_client':
+11562              return self._upload_via_ftp(src, dst)
+11563          elif self.upload_protocol == 'both':
+11564              smb_ok = self._upload_via_smb(src, dst)
+11565              ftp_ok = self._upload_via_ftp(src, dst)
+11566              return smb_ok or ftp_ok
+11567          else:
+11568              self.log.emit(f"❌ 未知的上传协议: {self.upload_protocol}")
+11569              return False
+11570  
+11571      def _upload_via_smb(self, src: str, dst: str) -> bool:
+11572          """通过 SMB 上传文件"""
+11573          try:
+11574              if self.current_file_size > 10 * 1024 * 1024:
+11575                  self._copy_with_progress(src, dst)
+11576              else:
+11577                  def copy_file():
+11578                      shutil.copy2(src, dst)
+11579                      return True
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 234 页 / 共 241 页
+----------------------------------------------------------------------
+11580                  
+11581                  copy_success = self._safe_path_operation(copy_file, timeout=10.0, default=False)
+11582                  if not copy_success:
+11583                      raise Exception("文件复制超时，网络可能已断开")
+11584              
+11585              return True
+11586          except Exception as e:
+11587              self.log.emit(f"❌ SMB上传失败: {e}")
+11588              return False
+11589  
+11590      def _upload_via_ftp(self, src: str, dst: str) -> bool:
+11591          """通过 FTP 上传文件"""
+11592          try:
+11593              if not FTP_AVAILABLE or FTPClientUploader is None:
+11594                  self.log.emit("❌ FTP 功能不可用")
+11595                  return False
+11596              
+11597              if not self.ftp_client and self.ftp_client_config:
+11598                  self.ftp_client = FTPClientUploader(self.ftp_client_config)
+11599                  if not self.ftp_client.connect():
+11600                      host = self.ftp_client_config.get('host', 'unknown')
+11601                      port = self.ftp_client_config.get('port', 21)
+11602                      self.log.emit(f"❌ [FTP-CONN] 无法连接到 {host}:{port}")
+11603                      self.ftp_client = None
+11604                      return False
+11605              
+11606              if not self.ftp_client:
+11607                  self.log.emit("❌ [FTP-INIT] FTP客户端未初始化")
+11608                  return False
+11609              
+11610              rel_path = os.path.relpath(dst, self.target)
+11611              remote_path = self.ftp_client_config.get('remote_path', '/upload')
+11612              remote_file = f"{remote_path}/{rel_path}".replace('\\', '/')
+11613              
+11614              success = self.ftp_client.upload_file(Path(src), remote_file)
+11615              if success:
+11616                  self.log.emit(f"✓ FTP上传成功: {os.path.basename(remote_file)}")
+11617                  return True
+11618              else:
+11619                  self.log.emit(f"❌ [FTP-UPLOAD] 上传失败: {os.path.basename(remote_file)}")
+11620                  return False
+11621                  
+11622          except Exception as e:
+11623              error_type = type(e).__name__
+11624              self.log.emit(f"❌ [FTP-ERROR] {error_type}: {e}")
+11625              return False
+11626  
+11627      def _calculate_file_hash(self, file_path: str, buffer_size: int = 8192) -> str:
+11628          """计算文件哈希值"""
+11629          try:
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 235 页 / 共 241 页
+----------------------------------------------------------------------
+11630              if self.hash_algorithm == 'sha256':
+11631                  hasher = hashlib.sha256()
+11632              else:
+11633                  hasher = hashlib.md5()
+11634              
+11635              file_size = os.path.getsize(file_path)
+11636              
+11637              with open(file_path, 'rb') as f:
+11638                  processed = 0
+11639                  while True:
+11640                      if not self._running or self._paused:
+11641                          return ""
+11642                      
+11643                      data = f.read(buffer_size)
+11644                      if not data:
+11645                          break
+11646                      hasher.update(data)
+11647                      processed += len(data)
+11648                      
+11649                      if file_size > 50 * 1024 * 1024:
+11650                          progress = int(100 * processed / file_size)
+11651                          if progress % 10 == 0:
+11652                              self.log.emit(f"🔍 计算哈希值... {progress}%")
+11653              
+11654              return hasher.hexdigest()
+11655          except Exception as e:
+11656              self.log.emit(f"⚠ 哈希计算失败: {e}")
+11657              return ""
+11658  
+11659      def _find_duplicate_by_hash(self, file_hash: str, target_dir: str) -> str:
+11660          """在目标文件夹中查找重复文件"""
+11661          if not file_hash:
+11662              return ""
+11663          
+11664          try:
+11665              for root, _, files in os.walk(target_dir):
+11666                  for name in files:
+11667                      if not self._running or self._paused:
+11668                          return ""
+11669                      
+11670                      target_file = os.path.join(root, name)
+11671                      try:
+11672                          target_hash = self._calculate_file_hash(target_file)
+11673                          if target_hash == file_hash:
+11674                              return target_file
+11675                      except Exception:
+11676                          continue
+11677              return ""
+11678          except Exception:
+11679              return ""
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 236 页 / 共 241 页
+----------------------------------------------------------------------
+11680  
+11681      def _get_unique_filename(self, base_path: str) -> str:
+11682          """生成唯一文件名"""
+11683          if not os.path.exists(base_path):
+11684              return base_path
+11685          
+11686          directory = os.path.dirname(base_path)
+11687          filename = os.path.basename(base_path)
+11688          name, ext = os.path.splitext(filename)
+11689          
+11690          counter = 1
+11691          while True:
+11692              new_name = f"{name} ({counter}){ext}"
+11693              new_path = os.path.join(directory, new_name)
+11694              if not os.path.exists(new_path):
+11695                  return new_path
+11696              counter += 1
+11697              if counter > 9999:
+11698                  return base_path
+11699  
+11700      def _archive_worker(self) -> None:
+11701          """归档 Worker（独立线程）"""
+11702          while self._running:
+11703              try:
+11704                  item = self.archive_queue.get(timeout=1)
+11705                  src_path, bkp_path = item
+11706                  
+11707                  if not os.path.exists(src_path):
+11708                      continue
+11709                  
+11710                  if self.enable_backup and self.backup and os.path.exists(os.path.dirname(self.backup)):
+11711                      os.makedirs(os.path.dirname(bkp_path), exist_ok=True)
+11712                      shutil.move(src_path, bkp_path)
+11713                      self.log.emit(f"📦 已归档: {os.path.basename(bkp_path)}")
+11714                  else:
+11715                      os.remove(src_path)
+11716                      self.log.emit(f"🗑️ 已删除: {os.path.basename(src_path)}")
+11717                      
+11718              except queue.Empty:
+11719                  continue
+11720              except Exception as e:
+11721                  self.log.emit(f"归档失败: {e}")
+11722  
+11723      def _disk_ok(self, path: str) -> Tuple[float, float, float]:
+11724          """检查磁盘空间"""
+11725          def check():
+11726              try:
+11727                  parent = os.path.dirname(path) or path
+11728                  usage = shutil.disk_usage(parent)
+11729                  total_gb = usage.total / (1024 ** 3)
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 237 页 / 共 241 页
+----------------------------------------------------------------------
+11730                  free_gb = usage.free / (1024 ** 3)
+11731                  free_percent = (usage.free / usage.total) * 100 if usage.total > 0 else 0
+11732                  return free_percent, total_gb, free_gb
+11733              except Exception:
+11734                  return 0.0, 0.0, 0.0
+11735          
+11736          result = self._safe_path_operation(check, timeout=2.0, default=(0.0, 0.0, 0.0))
+11737          return result if result is not None else (0.0, 0.0, 0.0)
+11738  
+11739      def _get_image_files(self) -> List[str]:
+11740          """扫描图片文件"""
+11741          def scan():
+11742              if not os.path.exists(self.source):
+11743                  return []
+11744              files = []
+11745              for root, _, names in os.walk(self.source):
+11746                  if not self._running:
+11747                      break
+11748                  for n in names:
+11749                      ext = os.path.splitext(n)[1].lower()
+11750                      if ext in self.filters:
+11751                          files.append(os.path.join(root, n))
+11752              return files
+11753          
+11754          result = self._safe_path_operation(scan, timeout=5.0, default=[])
+11755          return result if result is not None else []
+11756  
+11757      def _run(self) -> None:
+11758          """主运行循环"""
+11759          self.log.emit("🚀 开始图片上传服务（上传与归档已分离）")
+11760          self.start_time = time.time()
+11761          
+11762          # 启动归档线程
+11763          self._archive_thread = threading.Thread(target=self._archive_worker, daemon=True)
+11764          self._archive_thread.start()
+11765          self.log.emit("📦 归档线程已启动")
+11766          
+11767          # 重置统计
+11768          self.uploaded = 0
+11769          self.failed = 0
+11770          self.skipped = 0
+11771          self.retry_queue.clear()
+11772          
+11773          try:
+11774              while self._running:
+11775                  # 暂停处理
+11776                  pause_log_counter = 0
+11777                  while self._paused and self._running:
+11778                      time.sleep(0.2)
+11779                      pause_log_counter += 1
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 238 页 / 共 241 页
+----------------------------------------------------------------------
+11780                      if pause_log_counter >= 50:
+11781                          pause_log_counter = 0
+11782                          self.log.emit("⏸️ 上传已暂停，等待恢复...")
+11783                  
+11784                  if not self._running:
+11785                      break
+11786  
+11787                  # 网络检查
+11788                  try:
+11789                      network_status = self._check_network_connection()
+11790                  except Exception as e:
+11791                      self.log.emit(f"⚠️ 网络检测异常: {str(e)[:50]}")
+11792                      network_status = 'disconnected'
+11793                  
+11794                  if network_status == 'disconnected' and self._paused:
+11795                      self.log.emit("🔌 等待网络恢复中...")
+11796                      time.sleep(1)
+11797                      continue
+11798  
+11799                  # 磁盘空间检查
+11800                  tf_ok, _, _ = self._disk_ok(self.target)
+11801                  bf_ok, _, _ = self._disk_ok(self.backup)
+11802                  
+11803                  if tf_ok < self.disk_threshold_percent or bf_ok < self.disk_threshold_percent:
+11804                      now = time.time()
+11805                      if now - self._last_space_warn > 10:
+11806                          self._last_space_warn = now
+11807                          self.log.emit(
+11808                              f"⚠ 磁盘空间不足！目标:{tf_ok:.0f}%，"
+11809                              f"备份:{bf_ok:.0f}%（阈值:{self.disk_threshold_percent}%）"
+11810                          )
+11811                          self.disk_warning.emit(tf_ok, bf_ok, self.disk_threshold_percent)
+11812                      time.sleep(2)
+11813                      continue
+11814  
+11815                  # 处理重试队列
+11816                  self._process_retry_queue()
+11817  
+11818                  # 扫描文件
+11819                  images = self._get_image_files()
+11820                  self.total_files = len(images)
+11821                  self.current = 0
+11822                  self.progress.emit(self.current, self.total_files, "")
+11823  
+11824                  # 处理每个文件
+11825                  for path in images:
+11826                      if not self._running:
+11827                          break
+11828                      
+11829                      while self._paused and self._running:
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 239 页 / 共 241 页
+----------------------------------------------------------------------
+11830                          time.sleep(0.2)
+11831                      
+11832                      if not self._running:
+11833                          break
+11834                      
+11835                      # 检查网络
+11836                      network_status = self._check_network_connection()
+11837                      if network_status == 'disconnected':
+11838                          self.log.emit("⚠️ 网络已断开，停止上传新文件")
+11839                          time.sleep(1)
+11840                          continue
+11841  
+11842                      rel = os.path.relpath(path, self.source)
+11843                      tgt = os.path.join(self.target, rel)
+11844                      bkp = os.path.join(self.backup, rel)
+11845                      
+11846                      # 创建目标目录
+11847                      try:
+11848                          self._safe_path_operation(
+11849                              lambda: os.makedirs(os.path.dirname(tgt), exist_ok=True),
+11850                              timeout=3.0
+11851                          )
+11852                      except Exception as e:
+11853                          self.log.emit(f"❌ 无法创建目标目录: {e}")
+11854                          self.failed += 1
+11855                          self.stats.emit(self.uploaded, self.failed, self.skipped, self.rate)
+11856                          continue
+11857  
+11858                      fname = os.path.basename(path)
+11859                      self.current_file_name = fname
+11860                      
+11861                      self.log.emit(f"📤 开始上传: {fname}")
+11862                      self.progress.emit(self.current, self.total_files, fname)
+11863                      start_t = time.time()
+11864                      
+11865                      try:
+11866                          # 检查文件是否已存在
+11867                          tgt_exists = self._safe_path_operation(
+11868                              os.path.exists, tgt, timeout=2.0, default=False
+11869                          )
+11870                          
+11871                          if tgt_exists and not self.enable_deduplication:
+11872                              self.log.emit(f"⏭ 文件已存在，跳过: {fname}")
+11873                              self.skipped += 1
+11874                              self.stats.emit(self.uploaded, self.failed, self.skipped, self.rate)
+11875                              self.file_progress.emit(fname, 100)
+11876                          else:
+11877                              # 获取文件大小
+11878                              try:
+11879                                  self.current_file_size = os.path.getsize(path)
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 240 页 / 共 241 页
+----------------------------------------------------------------------
+11880                              except Exception:
+11881                                  self.current_file_size = 0
+11882                              
+11883                              self.file_progress.emit(fname, 0)
+11884                              
+11885                              # 去重逻辑（简化版，完整逻辑见 pyqt_app.py）
+11886                              should_upload = True
+11887                              final_target = tgt
+11888                              
+11889                              # 执行上传
+11890                              if should_upload:
+11891                                  def create_dir():
+11892                                      os.makedirs(os.path.dirname(final_target), exist_ok=True)
+11893                                  
+11894                                  dir_created = self._safe_path_operation(
+11895                                      create_dir, timeout=3.0, default=False
+11896                                  )
+11897                                  
+11898                                  if dir_created is False:
+11899                                      raise Exception("创建目标目录超时，网络可能已断开")
+11900                                  
+11901                                  upload_success = self._upload_file_by_protocol(path, final_target)
+11902                                  
+11903                                  if not upload_success:
+11904                                      raise Exception("文件上传失败")
+11905                                  
+11906                                  self.uploaded += 1
+11907                                  
+11908                                  # 计算速率
+11909                                  try:
+11910                                      size_mb = os.path.getsize(final_target) / (1024*1024)
+11911                                      dur = max(time.time()-start_t, 1e-6)
+11912                                      rate = size_mb / dur
+11913                                      self.rate = f"{rate:.2f} MB/s"
+11914                                  except Exception:
+11915                                      pass
+11916                                  
+11917                                  self.stats.emit(self.uploaded, self.failed, self.skipped, self.rate)
+11918                                  self.file_progress.emit(fname, 100)
+11919                                  self.log.emit(f"✓ 上传成功: {os.path.basename(final_target)}")
+11920                                  self.archive_queue.put((path, bkp))
+11921                              else:
+11922                                  self.file_progress.emit(fname, 100)
+11923                                  
+11924                      except Exception as e:
+11925                          self.failed += 1
+11926                          self.stats.emit(self.uploaded, self.failed, self.skipped, self.rate)
+11927                          self.log.emit(f"✗ 上传失败 {fname}: {e}")
+11928                          self.upload_error.emit(fname, str(e))
+11929                          self._handle_upload_failure(path)
+
+──────────────────────────────────────────────────────────────────────
+图片异步上传工具软件_V3.1.0 源代码                                第 241 页 / 共 241 页
+----------------------------------------------------------------------
+11930  
+11931                      self.current += 1
+11932                      self.progress.emit(self.current, self.total_files, fname)
+11933  
+11934                  # 间隔控制
+11935                  if self.mode == 'periodic':
+11936                      for _ in range(max(1, self.interval*5)):
+11937                          if not self._running or self._paused:
+11938                              break
+11939                          time.sleep(0.2)
+11940                  else:
+11941                      time.sleep(1)
+11942                      
+11943          finally:
+11944              self.log.emit("🛑 上传服务已停止")
+11945              self.finished.emit()
+       
+
+──────────────────────────────────────────────────────────────────────
