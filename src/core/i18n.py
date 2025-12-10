@@ -998,6 +998,62 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '连接到FTPS服务器时启用',
         LANG_EN_US: 'Enable when connecting to FTPS server',
     },
+    
+    # ========== v3.1.0 新增：密码可见性切换 ==========
+    'show_password': {
+        LANG_ZH_CN: '显示密码',
+        LANG_EN_US: 'Show Password',
+    },
+    'hide_password': {
+        LANG_ZH_CN: '隐藏密码',
+        LANG_EN_US: 'Hide Password',
+    },
+    
+    # ========== v3.1.0 新增：协议模式增强 ==========
+    'current_mode': {
+        LANG_ZH_CN: '当前模式',
+        LANG_EN_US: 'Current Mode',
+    },
+    'mode_smb': {
+        LANG_ZH_CN: 'SMB',
+        LANG_EN_US: 'SMB',
+    },
+    'mode_ftp_client': {
+        LANG_ZH_CN: 'FTP客户端',
+        LANG_EN_US: 'FTP Client',
+    },
+    'mode_both': {
+        LANG_ZH_CN: 'SMB+FTP',
+        LANG_EN_US: 'SMB+FTP',
+    },
+    'protocol_desc_smb_short': {
+        LANG_ZH_CN: '通过网络共享上传文件',
+        LANG_EN_US: 'Upload via network share',
+    },
+    'protocol_desc_ftp_client_short': {
+        LANG_ZH_CN: '连接到远程FTP服务器上传',
+        LANG_EN_US: 'Upload to remote FTP server',
+    },
+    'protocol_desc_both_short': {
+        LANG_ZH_CN: 'SMB和FTP双写冗余',
+        LANG_EN_US: 'Dual write to SMB and FTP',
+    },
+    'toast_protocol_smb': {
+        LANG_ZH_CN: '已切换到 SMB 模式',
+        LANG_EN_US: 'Switched to SMB mode',
+    },
+    'toast_protocol_ftp_client': {
+        LANG_ZH_CN: '已切换到 FTP客户端 模式',
+        LANG_EN_US: 'Switched to FTP Client mode',
+    },
+    'toast_protocol_both': {
+        LANG_ZH_CN: '已切换到 双写 模式',
+        LANG_EN_US: 'Switched to Dual Write mode',
+    },
+    'ftp_server_unavailable_smb': {
+        LANG_ZH_CN: 'FTP服务器仅在 FTP客户端 或 双写 模式下可用',
+        LANG_EN_US: 'FTP Server only available in FTP Client or Dual mode',
+    },
 }
 
 

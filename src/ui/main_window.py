@@ -495,7 +495,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         v.addWidget(self.backup_hint)
         
         # v3.0.0 修复：设置固定高度，防止被其他卡片挤压
-        card.setFixedHeight(280)
+        card.setFixedHeight(260)
         
         return card
 
@@ -571,10 +571,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         scroll_layout.addWidget(self.protocol_desc)
         self._update_protocol_description(0)
         
-        # v3.1.0 新增：FTP 服务器独立开关
+        # v3.1.0 新增：FTP 服务器独立开关（默认SMB模式下禁用）
         ftp_server_switch_row = QtWidgets.QHBoxLayout()
         self.cb_enable_ftp_server = QtWidgets.QCheckBox(t('enable_ftp_server'))
         self.cb_enable_ftp_server.setChecked(False)
+        self.cb_enable_ftp_server.setEnabled(False)  # 默认SMB模式下禁用
         self.cb_enable_ftp_server.toggled.connect(self._on_ftp_server_toggled)
         ftp_server_switch_row.addWidget(self.cb_enable_ftp_server)
         ftp_server_switch_row.addStretch()
@@ -587,9 +588,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.ftp_server_hint.setVisible(False)
         scroll_layout.addWidget(self.ftp_server_hint)
         
-        # FTP 配置容器（可折叠）
+        # FTP 配置容器（v3.1.0: 始终可见但根据模式启用/禁用，避免布局跳动）
         self.ftp_config_widget = QtWidgets.QWidget()
-        self.ftp_config_widget.setVisible(False)
+        self.ftp_config_widget.setVisible(True)  # 始终可见
+        self.ftp_config_widget.setEnabled(False)  # 默认SMB模式下禁用
         ftp_layout = QtWidgets.QVBoxLayout(self.ftp_config_widget)
         ftp_layout.setContentsMargins(0, 8, 0, 0)
         ftp_layout.setSpacing(10)
@@ -614,10 +616,21 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.ftp_server_user.setToolTip(t('username_tooltip'))
         server_layout.addRow(t('username_label'), self.ftp_server_user)
         
+        # v3.1.0: 密码输入框带可见性切换按钮
+        server_pass_row = QtWidgets.QHBoxLayout()
         self.ftp_server_pass = QtWidgets.QLineEdit("upload_pass")
         self.ftp_server_pass.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
         self.ftp_server_pass.setToolTip(t('password_tooltip'))
-        server_layout.addRow(t('password_label'), self.ftp_server_pass)
+        self.btn_toggle_server_pass = QtWidgets.QToolButton()
+        self.btn_toggle_server_pass.setText("👁")
+        self.btn_toggle_server_pass.setToolTip(t('show_password'))
+        self.btn_toggle_server_pass.setCheckable(True)
+        self.btn_toggle_server_pass.setStyleSheet("QToolButton { border: none; font-size: 14px; padding: 2px; }")
+        self.btn_toggle_server_pass.toggled.connect(lambda checked: self._toggle_password_visibility(
+            self.ftp_server_pass, self.btn_toggle_server_pass, checked))
+        server_pass_row.addWidget(self.ftp_server_pass, 1)
+        server_pass_row.addWidget(self.btn_toggle_server_pass)
+        server_layout.addRow(t('password_label'), server_pass_row)
         
         # 共享目录选择
         share_row = QtWidgets.QHBoxLayout()
@@ -710,11 +723,22 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.ftp_client_user.setToolTip(t('client_username_tooltip'))
         client_layout.addRow(t('username_label'), self.ftp_client_user)
         
+        # v3.1.0: 密码输入框带可见性切换按钮
+        client_pass_row = QtWidgets.QHBoxLayout()
         self.ftp_client_pass = QtWidgets.QLineEdit()
         self.ftp_client_pass.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
         self.ftp_client_pass.setPlaceholderText(t('password_placeholder'))
         self.ftp_client_pass.setToolTip(t('client_password_tooltip'))
-        client_layout.addRow(t('password_label'), self.ftp_client_pass)
+        self.btn_toggle_client_pass = QtWidgets.QToolButton()
+        self.btn_toggle_client_pass.setText("👁")
+        self.btn_toggle_client_pass.setToolTip(t('show_password'))
+        self.btn_toggle_client_pass.setCheckable(True)
+        self.btn_toggle_client_pass.setStyleSheet("QToolButton { border: none; font-size: 14px; padding: 2px; }")
+        self.btn_toggle_client_pass.toggled.connect(lambda checked: self._toggle_password_visibility(
+            self.ftp_client_pass, self.btn_toggle_client_pass, checked))
+        client_pass_row.addWidget(self.ftp_client_pass, 1)
+        client_pass_row.addWidget(self.btn_toggle_client_pass)
+        client_layout.addRow(t('password_label'), client_pass_row)
         
         self.ftp_client_remote = QtWidgets.QLineEdit("/upload")
         self.ftp_client_remote.setToolTip(t('remote_path_tooltip'))
@@ -955,7 +979,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         # primary start - 优化按钮尺寸
         self.btn_start = QtWidgets.QPushButton("▶ 开始上传")
         self.btn_start.setProperty("class", "Primary")
-        self.btn_start.setMinimumHeight(45)  # 增加按钮高度，更容易点击
+        self.btn_start.setMinimumHeight(35)  # 增加按钮高度，更容易点击
         self.btn_start.clicked.connect(self._on_start)
         v.addWidget(self.btn_start)
         # secondary pause/stop
@@ -963,12 +987,12 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         row.setSpacing(12)  # 增加按钮间距
         self.btn_pause = QtWidgets.QPushButton("⏸ 暂停上传")
         self.btn_pause.setProperty("class", "Warning")
-        self.btn_pause.setMinimumHeight(40)
+        self.btn_pause.setMinimumHeight(35)
         self.btn_pause.setEnabled(False)
         self.btn_pause.clicked.connect(self._on_pause_resume)
         self.btn_stop = QtWidgets.QPushButton("⏹ 停止上传")
         self.btn_stop.setProperty("class", "Danger")
-        self.btn_stop.setMinimumHeight(40)
+        self.btn_stop.setMinimumHeight(35)
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._on_stop)
         row.addWidget(self.btn_pause)
@@ -981,11 +1005,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         row2.setSpacing(12)  # 增加按钮间距
         self.btn_save = QtWidgets.QPushButton("💾 保存配置")
         self.btn_save.setProperty("class", "Secondary")
-        self.btn_save.setMinimumHeight(38)
+        self.btn_save.setMinimumHeight(30)
         self.btn_save.clicked.connect(self._save_config)
         self.btn_more = QtWidgets.QToolButton()
         self.btn_more.setText("更多 ▾")
-        self.btn_more.setMinimumHeight(38)
+        self.btn_more.setMinimumHeight(30)
         popup_enum = getattr(QtWidgets.QToolButton, 'ToolButtonPopupMode', QtWidgets.QToolButton)
         self.btn_more.setPopupMode(getattr(popup_enum, 'InstantPopup'))
         menu = QtWidgets.QMenu(self)
@@ -1734,6 +1758,24 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         else:
             self._append_log("⚪ 已禁用速率限制")
 
+    def _toggle_password_visibility(self, line_edit: QtWidgets.QLineEdit, 
+                                     button: QtWidgets.QToolButton, show: bool):
+        """v3.1.0 新增: 切换密码可见性
+        
+        Args:
+            line_edit: 密码输入框
+            button: 切换按钮
+            show: 是否显示密码
+        """
+        if show:
+            line_edit.setEchoMode(QtWidgets.QLineEdit.EchoMode.Normal)
+            button.setText("🙈")
+            button.setToolTip(t('hide_password'))
+        else:
+            line_edit.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
+            button.setText("👁")
+            button.setToolTip(t('show_password'))
+
     def _choose_ftp_share(self):
         """选择 FTP 共享目录"""
         folder = QtWidgets.QFileDialog.getExistingDirectory(
@@ -1891,51 +1933,90 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         # 更新说明文字
         self._update_protocol_description(index)
         
-        # 显示/隐藏 FTP 客户端配置
-        show_ftp_client = index >= 1  # ftp_client 或 both 时显示
-        self.ftp_config_widget.setVisible(show_ftp_client or self.enable_ftp_server)
-        
-        # 控制各组件可见性
+        # v3.1.0: SMB模式禁用FTP服务器开关并取消勾选
         if index == 0:  # SMB
-            self.ftp_client_collapsible.setVisible(False)
-        elif index == 1:  # FTP Client
-            self.ftp_client_collapsible.setVisible(True)
-        elif index == 2:  # Both (SMB + FTP Client)
-            self.ftp_client_collapsible.setVisible(True)
-        
-        # FTP 服务器配置由独立开关控制
-        self.ftp_server_collapsible.setVisible(self.enable_ftp_server)
+            # SMB模式下禁用FTP服务器开关
+            self.cb_enable_ftp_server.blockSignals(True)
+            self.cb_enable_ftp_server.setChecked(False)
+            self.cb_enable_ftp_server.setEnabled(False)
+            self.cb_enable_ftp_server.blockSignals(False)
+            self.enable_ftp_server = False
+            # 隐藏FTP相关配置提示
+            self.ftp_server_hint.setVisible(False)
+            # 禁用折叠框会自动收起 (CollapsibleBox.setEnabled 已增强)
+            self.ftp_server_collapsible.setEnabled(False)
+            self.ftp_client_collapsible.setEnabled(False)
+            # 保持ftp_config_widget可见但禁用,避免布局跳动
+            self.ftp_config_widget.setVisible(True)
+            self.ftp_config_widget.setEnabled(False)
+        else:
+            # FTP客户端或双写模式下启用FTP服务器开关
+            self.cb_enable_ftp_server.setEnabled(True)
+            self.ftp_config_widget.setVisible(True)
+            self.ftp_config_widget.setEnabled(True)
+            # 启用FTP客户端配置并自动展开
+            self.ftp_client_collapsible.setEnabled(True)
+            self.ftp_client_collapsible.set_expanded(True)
+            # FTP服务器配置由独立开关控制
+            self.ftp_server_collapsible.setEnabled(self.enable_ftp_server)
+            if self.enable_ftp_server:
+                self.ftp_server_collapsible.set_expanded(True)
         
         self.config_modified = True
-        self._append_log(f"📡 切换上传协议：{['SMB', 'FTP客户端', 'SMB+FTP客户端'][index]}")
+        mode_names = ['SMB', 'FTP客户端', 'SMB+FTP客户端']
+        self._append_log(f"📡 切换上传协议：{mode_names[index]}")
         
-        # v2.0 新增：更新协议状态显示
+        # v3.1.0: 显示模式切换toast
+        toast_keys = ['toast_protocol_smb', 'toast_protocol_ftp_client', 'toast_protocol_both']
+        self._toast(t(toast_keys[index]), 'info')
+        
+        # 更新协议状态显示和模式标签
         self._update_protocol_status()
+        self._update_mode_chip(index)
     
     def _update_protocol_description(self, index: int):
-        """更新协议说明 (v3.1.0 重构)"""
+        """更新协议说明 (v3.1.0 重构: 更短更直观)"""
         descriptions = [
-            "📁 SMB (网络共享)：通过 Windows 网络共享上传文件到共享文件夹",
-            "📤 FTP 客户端模式：本机作为 FTP 客户端，连接到远程 FTP 服务器上传文件",
-            "🔄 SMB + FTP客户端：同时通过 SMB 和 FTP 客户端双写上传"
+            f"📁 {t('protocol_desc_smb_short')}",
+            f"📤 {t('protocol_desc_ftp_client_short')}",
+            f"🔄 {t('protocol_desc_both_short')}"
         ]
         self.protocol_desc.setText(descriptions[index])
     
+    def _update_mode_chip(self, index: int):
+        """v3.1.0 新增: 更新协议模式芯片显示"""
+        mode_configs = [
+            (t('mode_smb'), '#E3F2FD', '#1565C0'),       # SMB: 蓝色
+            (t('mode_ftp_client'), '#FFF3E0', '#E65100'), # FTP客户端: 橙色
+            (t('mode_both'), '#E8F5E9', '#2E7D32'),       # 双写: 绿色
+        ]
+        text, bg_color, text_color = mode_configs[index]
+        if hasattr(self, 'lbl_current_mode'):
+            self.lbl_current_mode.setValue(text)
+            self.lbl_current_mode.setStyleSheet(
+                f"background:{bg_color}; color:{text_color}; padding:4px 8px; "
+                f"border-radius:4px; font-size:9pt; font-weight:600;"
+            )
+    
     def _on_ftp_server_toggled(self, checked: bool):
         """v3.1.0 新增: FTP 服务器开关切换"""
+        # SMB模式下不允许启用FTP服务器
+        if self.current_protocol == 'smb' and checked:
+            self.cb_enable_ftp_server.blockSignals(True)
+            self.cb_enable_ftp_server.setChecked(False)
+            self.cb_enable_ftp_server.blockSignals(False)
+            self._toast(t('ftp_server_unavailable_smb'), 'warning')
+            return
+        
         self.enable_ftp_server = checked
         
-        # 显示/隐藏 FTP 服务器配置
+        # 启用/禁用 FTP 服务器配置
         self.ftp_server_hint.setVisible(checked)
-        self.ftp_server_collapsible.setVisible(checked)
+        self.ftp_server_collapsible.setEnabled(checked)  # setEnabled(False)会自动收起
         
-        # 如果启用了 FTP 服务器，需要显示 FTP 配置容器
+        # 启用时自动展开，方便用户配置
         if checked:
-            self.ftp_config_widget.setVisible(True)
-        else:
-            # 检查是否还需要显示 FTP 配置容器（如果使用 FTP 客户端协议）
-            show_ftp = self.current_protocol in ['ftp_client', 'both']
-            self.ftp_config_widget.setVisible(show_ftp)
+            self.ftp_server_collapsible.set_expanded(True)
         
         self.config_modified = True
         status = '启用' if checked else '禁用'
@@ -2070,12 +2151,15 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.lbl_protocol = self._chip(t('protocol_chip'), "SMB", "#E8EAF6", "#3F51B5")
         self.lbl_ftp_server = self._chip(t('ftp_server_chip'), t('not_started'), "#FCE4EC", "#C2185B")
         self.lbl_ftp_client = self._chip(t('ftp_client_chip'), t('not_connected'), "#FFF8E1", "#F57C00")
+        # v3.1.0 新增：当前模式芯片（醒目显示）
+        self.lbl_current_mode = self._chip(t('current_mode'), t('mode_smb'), "#E3F2FD", "#1565C0")
         
         # 4列布局，在高分辨率下显示更好
         for i, w in enumerate([self.lbl_uploaded, self.lbl_failed, self.lbl_skipped, 
                                self.lbl_rate, self.lbl_queue, self.lbl_time,
                                self.lbl_target_disk, self.lbl_backup_disk, self.lbl_network,
-                               self.lbl_protocol, self.lbl_ftp_server, self.lbl_ftp_client]):
+                               self.lbl_protocol, self.lbl_ftp_server, self.lbl_ftp_client,
+                               self.lbl_current_mode]):
             grid.addWidget(w, i//4, i%4)
         v.addLayout(grid)
         
@@ -2458,8 +2542,8 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             'upload_protocol': self.current_protocol,
             # v2.2.0 新增：保存当前使用的协议模式
             'current_protocol': self.current_protocol,
-            # v3.1.0 新增：FTP 服务器独立开关
-            'enable_ftp_server': self.enable_ftp_server,
+            # v3.1.0 新增：FTP 服务器独立开关 (SMB模式下强制为False)
+            'enable_ftp_server': False if self.current_protocol == 'smb' else self.enable_ftp_server,
             'ftp_server': {
                 'host': self.ftp_server_host.text(),
                 'port': self.ftp_server_port.value(),
@@ -2649,10 +2733,21 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self._append_log(f"✓ 已加载上次协议模式: {self.current_protocol}")
             
             # v3.1.0: 加载 FTP 服务器开关状态
-            self.cb_enable_ftp_server.setChecked(self.enable_ftp_server)
-            self._on_ftp_server_toggled(self.enable_ftp_server)  # 触发 UI 更新
-            if self.enable_ftp_server:
-                self._append_log(f"✓ FTP服务器已启用")
+            # SMB 模式下强制禁用 FTP 服务器
+            if self.current_protocol == 'smb':
+                self.enable_ftp_server = False
+                self.cb_enable_ftp_server.setEnabled(False)
+                self.cb_enable_ftp_server.setChecked(False)
+                self.ftp_server_collapsible.setEnabled(False)
+                self.ftp_client_collapsible.setEnabled(False)
+                self.ftp_config_widget.setVisible(True)
+                self.ftp_config_widget.setEnabled(False)
+            else:
+                self.cb_enable_ftp_server.setEnabled(True)
+                self.cb_enable_ftp_server.setChecked(self.enable_ftp_server)
+                self._on_ftp_server_toggled(self.enable_ftp_server)  # 触发 UI 更新
+                if self.enable_ftp_server:
+                    self._append_log(f"✓ FTP服务器已启用")
             
             # 更新协议状态显示
             self._update_protocol_status()
@@ -3446,19 +3541,22 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.lbl_status.setStyleSheet("background:#FEE2E2; color:#B91C1C; padding:4px 10px; font-weight:700; border-radius:12px;")
     
     def _update_protocol_status(self):
-        """更新协议和FTP状态显示"""
-        # 更新协议模式
+        """更新协议和FTP状态显示 (v3.1.0 重构)"""
+        # 更新协议模式芯片
         protocol_names = {
             'smb': 'SMB',
-            'ftp_server': 'FTP服务器',
             'ftp_client': 'FTP客户端',
-            'both': '混合模式'
+            'both': 'SMB+FTP'
         }
         protocol_text = protocol_names.get(self.current_protocol, 'SMB')
         self.lbl_protocol.setValue(protocol_text)
         
-        # 更新FTP服务器状态（含图标指示器）
-        if self.current_protocol in ['ftp_server', 'both']:
+        # v3.1.0: 更新当前模式芯片（醒目显示）
+        protocol_index = {'smb': 0, 'ftp_client': 1, 'both': 2}.get(self.current_protocol, 0)
+        self._update_mode_chip(protocol_index)
+        
+        # 更新FTP服务器状态（由独立开关控制，不依赖协议）
+        if self.enable_ftp_server:
             if self.ftp_manager and self.ftp_manager.server:
                 try:
                     # 直接从FTPServerManager获取状态
