@@ -213,6 +213,14 @@ class CollapsibleBox(QtWidgets.QWidget):  # type: ignore[misc]
             layout: 要添加的 layout
         """
         self.content_layout.addLayout(layout)
+    
+    def setTitle(self, title: str) -> None:
+        """设置标题文本（用于多语言切换）
+        
+        Args:
+            title: 新的标题文本
+        """
+        self.toggle_button.setText(title)
 
 
 class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]

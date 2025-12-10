@@ -650,17 +650,21 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: 'SMB (网络共享)',
         LANG_EN_US: 'SMB (Network Share)',
     },
-    'protocol_option_ftp_server': {
-        LANG_ZH_CN: 'FTP 服务器模式',
-        LANG_EN_US: 'FTP Server Mode',
-    },
     'protocol_option_ftp_client': {
         LANG_ZH_CN: 'FTP 客户端模式',
         LANG_EN_US: 'FTP Client Mode',
     },
     'protocol_option_both': {
-        LANG_ZH_CN: '混合模式 (Server + Client)',
-        LANG_EN_US: 'Hybrid Mode (Server + Client)',
+        LANG_ZH_CN: 'SMB + FTP客户端 (双写)',
+        LANG_EN_US: 'SMB + FTP Client (Dual)',
+    },
+    'enable_ftp_server': {
+        LANG_ZH_CN: '🖥️ 启用内置FTP服务器',
+        LANG_EN_US: '🖥️ Enable Built-in FTP Server',
+    },
+    'ftp_server_hint': {
+        LANG_ZH_CN: '启用后，本机将作为FTP服务器，其他设备可连接上传文件到指定文件夹',
+        LANG_EN_US: 'When enabled, this machine acts as FTP server, others can connect to upload files',
     },
     
     # ========== FTP 表单标签 ==========

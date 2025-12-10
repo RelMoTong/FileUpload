@@ -37,6 +37,9 @@ except ImportError:
     FTP_AVAILABLE = False
     FTPClientUploader = None  # type: ignore[assignment, misc]
 
+# 导入断点续传模块
+from src.core.resume_manager import ResumeManager, ResumableFileUploader
+
 
 class UploadWorker(QtCore.QObject):  # type: ignore[misc]
     """文件上传 Worker
@@ -206,6 +209,10 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         
         # 去重询问模式的全局选择
         self._duplicate_ask_choice: Optional[str] = None
+        
+        # 断点续传管理器
+        self.resume_manager = ResumeManager(self.app_dir)
+        self.resumable_uploader: Optional[ResumableFileUploader] = None
 
     def start(self) -> None:
         """启动上传任务"""
@@ -213,6 +220,10 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             return
         self._running = True
         self._paused = False
+        
+        # 检查待续传的文件
+        self._check_pending_resumes()
+        
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         
@@ -222,6 +233,50 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self._net_thread.start()
         
         self.status.emit('running')
+    
+    def _check_pending_resumes(self) -> None:
+        """检查并提示待续传的文件"""
+        try:
+            pending = self.resume_manager.get_pending_resumes()
+            if pending:
+                self.log.emit(f"📂 发现 {len(pending)} 个待续传文件，将优先处理")
+                for record in pending[:3]:  # 只显示前3个
+                    filename = os.path.basename(record.get('source_path', ''))
+                    uploaded = record.get('uploaded_bytes', 0)
+                    total = record.get('total_bytes', 0)
+                    percent = int(100 * uploaded / total) if total > 0 else 0
+                    self.log.emit(f"  📄 {filename}: {percent}% 已完成")
+                if len(pending) > 3:
+                    self.log.emit(f"  ... 还有 {len(pending) - 3} 个文件")
+        except Exception as e:
+            self.log.emit(f"⚠️ 检查续传记录失败: {e}")
+
+    def get_health_status(self) -> dict:
+        """获取运行健康状态（用于监控和排障）
+        
+        Returns:
+            健康状态字典，包含各项指标
+        """
+        status = {
+            'running': self._running,
+            'paused': self._paused,
+            'network_status': self.current_network_status,
+            'uploaded_count': self.uploaded_count,
+            'failed_count': self.failed_count,
+            'skipped_count': self.skipped_count,
+            'protocol': self.upload_protocol,
+            'ftp_connected': self.ftp_client is not None,
+            'resume_active': self.resumable_uploader is not None,
+            'executor_alive': not self._executor._shutdown if hasattr(self._executor, '_shutdown') else True,
+        }
+        return status
+
+    def log_health_status(self) -> None:
+        """记录当前健康状态到日志"""
+        status = self.get_health_status()
+        self.log.emit(f"📊 健康检查: 运行={status['running']}, "
+                     f"网络={status['network_status']}, "
+                     f"上传/失败/跳过={status['uploaded_count']}/{status['failed_count']}/{status['skipped_count']}")
 
     def pause(self) -> None:
         """暂停上传任务"""
@@ -237,24 +292,39 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self._paused = False
         self.status.emit('running')
 
-    def stop(self) -> None:
-        """停止上传任务"""
+    def stop(self, wait: bool = False, timeout: float = 5.0) -> None:
+        """停止上传任务
+        
+        Args:
+            wait: 是否等待正在执行的任务完成（安全停止）
+            timeout: 等待超时时间（秒），仅在 wait=True 时有效
+        """
+        self.log.emit(f"🛑 正在停止上传任务 ({'安全模式' if wait else '快速模式'})...")
         self._running = False
         self._paused = False
+        
+        # 停止断点续传上传器（保存进度）
+        if self.resumable_uploader:
+            self.resumable_uploader.stop()
+            self.resumable_uploader = None
+            self.log.emit("💾 上传进度已保存，下次启动可继续")
         
         # 关闭FTP客户端
         if self.ftp_client:
             try:
                 self.ftp_client.disconnect()
                 self.ftp_client = None
-            except Exception:
-                pass
+                self.log.emit("✓ FTP 客户端已断开")
+            except Exception as e:
+                self.log.emit(f"⚠️ FTP 客户端断开异常: {e}")
         
         # 关闭线程池
         try:
-            self._executor.shutdown(wait=False, cancel_futures=True)
-        except Exception:
-            pass
+            self._executor.shutdown(wait=wait, cancel_futures=not wait)
+            if wait:
+                self.log.emit(f"✓ 等待任务完成 (超时: {timeout}s)")
+        except Exception as e:
+            self.log.emit(f"⚠️ 线程池关闭异常: {e}")
         
         # 停止网络监控
         self._net_running = False
@@ -263,6 +333,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         except Exception:
             pass
         
+        self.log.emit("✓ 上传任务已停止")
         self.status.emit('stopped')
 
     def _network_monitor_loop(self) -> None:
@@ -618,75 +689,6 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         except Exception as e:
             self.log.emit(f"写入失败日志出错: {e}")
 
-    def _copy_with_progress(self, src: str, dst: str, buffer_size: int = 1024 * 1024) -> None:
-        """带进度和速率限制的文件复制"""
-        last_write_time = time.time()
-        write_timeout = 5.0
-        
-        if self.limit_upload_rate and self.max_upload_rate_bytes > 0:
-            buffer_size = min(buffer_size, 64 * 1024)
-        
-        try:
-            with open(src, 'rb') as fsrc, open(dst, 'wb') as fdst:
-                copied = 0
-                
-                while True:
-                    if not self._running or self._paused:
-                        break
-                    
-                    if time.time() - last_write_time > write_timeout:
-                        self.log.emit(f"⏱️ 文件写入超时（{write_timeout}秒），可能网络已断开")
-                        raise Exception("文件写入超时")
-                    
-                    chunk_start = time.time()
-                    buf = fsrc.read(buffer_size)
-                    if not buf:
-                        break
-                    
-                    try:
-                        fdst.write(buf)
-                        last_write_time = time.time()
-                    except Exception as e:
-                        self.log.emit(f"⚠️ 文件写入失败: {str(e)[:50]}")
-                        raise
-                    
-                    copied += len(buf)
-                    
-                    # 速率限制
-                    if self.limit_upload_rate and self.max_upload_rate_bytes > 0:
-                        expected_time = len(buf) / self.max_upload_rate_bytes
-                        elapsed_time = time.time() - chunk_start
-                        if elapsed_time < expected_time:
-                            time.sleep(expected_time - elapsed_time)
-                    
-                    # 更新进度
-                    if self.current_file_size > 0:
-                        progress = int(100 * copied / self.current_file_size)
-                        self.file_progress.emit(self.current_file_name, progress)
-                        
-                        if progress % 10 == 0 and progress > 0:
-                            if self.limit_upload_rate:
-                                self.log.emit(
-                                    f"📊 上传进度: {progress}% "
-                                    f"({copied/(1024*1024):.1f}MB/{self.current_file_size/(1024*1024):.1f}MB) "
-                                    f"[限速: {self.max_upload_rate_bytes/(1024*1024):.1f}MB/s]"
-                                )
-                            else:
-                                self.log.emit(
-                                    f"📊 上传进度: {progress}% "
-                                    f"({copied/(1024*1024):.1f}MB/{self.current_file_size/(1024*1024):.1f}MB)"
-                                )
-            
-            shutil.copystat(src, dst)
-            
-        except Exception as e:
-            if os.path.exists(dst):
-                try:
-                    os.remove(dst)
-                except Exception:
-                    pass
-            raise e
-
     def _upload_file_by_protocol(self, src: str, dst: str) -> bool:
         """根据协议上传文件"""
         if self.upload_protocol == 'smb':
@@ -702,22 +704,85 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             return False
 
     def _upload_via_smb(self, src: str, dst: str) -> bool:
-        """通过 SMB 上传文件"""
+        """通过 SMB 上传文件（支持断点续传）
+        
+        文件大小分级处理：
+        - ≥10MB: 使用断点续传 (ResumableFileUploader)
+        - <10MB: 直接复制 (shutil.copy2)
+        """
         try:
-            if self.current_file_size > 10 * 1024 * 1024:
-                self._copy_with_progress(src, dst)
+            # 大文件使用断点续传
+            if self.resume_manager.should_resume(src):
+                return self._upload_with_resume(src, dst)
             else:
+                # 小文件直接复制
                 def copy_file():
                     shutil.copy2(src, dst)
                     return True
                 
-                copy_success = self._safe_path_operation(copy_file, timeout=10.0, default=False)
+                copy_success = self._safe_path_operation(copy_file, timeout=30.0, default=False)
                 if not copy_success:
                     raise Exception("文件复制超时，网络可能已断开")
             
             return True
         except Exception as e:
             self.log.emit(f"❌ SMB上传失败: {e}")
+            return False
+    
+    def _upload_with_resume(self, src: str, dst: str) -> bool:
+        """使用断点续传上传大文件"""
+        try:
+            # 检查是否有续传记录
+            resume_info = self.resume_manager.get_resume_info(src, dst)
+            if resume_info:
+                uploaded = resume_info.get('uploaded_bytes', 0)
+                total = resume_info.get('total_bytes', 0)
+                percent = int(100 * uploaded / total) if total > 0 else 0
+                self.log.emit(f"📂 发现续传记录: {os.path.basename(src)} ({percent}% 已完成)")
+            
+            # 创建进度回调
+            def progress_callback(uploaded: int, total: int, filename: str):
+                if total > 0:
+                    progress = int(100 * uploaded / total)
+                    self.file_progress.emit(filename, progress)
+                    # 每 10% 输出一次日志
+                    if progress > 0 and progress % 10 == 0:
+                        self.log.emit(
+                            f"📊 上传进度: {progress}% "
+                            f"({uploaded/(1024*1024):.1f}MB/{total/(1024*1024):.1f}MB)"
+                        )
+            
+            # 创建可续传上传器
+            self.resumable_uploader = ResumableFileUploader(
+                resume_manager=self.resume_manager,
+                buffer_size=1024 * 1024,  # 1MB
+                progress_callback=progress_callback
+            )
+            
+            # 计算速率限制
+            rate_limit = self.max_upload_rate_bytes if self.limit_upload_rate else 0
+            
+            # 执行上传
+            success, error_msg = self.resumable_uploader.upload_with_resume(
+                source_path=src,
+                target_path=dst,
+                rate_limit_bytes=rate_limit
+            )
+            
+            if success:
+                self.log.emit(f"✓ 大文件上传完成: {os.path.basename(src)}")
+                return True
+            else:
+                if "中断" in error_msg:
+                    self.log.emit(f"⏸️ 上传已暂停，进度已保存: {os.path.basename(src)}")
+                else:
+                    self.log.emit(f"❌ 上传失败: {error_msg}")
+                return False
+                
+        except Exception as e:
+            self.log.emit(f"❌ 断点续传上传失败: {e}")
+            # 标记上传失败但保留续传记录
+            self.resume_manager.complete_upload(src, success=False)
             return False
 
     def _upload_via_ftp(self, src: str, dst: str) -> bool:
@@ -890,7 +955,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
     def _run(self) -> None:
         """主运行循环"""
         self.log.emit("🚀 开始图片上传服务（上传与归档已分离）")
+        self.log.emit(f"📡 上传协议: {self.upload_protocol}")
         self.start_time = time.time()
+        self._health_check_counter = 0  # 健康检查计数器
         
         # 启动归档线程
         self._archive_thread = threading.Thread(target=self._archive_worker, daemon=True)
@@ -905,6 +972,12 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         
         try:
             while self._running:
+                # 定期健康检查（每 60 次循环，约每 30 秒）
+                self._health_check_counter += 1
+                if self._health_check_counter >= 60:
+                    self._health_check_counter = 0
+                    self.log_health_status()
+                
                 # 暂停处理
                 pause_log_counter = 0
                 while self._paused and self._running:

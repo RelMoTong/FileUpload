@@ -52,8 +52,9 @@ class ConfigManager:
         'auto_delete_keep_days': 10,
         'auto_delete_check_interval': 300,
         # 协议配置
-        'upload_protocol': 'smb',
+        'upload_protocol': 'smb',  # 上传协议: smb, ftp_client, both
         'current_protocol': 'smb',
+        'enable_ftp_server': False,  # v3.1.0: FTP服务器独立开关
         # v3.0.2 新增：语言设置
         'language': 'zh_CN',
         # v3.0.2 新增：断点续传设置

@@ -58,8 +58,8 @@ dist_backup*/
 tools/测试数据/
 tests/ftp_test_data/
 
-# Config (comment out if you want to share config)
-# config.json
+# Config (contains local paths, should not be shared)
+config.json
 
 # Release packages
 *_发布版.zip
