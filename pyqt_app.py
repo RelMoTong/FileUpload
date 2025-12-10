@@ -2,7 +2,7 @@
 """
 图片异步上传工具 - 兼容层入口
 
-v3.1.0 - 精简为仅调用模块化入口
+v3.1.1 - 精简为仅调用模块化入口
 - 保留此文件用于向后兼容和打包脚本
 - 实际功能已迁移到 src/ 模块化架构
 
@@ -30,7 +30,7 @@ from src.ui.widgets import Toast, ChipWidget, CollapsibleBox, DiskCleanupDialog
 from src.workers.upload_worker import UploadWorker
 from src.ui import MainWindow
 
-# v3.1.0: 安全导入 FTP 模块，缺少依赖时不崩溃
+# v3.1.1: 安全导入 FTP 模块，缺少依赖时不崩溃
 try:
     from src.protocols.ftp import FTPProtocolManager, FTPServerManager, FTPClientUploader
     FTP_AVAILABLE = True
@@ -43,7 +43,7 @@ except ImportError as e:
     print("[提示] 如需 FTP 功能，请运行: pip install pyftpdlib")
 
 # 版本信息（保持向后兼容）
-APP_VERSION = "3.1.0"
+APP_VERSION = "3.1.1"
 APP_TITLE = f"图片异步上传工具 v{APP_VERSION}"
 
 

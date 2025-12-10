@@ -185,6 +185,41 @@ class CollapsibleBox(QtWidgets.QWidget):  # type: ignore[misc]
         )
         self.content_area.setVisible(checked)
     
+    def set_expanded(self, expanded: bool) -> None:
+        """设置展开/折叠状态 (v3.1.0 新增)
+        
+        公开方法，用于程序控制折叠框的展开状态。
+        
+        Args:
+            expanded: True 展开, False 折叠
+        """
+        self.toggle_button.blockSignals(True)
+        self.toggle_button.setChecked(expanded)
+        self.toggle_button.blockSignals(False)
+        self._on_toggle(expanded)
+    
+    def is_expanded(self) -> bool:
+        """获取当前是否展开 (v3.1.0 新增)
+        
+        Returns:
+            True 如果已展开，否则 False
+        """
+        return self.toggle_button.isChecked()
+    
+    def setEnabled(self, enabled: bool) -> None:
+        """重写 setEnabled，同时控制折叠按钮 (v3.1.0 增强)
+        
+        禁用时收起折叠框并禁用按钮，避免"亮着但不可用"的误导。
+        
+        Args:
+            enabled: 是否启用
+        """
+        super().setEnabled(enabled)
+        self.toggle_button.setEnabled(enabled)
+        if not enabled:
+            # 禁用时强制收起
+            self.set_expanded(False)
+    
     def setContentLayout(self, layout: QtWidgets.QLayout) -> None:
         """设置内容布局
         
@@ -239,51 +274,64 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         super().__init__(parent)
         self.setWindowTitle("💿 磁盘清理工具")
         self.setModal(True)
-        self.resize(500, 500)  # 增加高度以容纳自动清理配置
+        self.resize(300, 300)  # 增加高度以容纳自动清理配置
         
         # 保存父窗口引用，使用 Any 类型避免 Pylance 误报
         self.parent_window: Any = parent  # type: ignore[assignment]
         self.files_to_delete: List[Tuple[str, int]] = []  # 待删除的文件列表
         
         self._build_ui()
-    
+        
+
     def _build_ui(self) -> None:
         """构建 UI"""
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setSpacing(15)
-        layout.setContentsMargins(20, 20, 20, 20)
+        content_widget = QtWidgets.QWidget()
+        content_layout = QtWidgets.QVBoxLayout(content_widget)
+        content_layout.setSpacing(15)
+        content_layout.setContentsMargins(20, 20, 20, 20)
         
         # 标题说明
         title_label = QtWidgets.QLabel("选择要清理的文件夹和文件类型")
         title_label.setStyleSheet("font-size: 13pt; font-weight: 700; color: #1976D2;")
-        layout.addWidget(title_label)
+        content_layout.addWidget(title_label)
         
         desc_label = QtWidgets.QLabel(
             "⚠️ 警告：删除的文件将无法恢复！请确认后再执行清理操作。"
         )
         desc_label.setStyleSheet("color: #D32F2F; padding: 8px; background: #FFEBEE; border-radius: 6px;")
         desc_label.setWordWrap(True)
-        layout.addWidget(desc_label)
+        content_layout.addWidget(desc_label)
         
         # 文件夹选择区域
         folder_group = self._create_folder_selection_group()
-        layout.addWidget(folder_group)
+        content_layout.addWidget(folder_group)
         
         # 文件格式选择区域
         format_group = self._create_format_selection_group()
-        layout.addWidget(format_group)
+        content_layout.addWidget(format_group)
         
         # 自动清理配置区域
         auto_group = self._create_auto_cleanup_group()
-        layout.addWidget(auto_group)
+        content_layout.addWidget(auto_group)
         
         # 扫描结果区域
         result_group = self._create_result_group()
-        layout.addWidget(result_group)
+        content_layout.addWidget(result_group)
         
         # 按钮区域
         button_layout = self._create_button_layout()
-        layout.addLayout(button_layout)
+        content_layout.addLayout(button_layout)
+
+        scroll = QtWidgets.QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll.setWidget(content_widget)
+
+        outer_layout = QtWidgets.QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.addWidget(scroll)
+        self.setFixedHeight(600)
+        self.setFixedWidth(1000)
     
     def _create_folder_selection_group(self) -> QtWidgets.QGroupBox:
         """创建文件夹选择区域"""
@@ -512,7 +560,13 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }"
         )
         result_layout = QtWidgets.QVBoxLayout(result_group)
-        
+
+        self.progress_bar = QtWidgets.QProgressBar()
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("等待操作")
+        result_layout.addWidget(self.progress_bar)
+
         self.result_text = QtWidgets.QPlainTextEdit()
         self.result_text.setReadOnly(True)
         self.result_text.setMaximumHeight(120)
@@ -623,6 +677,9 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         """扫描符合条件的文件"""
         self.files_to_delete = []
         self.result_text.clear()
+        if hasattr(self, 'progress_bar'):
+            self.progress_bar.setRange(0, 0)
+            self.progress_bar.setFormat("正在扫描...")
         
         # 获取要扫描的文件夹（从父窗口输入框读取最新路径）
         folders_to_scan = []
@@ -708,9 +765,21 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             f"💾 总大小: {total_size / (1024*1024):.2f} MB "
             f"({total_size / (1024*1024*1024):.3f} GB)"
         )
+        # 按大小降序排序，便于优先处理大文件
+        self.files_to_delete.sort(key=lambda x: x[1], reverse=True)
+        if self.files_to_delete:
+            top_file, top_size = self.files_to_delete[0]
+            self.result_text.appendPlainText(
+                f"📌 最大文件: {top_file} ({top_size/(1024*1024):.2f} MB)"
+            )
         
         # 启用删除按钮
         self.btn_delete.setEnabled(len(self.files_to_delete) > 0)
+        if hasattr(self, 'progress_bar'):
+            max_val = max(1, len(self.files_to_delete))
+            self.progress_bar.setRange(0, max_val)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat(f"待清理文件：{len(self.files_to_delete)} 个")
     
     def _delete_files(self) -> None:
         """删除扫描到的文件"""
@@ -735,10 +804,15 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         # 执行删除
         self.result_text.appendPlainText("\n" + "="*50)
         self.result_text.appendPlainText("🗑️ 开始删除文件...\n")
-        
+
         deleted_count = 0
         deleted_size = 0
         failed_count = 0
+        total_files = len(self.files_to_delete)
+        if hasattr(self, 'progress_bar'):
+            self.progress_bar.setRange(0, total_files if total_files > 0 else 1)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat(f"删除进度 0/{total_files}")
         
         for file_path, file_size in self.files_to_delete:
             try:
@@ -748,6 +822,13 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             except Exception as e:
                 failed_count += 1
                 self.result_text.appendPlainText(f"❌ 删除失败: {file_path}\n   错误: {e}")
+            finally:
+                if hasattr(self, 'progress_bar'):
+                    self.progress_bar.setValue(deleted_count + failed_count)
+                    self.progress_bar.setFormat(
+                        f"删除进度 {deleted_count + failed_count}/{total_files}"
+                    )
+                    QtWidgets.QApplication.processEvents()
         
         # 显示结果
         self.result_text.appendPlainText("\n" + "="*50)
@@ -763,7 +844,10 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         # 清空待删除列表并禁用删除按钮
         self.files_to_delete = []
         self.btn_delete.setEnabled(False)
-        
+        if hasattr(self, 'progress_bar'):
+            self.progress_bar.setValue(self.progress_bar.maximum())
+            self.progress_bar.setFormat("删除完成")
+
         # 显示成功消息
         QtWidgets.QMessageBox.information(
             self,
