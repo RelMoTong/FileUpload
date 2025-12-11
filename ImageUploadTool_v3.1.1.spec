@@ -6,12 +6,16 @@ PyInstaller 打包配置文件（版本由 src.__version__ 提供）
 
 import os
 import sys
-from src import __version__ as VERSION
 
 block_cipher = None
 
 # 项目根目录
 project_root = os.path.dirname(os.path.abspath(SPEC))
+# 确保项目根目录可导入
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from src import __version__ as VERSION
 
 a = Analysis(
     ['pyqt_app.py'],

@@ -11,9 +11,9 @@ import os
 from typing import Optional, List, Tuple, Dict, Any, TYPE_CHECKING, Protocol
 
 try:
-    from send2trash import send2trash
+    from send2trash import send2trash  # type: ignore[import-not-found]
 except ImportError:
-    send2trash = None  # type: ignore
+    send2trash = None  # type: ignore[assignment]
 
 try:
     from PySide6 import QtWidgets, QtCore, QtGui
@@ -25,7 +25,16 @@ except ImportError:
     QtEnum = QtCore.Qt
 
 # 兼容 PySide / PyQt 的信号定义
-Signal = getattr(QtCore, "Signal", getattr(QtCore, "pyqtSignal"))
+Signal = getattr(QtCore, "Signal", None)
+if Signal is None:
+    Signal = getattr(QtCore, "pyqtSignal")  # type: ignore[attr-defined]
+
+from src.core.i18n import t
+
+
+def tr(key: str, **kwargs: Any) -> str:
+    """便捷翻译并格式化"""
+    return t(key, key).format(**kwargs)
 
 # 类型检查时的协议定义
 if TYPE_CHECKING:
@@ -283,16 +292,16 @@ class ScanWorker(QtCore.QObject):  # type: ignore[misc]
     def run(self) -> None:
         files: List[Tuple[str, int]] = []
         total_size = 0
-        self._emit("🔍 开始扫描...\n")
-        self._emit(f"扫描目录: {len(self.folders)} 个")
-        self._emit(f"文件格式: {', '.join(self.formats)}\n")
+        self._emit(tr("disk_cleanup_scan_start") + "\n")
+        self._emit(tr("disk_cleanup_scan_dirs", count=len(self.folders)))
+        self._emit(tr("disk_cleanup_scan_formats", formats=", ".join(self.formats)) + "\n")
 
         for folder in self.folders:
             if not os.path.exists(folder):
-                self._emit(f"⚠️ 跳过不存在的路径: {folder}")
+                self._emit(tr("disk_cleanup_skip_missing", path=folder))
                 continue
 
-            self._emit(f"\n📁 扫描: {folder}")
+            self._emit("\n" + tr("disk_cleanup_scan_folder", folder=folder))
             folder_count = 0
             folder_size = 0
 
@@ -308,14 +317,14 @@ class ScanWorker(QtCore.QObject):  # type: ignore[misc]
                                 folder_count += 1
                                 folder_size += file_size
                             except Exception as e:  # pragma: no cover - OS errors
-                                self._emit(f"  ⚠️ 无法访问: {file} ({e})")
+                                self._emit(tr("disk_cleanup_cannot_access", file=file, error=e))
 
                 self._emit(
-                    f"  找到 {folder_count} 个文件，共 {folder_size / (1024*1024):.2f} MB"
+                    tr("disk_cleanup_found_folder", count=folder_count, size_mb=folder_size / (1024 * 1024))
                 )
                 total_size += folder_size
             except Exception as e:  # pragma: no cover
-                self._emit(f"  ❌ 扫描失败: {e}")
+                self._emit(tr("disk_cleanup_scan_fail", error=e))
 
         self.finished.emit(files, total_size)
 
@@ -342,7 +351,7 @@ class DeleteWorker(QtCore.QObject):  # type: ignore[misc]
         total_files = len(self.files)
         use_trash = self.use_trash and send2trash is not None
         if self.use_trash and send2trash is None:
-            self._emit("⚠️ 未安装 send2trash，改为直接删除。")
+            self._emit(tr("disk_cleanup_send2trash_missing"))
 
         for idx, (file_path, file_size) in enumerate(self.files, start=1):
             try:
@@ -354,7 +363,7 @@ class DeleteWorker(QtCore.QObject):  # type: ignore[misc]
                 deleted_size += file_size
             except Exception as e:  # pragma: no cover
                 failed_count += 1
-                self._emit(f"❌ 删除失败: {file_path}\n   错误: {e}")
+                self._emit(tr("disk_cleanup_delete_fail", path=file_path, error=e))
             finally:
                 self.progress_value.emit(idx, total_files)
 
@@ -375,7 +384,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
     
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
-        self.setWindowTitle("💿 磁盘清理工具")
+        self.setWindowTitle(tr("disk_cleanup_title"))
         self.setModal(True)
         self.resize(300, 300)  # 增加高度以容纳自动清理配置
         
@@ -394,17 +403,17 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         content_layout.setContentsMargins(20, 20, 20, 20)
         
         # 标题说明
-        title_label = QtWidgets.QLabel("选择要清理的文件夹和文件类型")
+        title_label = QtWidgets.QLabel(tr("disk_cleanup_subtitle"))
         title_label.setStyleSheet("font-size: 13pt; font-weight: 700; color: #1976D2;")
         content_layout.addWidget(title_label)
-        
+
         desc_label = QtWidgets.QLabel(
-            "⚠️ 警告：删除的文件将无法恢复！请确认后再执行清理操作。"
+            tr("disk_cleanup_warning")
         )
         desc_label.setStyleSheet("color: #D32F2F; padding: 8px; background: #FFEBEE; border-radius: 6px;")
         desc_label.setWordWrap(True)
         content_layout.addWidget(desc_label)
-        
+
         # 文件夹选择区域
         folder_group = self._create_folder_selection_group()
         content_layout.addWidget(folder_group)
@@ -438,7 +447,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
     
     def _create_folder_selection_group(self) -> QtWidgets.QGroupBox:
         """创建文件夹选择区域"""
-        folder_group = QtWidgets.QGroupBox("📁 选择清理目标")
+        folder_group = QtWidgets.QGroupBox(tr("disk_cleanup_group_targets"))
         folder_group.setStyleSheet(
             "QGroupBox { font-weight: 700; border: 2px solid #64B5F6; "
             "border-radius: 8px; margin-top: 10px; padding-top: 15px; }"
@@ -453,35 +462,35 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         monitor_path = self.parent_window.auto_delete_folder if self.parent_window and hasattr(self.parent_window, 'auto_delete_folder') else ""
         
         # 备份文件夹
-        self.cb_backup = QtWidgets.QCheckBox(f"🗂️ 备份文件夹")
+        self.cb_backup = QtWidgets.QCheckBox(tr("disk_cleanup_cb_backup"))
         self.cb_backup.setChecked(True)
         if backup_path:
-            self.cb_backup.setText(f"🗂️ 备份文件夹: {backup_path}")
+            self.cb_backup.setText(f"{tr('disk_cleanup_cb_backup')}: {backup_path}")
             self.cb_backup.setToolTip(backup_path)
         else:
             self.cb_backup.setEnabled(False)
-            self.cb_backup.setText("🗂️ 备份文件夹 (未配置)")
+            self.cb_backup.setText(tr("disk_cleanup_cb_backup_unset"))
         folder_layout.addWidget(self.cb_backup)
         
         # 目标文件夹
-        self.cb_target = QtWidgets.QCheckBox(f"📤 目标文件夹 (服务器)")
+        self.cb_target = QtWidgets.QCheckBox(tr("disk_cleanup_cb_target"))
         if target_path:
-            self.cb_target.setText(f"📤 目标文件夹: {target_path}")
+            self.cb_target.setText(f"{tr('disk_cleanup_cb_target')}: {target_path}")
             self.cb_target.setToolTip(target_path)
         else:
             self.cb_target.setEnabled(False)
-            self.cb_target.setText("📤 目标文件夹 (未配置)")
+            self.cb_target.setText(tr("disk_cleanup_cb_target_unset"))
         folder_layout.addWidget(self.cb_target)
         
         # 监控文件夹（带输入功能）
-        self.cb_monitor = QtWidgets.QCheckBox("🔍 监控文件夹")
+        self.cb_monitor = QtWidgets.QCheckBox(tr("disk_cleanup_cb_monitor"))
         folder_layout.addWidget(self.cb_monitor)
         
         monitor_row = QtWidgets.QHBoxLayout()
         monitor_row.setContentsMargins(30, 0, 0, 0)
         self.edit_monitor = QtWidgets.QLineEdit(monitor_path)
-        self.edit_monitor.setPlaceholderText("选择监控文件夹路径...")
-        btn_monitor = QtWidgets.QPushButton("浏览")
+        self.edit_monitor.setPlaceholderText(tr("disk_cleanup_placeholder_monitor"))
+        btn_monitor = QtWidgets.QPushButton(tr("disk_cleanup_browse"))
         btn_monitor.setProperty("class", "Secondary")
         btn_monitor.clicked.connect(self._choose_monitor)
         monitor_row.addWidget(self.edit_monitor, 1)
@@ -489,14 +498,14 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         folder_layout.addLayout(monitor_row)
         
         # 自定义文件夹（保留输入功能）
-        self.cb_custom = QtWidgets.QCheckBox("📂 自定义文件夹")
+        self.cb_custom = QtWidgets.QCheckBox(tr("disk_cleanup_cb_custom"))
         folder_layout.addWidget(self.cb_custom)
         
         custom_row = QtWidgets.QHBoxLayout()
         custom_row.setContentsMargins(30, 0, 0, 0)
         self.edit_custom = QtWidgets.QLineEdit()
-        self.edit_custom.setPlaceholderText("选择自定义文件夹路径...")
-        btn_custom = QtWidgets.QPushButton("浏览")
+        self.edit_custom.setPlaceholderText(tr("disk_cleanup_placeholder_custom"))
+        btn_custom = QtWidgets.QPushButton(tr("disk_cleanup_browse"))
         btn_custom.setProperty("class", "Secondary")
         btn_custom.clicked.connect(self._choose_custom)
         custom_row.addWidget(self.edit_custom, 1)
@@ -507,7 +516,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
     
     def _create_format_selection_group(self) -> QtWidgets.QGroupBox:
         """创建文件格式选择区域"""
-        format_group = QtWidgets.QGroupBox("📋 选择文件格式")
+        format_group = QtWidgets.QGroupBox(tr("disk_cleanup_group_formats"))
         format_group.setStyleSheet(
             "QGroupBox { font-weight: 700; border: 2px solid #64B5F6; "
             "border-radius: 8px; margin-top: 10px; padding-top: 15px; }"
@@ -518,13 +527,13 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         
         # 快速选择按钮
         quick_row = QtWidgets.QHBoxLayout()
-        btn_all = QtWidgets.QPushButton("全选")
+        btn_all = QtWidgets.QPushButton(tr("disk_cleanup_quick_all"))
         btn_all.setProperty("class", "Secondary")
         btn_all.clicked.connect(self._select_all_formats)
-        btn_none = QtWidgets.QPushButton("取消全选")
+        btn_none = QtWidgets.QPushButton(tr("disk_cleanup_quick_none"))
         btn_none.setProperty("class", "Secondary")
         btn_none.clicked.connect(self._select_no_formats)
-        btn_image = QtWidgets.QPushButton("仅图片")
+        btn_image = QtWidgets.QPushButton(tr("disk_cleanup_quick_image"))
         btn_image.setProperty("class", "Secondary")
         btn_image.clicked.connect(self._select_image_formats)
         quick_row.addWidget(btn_all)
@@ -539,22 +548,22 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         
         self.format_checkboxes: Dict[str, QtWidgets.QCheckBox] = {}
         formats = [
-            ('.jpg', '图片'),
-            ('.jpeg', '图片'),
-            ('.png', '图片'),
-            ('.bmp', '图片'),
-            ('.gif', '图片'),
-            ('.tiff', '图片'),
-            ('.tif', '图片'),
-            ('.raw', '图片'),
-            ('.pdf', '文档'),
-            ('.doc', '文档'),
-            ('.docx', '文档'),
-            ('.txt', '文本'),
-            ('.log', '日志'),
-            ('.zip', '压缩'),
-            ('.rar', '压缩'),
-            ('.tmp', '临时'),
+            ('.jpg', tr('disk_cleanup_cat_image')),
+            ('.jpeg', tr('disk_cleanup_cat_image')),
+            ('.png', tr('disk_cleanup_cat_image')),
+            ('.bmp', tr('disk_cleanup_cat_image')),
+            ('.gif', tr('disk_cleanup_cat_image')),
+            ('.tiff', tr('disk_cleanup_cat_image')),
+            ('.tif', tr('disk_cleanup_cat_image')),
+            ('.raw', tr('disk_cleanup_cat_image')),
+            ('.pdf', tr('disk_cleanup_cat_doc')),
+            ('.doc', tr('disk_cleanup_cat_doc')),
+            ('.docx', tr('disk_cleanup_cat_doc')),
+            ('.txt', tr('disk_cleanup_cat_text')),
+            ('.log', tr('disk_cleanup_cat_log')),
+            ('.zip', tr('disk_cleanup_cat_archive')),
+            ('.rar', tr('disk_cleanup_cat_archive')),
+            ('.tmp', tr('disk_cleanup_cat_temp')),
         ]
         
         for idx, (ext, category) in enumerate(formats):
@@ -569,9 +578,9 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         
         # 自定义格式
         custom_format_row = QtWidgets.QHBoxLayout()
-        custom_format_label = QtWidgets.QLabel("自定义格式:")
+        custom_format_label = QtWidgets.QLabel(tr("disk_cleanup_custom_format_label"))
         self.edit_custom_format = QtWidgets.QLineEdit()
-        self.edit_custom_format.setPlaceholderText("例如: .bak 或 .old (以点开头)")
+        self.edit_custom_format.setPlaceholderText(tr("disk_cleanup_custom_format_placeholder"))
         custom_format_row.addWidget(custom_format_label)
         custom_format_row.addWidget(self.edit_custom_format, 1)
         format_layout.addLayout(custom_format_row)
@@ -580,7 +589,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
     
     def _create_auto_cleanup_group(self) -> QtWidgets.QGroupBox:
         """创建自动清理配置区域"""
-        auto_group = QtWidgets.QGroupBox("⚙️ 自动清理配置")
+        auto_group = QtWidgets.QGroupBox(tr("disk_cleanup_group_auto"))
         auto_group.setStyleSheet(
             "QGroupBox { font-weight: 700; border: 2px solid #FFA726; "
             "border-radius: 8px; margin-top: 10px; padding-top: 15px; }"
@@ -590,7 +599,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         auto_layout.setSpacing(10)
         
         # 启用自动清理
-        self.cb_enable_auto = QtWidgets.QCheckBox("⏰ 启用自动清理")
+        self.cb_enable_auto = QtWidgets.QCheckBox(tr("disk_cleanup_auto_enable"))
         auto_enabled = self.parent_window.enable_auto_delete if self.parent_window and hasattr(self.parent_window, 'enable_auto_delete') else False
         self.cb_enable_auto.setChecked(auto_enabled)
         self.cb_enable_auto.toggled.connect(self._on_auto_clean_toggled)
@@ -601,37 +610,37 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         config_grid.setSpacing(10)
         
         # 磁盘阈值
-        threshold_label = QtWidgets.QLabel("磁盘阈值:")
+        threshold_label = QtWidgets.QLabel(tr("disk_cleanup_auto_threshold"))
         self.spin_threshold = QtWidgets.QSpinBox()
         self.spin_threshold.setRange(50, 95)
         auto_threshold = self.parent_window.auto_delete_threshold if self.parent_window and hasattr(self.parent_window, 'auto_delete_threshold') else 80
         self.spin_threshold.setValue(auto_threshold)
         self.spin_threshold.setSuffix(" %")
-        self.spin_threshold.setToolTip("磁盘使用率达到此值时自动清理")
+        self.spin_threshold.setToolTip(tr("disk_cleanup_auto_threshold_tip"))
         self.spin_threshold.setEnabled(auto_enabled)
         config_grid.addWidget(threshold_label, 0, 0)
         config_grid.addWidget(self.spin_threshold, 0, 1)
         
         # 保留天数
-        days_label = QtWidgets.QLabel("保留天数:")
+        days_label = QtWidgets.QLabel(tr("disk_cleanup_auto_keep_days"))
         self.spin_keep_days = QtWidgets.QSpinBox()
         self.spin_keep_days.setRange(1, 365)
         auto_days = self.parent_window.auto_delete_keep_days if self.parent_window and hasattr(self.parent_window, 'auto_delete_keep_days') else 10
         self.spin_keep_days.setValue(auto_days)
-        self.spin_keep_days.setSuffix(" 天")
-        self.spin_keep_days.setToolTip("只删除超过此天数的文件")
+        self.spin_keep_days.setSuffix(" " + tr("unit_day"))
+        self.spin_keep_days.setToolTip(tr("disk_cleanup_auto_keep_tip"))
         self.spin_keep_days.setEnabled(auto_enabled)
         config_grid.addWidget(days_label, 0, 2)
         config_grid.addWidget(self.spin_keep_days, 0, 3)
         
         # 检查间隔
-        interval_label = QtWidgets.QLabel("检查间隔:")
+        interval_label = QtWidgets.QLabel(tr("disk_cleanup_auto_interval"))
         self.spin_check_interval = QtWidgets.QSpinBox()
         self.spin_check_interval.setRange(60, 3600)
         auto_interval = self.parent_window.auto_delete_check_interval if self.parent_window and hasattr(self.parent_window, 'auto_delete_check_interval') else 300
         self.spin_check_interval.setValue(auto_interval)
-        self.spin_check_interval.setSuffix(" 秒")
-        self.spin_check_interval.setToolTip("自动检查的时间间隔")
+        self.spin_check_interval.setSuffix(" " + tr("unit_second"))
+        self.spin_check_interval.setToolTip(tr("disk_cleanup_auto_interval_tip"))
         self.spin_check_interval.setEnabled(auto_enabled)
         config_grid.addWidget(interval_label, 1, 0)
         config_grid.addWidget(self.spin_check_interval, 1, 1)
@@ -639,15 +648,13 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         auto_layout.addLayout(config_grid)
         
         # 说明文本
-        auto_hint = QtWidgets.QLabel(
-            "💡 启用后，程序会定期检查磁盘空间，当达到阈值时自动删除超过保留期限的文件"
-        )
+        auto_hint = QtWidgets.QLabel(tr("disk_cleanup_auto_hint"))
         auto_hint.setStyleSheet("color: #757575; font-size: 9px; padding: 8px;")
         auto_hint.setWordWrap(True)
         auto_layout.addWidget(auto_hint)
         
         # 保存配置按钮
-        btn_save_auto = QtWidgets.QPushButton("💾 保存自动清理配置")
+        btn_save_auto = QtWidgets.QPushButton(tr("disk_cleanup_auto_save"))
         btn_save_auto.setProperty("class", "Secondary")
         btn_save_auto.clicked.connect(self._save_auto_config)
         auto_layout.addWidget(btn_save_auto)
@@ -656,7 +663,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
     
     def _create_result_group(self) -> QtWidgets.QGroupBox:
         """创建扫描结果区域"""
-        result_group = QtWidgets.QGroupBox("📊 扫描结果")
+        result_group = QtWidgets.QGroupBox(tr("disk_cleanup_group_results"))
         result_group.setStyleSheet(
             "QGroupBox { font-weight: 700; border: 2px solid #64B5F6; "
             "border-radius: 8px; margin-top: 10px; padding-top: 15px; }"
@@ -667,13 +674,13 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("等待操作")
+        self.progress_bar.setFormat(tr("disk_cleanup_waiting"))
         result_layout.addWidget(self.progress_bar)
 
         self.result_text = QtWidgets.QPlainTextEdit()
         self.result_text.setReadOnly(True)
         self.result_text.setMaximumHeight(120)
-        self.result_text.setPlainText("点击 '扫描文件' 开始查找可清理的文件...")
+        self.result_text.setPlainText(tr("disk_cleanup_result_placeholder"))
         result_layout.addWidget(self.result_text)
         
         return result_group
@@ -683,21 +690,21 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         button_layout = QtWidgets.QHBoxLayout()
         button_layout.setSpacing(12)
         
-        self.btn_scan = QtWidgets.QPushButton("🔍 扫描文件")
+        self.btn_scan = QtWidgets.QPushButton(tr("disk_cleanup_btn_scan"))
         self.btn_scan.setProperty("class", "Primary")
         self.btn_scan.setMinimumHeight(40)
         self.btn_scan.clicked.connect(self._scan_files)
         
-        self.btn_delete = QtWidgets.QPushButton("🗑️ 执行清理")
+        self.btn_delete = QtWidgets.QPushButton(tr("disk_cleanup_btn_delete"))
         self.btn_delete.setProperty("class", "Danger")
         self.btn_delete.setMinimumHeight(40)
         self.btn_delete.setEnabled(False)
         self.btn_delete.clicked.connect(self._delete_files)
 
-        self.cb_use_trash = QtWidgets.QCheckBox("移到回收站（需 send2trash）")
+        self.cb_use_trash = QtWidgets.QCheckBox(tr("disk_cleanup_cb_use_trash"))
         self.cb_use_trash.setChecked(False)
 
-        btn_close = QtWidgets.QPushButton("❌ 关闭")
+        btn_close = QtWidgets.QPushButton(tr("disk_cleanup_btn_close"))
         btn_close.setProperty("class", "Secondary")
         btn_close.setMinimumHeight(40)
         btn_close.clicked.connect(self.reject)
@@ -714,13 +721,13 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
     
     def _choose_custom(self) -> None:
         """选择自定义文件夹"""
-        path = QtWidgets.QFileDialog.getExistingDirectory(self, "选择自定义文件夹")
+        path = QtWidgets.QFileDialog.getExistingDirectory(self, tr("disk_cleanup_dialog_custom_folder"))
         if path:
             self.edit_custom.setText(path)
     
     def _choose_monitor(self) -> None:
         """选择监控文件夹"""
-        path = QtWidgets.QFileDialog.getExistingDirectory(self, "选择监控文件夹")
+        path = QtWidgets.QFileDialog.getExistingDirectory(self, tr("disk_cleanup_dialog_monitor_folder"))
         if path:
             self.edit_monitor.setText(path)
     
@@ -763,21 +770,24 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             self.parent_window._save_config()
             
             # 显示成功消息
+            enabled_text = tr("word_yes") if self.cb_enable_auto.isChecked() else tr("word_no")
             QtWidgets.QMessageBox.information(
                 self,
-                "✅ 配置已保存",
-                f"自动清理配置已成功保存！\n\n"
-                f"启用状态: {'是' if self.cb_enable_auto.isChecked() else '否'}\n"
-                f"监控文件夹: {self.edit_monitor.text().strip() or '未设置'}\n"
-                f"磁盘阈值: {self.spin_threshold.value()}%\n"
-                f"保留天数: {self.spin_keep_days.value()}天\n"
-                f"检查间隔: {self.spin_check_interval.value()}秒"
+                tr("disk_cleanup_config_saved_title"),
+                tr(
+                    "disk_cleanup_config_saved_body",
+                    enabled=enabled_text,
+                    monitor=self.edit_monitor.text().strip() or tr("disk_cleanup_not_set"),
+                    threshold=self.spin_threshold.value(),
+                    days=self.spin_keep_days.value(),
+                    interval=self.spin_check_interval.value(),
+                ),
             )
         except Exception as e:
             QtWidgets.QMessageBox.warning(
                 self,
-                "❌ 保存失败",
-                f"保存配置时出错：{e}"
+                tr("disk_cleanup_config_save_fail_title"),
+                tr("disk_cleanup_config_save_fail_body", error=e),
             )
     
     def _scan_files(self) -> None:
@@ -786,7 +796,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.result_text.clear()
         if hasattr(self, 'progress_bar'):
             self.progress_bar.setRange(0, 0)
-            self.progress_bar.setFormat("正在扫描...")
+            self.progress_bar.setFormat(tr("disk_cleanup_scanning"))
 
         folders_to_scan: List[str] = []
         if self.cb_backup.isChecked() and self.parent_window and hasattr(self.parent_window, 'bak_edit'):
@@ -805,7 +815,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             folders_to_scan.append(self.edit_custom.text().strip())
 
         if not folders_to_scan:
-            self.result_text.setPlainText("❌ 错误：请至少选择一个文件夹！")
+            self.result_text.setPlainText(tr("disk_cleanup_no_folder_error"))
             return
 
         formats_to_scan: List[str] = []
@@ -820,7 +830,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             formats_to_scan.append(custom_format.lower())
 
         if not formats_to_scan:
-            self.result_text.setPlainText("❌ 错误：请至少选择一个文件格式！")
+            self.result_text.setPlainText(tr("disk_cleanup_no_format_error"))
             return
 
         # 线程扫描
@@ -843,14 +853,14 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             return
 
         total_size = sum(size for _, size in self.files_to_delete)
-        confirm_text = (
-            f"确定要删除 {len(self.files_to_delete)} 个文件吗？\n\n"
-            f"总大小: {total_size / (1024*1024):.2f} MB\n\n"
-            f"⚠️ 警告：此操作不可恢复！"
+        confirm_text = tr(
+            "disk_cleanup_confirm_delete_text",
+            count=len(self.files_to_delete),
+            size_mb=total_size / (1024 * 1024),
         )
         reply = QtWidgets.QMessageBox.warning(
             self,
-            "⚠️ 确认删除",
+            tr("disk_cleanup_confirm_delete_title"),
             confirm_text,
             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
             QtWidgets.QMessageBox.StandardButton.No
@@ -866,10 +876,10 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             total_files = len(self.files_to_delete)
             self.progress_bar.setRange(0, total_files if total_files > 0 else 1)
             self.progress_bar.setValue(0)
-            self.progress_bar.setFormat(f"删除进度 0/{total_files}")
+            self.progress_bar.setFormat(tr("disk_cleanup_delete_progress", current=0, total=total_files))
 
         self.result_text.appendPlainText("\n" + "="*50)
-        self.result_text.appendPlainText("🗑️ 开始删除文件...\n")
+        self.result_text.appendPlainText(tr("disk_cleanup_delete_start"))
 
         self.delete_thread = QtCore.QThread(self)
         self.delete_worker = DeleteWorker(self.files_to_delete, use_trash)
@@ -891,16 +901,19 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.files_to_delete = sorted(files, key=lambda x: x[1], reverse=True)
         self.result_text.appendPlainText("\n" + "="*50)
         self.result_text.appendPlainText(
-            f"📊 扫描完成！共找到 {len(self.files_to_delete)} 个文件"
+            tr("disk_cleanup_scan_summary", count=len(self.files_to_delete))
         )
         self.result_text.appendPlainText(
-            f"💾 总大小: {total_size / (1024*1024):.2f} MB "
-            f"({total_size / (1024*1024*1024):.3f} GB)"
+            tr(
+                "disk_cleanup_total_size",
+                size_mb=total_size / (1024 * 1024),
+                size_gb=total_size / (1024 * 1024 * 1024),
+            )
         )
         if self.files_to_delete:
             top_file, top_size = self.files_to_delete[0]
             self.result_text.appendPlainText(
-                f"📌 最大文件: {top_file} ({top_size/(1024*1024):.2f} MB)"
+                tr("disk_cleanup_largest_file", path=top_file, size_mb=top_size / (1024 * 1024))
             )
 
         self.btn_scan.setEnabled(True)
@@ -909,34 +922,40 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             max_val = max(1, len(self.files_to_delete))
             self.progress_bar.setRange(0, max_val)
             self.progress_bar.setValue(0)
-            self.progress_bar.setFormat(f"待清理文件：{len(self.files_to_delete)} 个")
+            self.progress_bar.setFormat(tr("disk_cleanup_queue_size", count=len(self.files_to_delete)))
 
     def _on_delete_progress_value(self, current: int, total: int) -> None:
         if hasattr(self, 'progress_bar'):
             self.progress_bar.setValue(current)
-            self.progress_bar.setFormat(f"删除进度 {current}/{total}")
+            self.progress_bar.setFormat(tr("disk_cleanup_delete_progress", current=current, total=total))
 
     def _on_delete_finished(self, deleted_count: int, deleted_size: int, failed_count: int) -> None:
         self.result_text.appendPlainText("\n" + "="*50)
-        self.result_text.appendPlainText("✅ 清理完成！\n")
-        self.result_text.appendPlainText(f"成功删除: {deleted_count} 个文件")
+        self.result_text.appendPlainText(tr("disk_cleanup_delete_done_log") + "\n")
+        self.result_text.appendPlainText(tr("disk_cleanup_delete_success_count", count=deleted_count))
         self.result_text.appendPlainText(
-            f"释放空间: {deleted_size / (1024*1024):.2f} MB "
-            f"({deleted_size / (1024*1024*1024):.3f} GB)"
+            tr(
+                "disk_cleanup_delete_space_freed",
+                size_mb=deleted_size / (1024 * 1024),
+                size_gb=deleted_size / (1024 * 1024 * 1024),
+            )
         )
         if failed_count > 0:
-            self.result_text.appendPlainText(f"删除失败: {failed_count} 个文件")
+            self.result_text.appendPlainText(tr("disk_cleanup_delete_failed_count", count=failed_count))
 
         self.files_to_delete = []
         self.btn_scan.setEnabled(True)
         self.btn_delete.setEnabled(False)
         if hasattr(self, 'progress_bar'):
             self.progress_bar.setValue(self.progress_bar.maximum())
-            self.progress_bar.setFormat("删除完成")
+            self.progress_bar.setFormat(tr("disk_cleanup_delete_bar_done"))
 
         QtWidgets.QMessageBox.information(
             self,
-            "✅ 清理完成",
-            f"成功删除 {deleted_count} 个文件\n"
-            f"释放空间 {deleted_size / (1024*1024):.2f} MB"
+            tr("disk_cleanup_delete_done_title"),
+            tr(
+                "disk_cleanup_delete_done_text",
+                count=deleted_count,
+                size_mb=deleted_size / (1024 * 1024),
+            ),
         )

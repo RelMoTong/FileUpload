@@ -1054,6 +1054,332 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: 'FTP服务器仅在 FTP客户端 或 双写 模式下可用',
         LANG_EN_US: 'FTP Server only available in FTP Client or Dual mode',
     },
+
+    # ========== 磁盘清理对话框 ==========
+    'disk_cleanup_title': {
+        LANG_ZH_CN: '💿 磁盘清理工具',
+        LANG_EN_US: '💿 Disk Cleanup Tool',
+    },
+    'disk_cleanup_subtitle': {
+        LANG_ZH_CN: '选择要清理的文件夹和文件类型',
+        LANG_EN_US: 'Select folders and file types to clean',
+    },
+    'disk_cleanup_warning': {
+        LANG_ZH_CN: '⚠️ 警告：删除的文件将无法恢复！请确认后再执行清理操作。',
+        LANG_EN_US: '⚠️ Warning: Deleted files cannot be recovered! Confirm before cleaning.',
+    },
+    'disk_cleanup_group_targets': {
+        LANG_ZH_CN: '📁 选择清理目标',
+        LANG_EN_US: '📁 Select Targets',
+    },
+    'disk_cleanup_group_formats': {
+        LANG_ZH_CN: '🗂 选择文件格式',
+        LANG_EN_US: '🗂 Choose File Types',
+    },
+    'disk_cleanup_group_auto': {
+        LANG_ZH_CN: '⚙️ 自动清理配置',
+        LANG_EN_US: '⚙️ Auto Cleanup Settings',
+    },
+    'disk_cleanup_group_results': {
+        LANG_ZH_CN: '📊 扫描结果',
+        LANG_EN_US: '📊 Scan Results',
+    },
+    'disk_cleanup_cb_backup': {
+        LANG_ZH_CN: '🗂️ 备份文件夹',
+        LANG_EN_US: '🗂️ Backup Folder',
+    },
+    'disk_cleanup_cb_backup_unset': {
+        LANG_ZH_CN: '🗂️ 备份文件夹 (未配置)',
+        LANG_EN_US: '🗂️ Backup Folder (not set)',
+    },
+    'disk_cleanup_cb_target': {
+        LANG_ZH_CN: '📤 目标文件夹 (服务器)',
+        LANG_EN_US: '📤 Target Folder (server)',
+    },
+    'disk_cleanup_cb_target_unset': {
+        LANG_ZH_CN: '📤 目标文件夹 (未配置)',
+        LANG_EN_US: '📤 Target Folder (not set)',
+    },
+    'disk_cleanup_cb_monitor': {
+        LANG_ZH_CN: '🔍 监控文件夹',
+        LANG_EN_US: '🔍 Monitor Folder',
+    },
+    'disk_cleanup_cb_custom': {
+        LANG_ZH_CN: '📂 自定义文件夹',
+        LANG_EN_US: '📂 Custom Folder',
+    },
+    'disk_cleanup_browse': {
+        LANG_ZH_CN: '浏览',
+        LANG_EN_US: 'Browse',
+    },
+    'disk_cleanup_placeholder_monitor': {
+        LANG_ZH_CN: '选择监控文件夹路径...',
+        LANG_EN_US: 'Select monitor folder path...',
+    },
+    'disk_cleanup_placeholder_custom': {
+        LANG_ZH_CN: '选择自定义文件夹路径...',
+        LANG_EN_US: 'Select custom folder path...',
+    },
+    'disk_cleanup_quick_all': {
+        LANG_ZH_CN: '全选',
+        LANG_EN_US: 'Select All',
+    },
+    'disk_cleanup_quick_none': {
+        LANG_ZH_CN: '取消全选',
+        LANG_EN_US: 'Clear All',
+    },
+    'disk_cleanup_quick_image': {
+        LANG_ZH_CN: '仅图片',
+        LANG_EN_US: 'Images Only',
+    },
+    'disk_cleanup_cat_image': {
+        LANG_ZH_CN: '图片',
+        LANG_EN_US: 'Image',
+    },
+    'disk_cleanup_cat_doc': {
+        LANG_ZH_CN: '文档',
+        LANG_EN_US: 'Doc',
+    },
+    'disk_cleanup_cat_text': {
+        LANG_ZH_CN: '文本',
+        LANG_EN_US: 'Text',
+    },
+    'disk_cleanup_cat_log': {
+        LANG_ZH_CN: '日志',
+        LANG_EN_US: 'Log',
+    },
+    'disk_cleanup_cat_archive': {
+        LANG_ZH_CN: '压缩',
+        LANG_EN_US: 'Archive',
+    },
+    'disk_cleanup_cat_temp': {
+        LANG_ZH_CN: '临时',
+        LANG_EN_US: 'Temp',
+    },
+    'disk_cleanup_custom_format_label': {
+        LANG_ZH_CN: '自定义格式:',
+        LANG_EN_US: 'Custom Format:',
+    },
+    'disk_cleanup_custom_format_placeholder': {
+        LANG_ZH_CN: '例如: .bak 或 .old (以点开头)',
+        LANG_EN_US: 'E.g. .bak or .old (start with dot)',
+    },
+    'disk_cleanup_auto_enable': {
+        LANG_ZH_CN: '⏰ 启用自动清理',
+        LANG_EN_US: '⏰ Enable Auto Cleanup',
+    },
+    'disk_cleanup_auto_threshold': {
+        LANG_ZH_CN: '磁盘阈值:',
+        LANG_EN_US: 'Disk Threshold:',
+    },
+    'disk_cleanup_auto_keep_days': {
+        LANG_ZH_CN: '保留天数:',
+        LANG_EN_US: 'Keep Days:',
+    },
+    'disk_cleanup_auto_interval': {
+        LANG_ZH_CN: '检查间隔:',
+        LANG_EN_US: 'Check Interval:',
+    },
+    'disk_cleanup_auto_threshold_tip': {
+        LANG_ZH_CN: '磁盘使用率达到此值时自动清理',
+        LANG_EN_US: 'Auto clean when disk usage reaches this threshold',
+    },
+    'disk_cleanup_auto_keep_tip': {
+        LANG_ZH_CN: '只删除超过此天数的文件',
+        LANG_EN_US: 'Only delete files older than these days',
+    },
+    'disk_cleanup_auto_interval_tip': {
+        LANG_ZH_CN: '自动检查的时间间隔',
+        LANG_EN_US: 'Interval between automatic checks',
+    },
+    'disk_cleanup_auto_hint': {
+        LANG_ZH_CN: '💡 启用后，程序会定期检查磁盘空间，当达到阈值时自动删除超过保留期限的文件',
+        LANG_EN_US: '💡 When enabled, the app checks disk space periodically and deletes files older than keep days once threshold is reached.',
+    },
+    'disk_cleanup_auto_save': {
+        LANG_ZH_CN: '💾 保存自动清理配置',
+        LANG_EN_US: '💾 Save Auto Cleanup Settings',
+    },
+    'disk_cleanup_config_saved_title': {
+        LANG_ZH_CN: '✅ 配置已保存',
+        LANG_EN_US: '✅ Settings Saved',
+    },
+    'disk_cleanup_config_saved_body': {
+        LANG_ZH_CN: '自动清理配置已成功保存！\n\n启用状态: {enabled}\n监控文件夹: {monitor}\n磁盘阈值: {threshold}%\n保留天数: {days}天\n检查间隔: {interval}秒',
+        LANG_EN_US: 'Auto cleanup settings saved!\n\nEnabled: {enabled}\nMonitor folder: {monitor}\nDisk threshold: {threshold}%\nKeep days: {days} days\nCheck interval: {interval} seconds',
+    },
+    'disk_cleanup_config_save_fail_title': {
+        LANG_ZH_CN: '❌ 保存失败',
+        LANG_EN_US: '❌ Save Failed',
+    },
+    'disk_cleanup_config_save_fail_body': {
+        LANG_ZH_CN: '保存配置时出错：{error}',
+        LANG_EN_US: 'Error saving settings: {error}',
+    },
+    'disk_cleanup_not_set': {
+        LANG_ZH_CN: '未设置',
+        LANG_EN_US: 'Not set',
+    },
+    'disk_cleanup_waiting': {
+        LANG_ZH_CN: '等待操作',
+        LANG_EN_US: 'Waiting',
+    },
+    'disk_cleanup_result_placeholder': {
+        LANG_ZH_CN: "点击 '扫描文件' 开始查找可清理的文件...",
+        LANG_EN_US: "Click 'Scan Files' to start finding files to clean...",
+    },
+    'disk_cleanup_btn_scan': {
+        LANG_ZH_CN: '🔍 扫描文件',
+        LANG_EN_US: '🔍 Scan Files',
+    },
+    'disk_cleanup_btn_delete': {
+        LANG_ZH_CN: '🗑️ 执行清理',
+        LANG_EN_US: '🗑️ Clean',
+    },
+    'disk_cleanup_btn_close': {
+        LANG_ZH_CN: '❌ 关闭',
+        LANG_EN_US: '❌ Close',
+    },
+    'disk_cleanup_cb_use_trash': {
+        LANG_ZH_CN: '移到回收站（需 send2trash）',
+        LANG_EN_US: 'Move to Recycle Bin (requires send2trash)',
+    },
+    'disk_cleanup_dialog_custom_folder': {
+        LANG_ZH_CN: '选择自定义文件夹',
+        LANG_EN_US: 'Select Custom Folder',
+    },
+    'disk_cleanup_dialog_monitor_folder': {
+        LANG_ZH_CN: '选择监控文件夹',
+        LANG_EN_US: 'Select Monitor Folder',
+    },
+    'disk_cleanup_no_folder_error': {
+        LANG_ZH_CN: '❌ 错误：请至少选择一个文件夹！',
+        LANG_EN_US: '❌ Error: Please select at least one folder!',
+    },
+    'disk_cleanup_no_format_error': {
+        LANG_ZH_CN: '❌ 错误：请至少选择一个文件格式！',
+        LANG_EN_US: '❌ Error: Please select at least one file type!',
+    },
+    'disk_cleanup_scanning': {
+        LANG_ZH_CN: '正在扫描...',
+        LANG_EN_US: 'Scanning...',
+    },
+    'disk_cleanup_scan_start': {
+        LANG_ZH_CN: '🔍 开始扫描...',
+        LANG_EN_US: '🔍 Starting scan...',
+    },
+    'disk_cleanup_scan_dirs': {
+        LANG_ZH_CN: '扫描目录: {count} 个',
+        LANG_EN_US: 'Directories to scan: {count}',
+    },
+    'disk_cleanup_scan_formats': {
+        LANG_ZH_CN: '文件格式: {formats}',
+        LANG_EN_US: 'File types: {formats}',
+    },
+    'disk_cleanup_skip_missing': {
+        LANG_ZH_CN: '⚠️ 跳过不存在的路径: {path}',
+        LANG_EN_US: '⚠️ Skip missing path: {path}',
+    },
+    'disk_cleanup_scan_folder': {
+        LANG_ZH_CN: '📁 扫描: {folder}',
+        LANG_EN_US: '📁 Scanning: {folder}',
+    },
+    'disk_cleanup_cannot_access': {
+        LANG_ZH_CN: '  ⚠️ 无法访问: {file} ({error})',
+        LANG_EN_US: '  ⚠️ Cannot access: {file} ({error})',
+    },
+    'disk_cleanup_found_folder': {
+        LANG_ZH_CN: '  找到 {count} 个文件，共 {size_mb:.2f} MB',
+        LANG_EN_US: '  Found {count} files, total {size_mb:.2f} MB',
+    },
+    'disk_cleanup_scan_fail': {
+        LANG_ZH_CN: '  ❌ 扫描失败: {error}',
+        LANG_EN_US: '  ❌ Scan failed: {error}',
+    },
+    'disk_cleanup_scan_summary': {
+        LANG_ZH_CN: '📊 扫描完成！共找到 {count} 个文件',
+        LANG_EN_US: '📊 Scan complete! Found {count} files',
+    },
+    'disk_cleanup_total_size': {
+        LANG_ZH_CN: '💾 总大小: {size_mb:.2f} MB ({size_gb:.3f} GB)',
+        LANG_EN_US: '💾 Total size: {size_mb:.2f} MB ({size_gb:.3f} GB)',
+    },
+    'disk_cleanup_largest_file': {
+        LANG_ZH_CN: '📌 最大文件: {path} ({size_mb:.2f} MB)',
+        LANG_EN_US: '📌 Largest file: {path} ({size_mb:.2f} MB)',
+    },
+    'disk_cleanup_confirm_delete_title': {
+        LANG_ZH_CN: '⚠️ 确认删除',
+        LANG_EN_US: '⚠️ Confirm Delete',
+    },
+    'disk_cleanup_confirm_delete_text': {
+        LANG_ZH_CN: '确定要删除 {count} 个文件吗？\n\n总大小: {size_mb:.2f} MB\n\n⚠️ 警告：此操作不可恢复！',
+        LANG_EN_US: 'Are you sure to delete {count} files?\n\nTotal size: {size_mb:.2f} MB\n\n⚠️ Warning: This action cannot be undone!',
+    },
+    'disk_cleanup_delete_start': {
+        LANG_ZH_CN: '🗑️ 开始删除文件...\n',
+        LANG_EN_US: '🗑️ Starting deletion...\n',
+    },
+    'disk_cleanup_queue_size': {
+        LANG_ZH_CN: '待清理文件：{count} 个',
+        LANG_EN_US: 'Files to clean: {count}',
+    },
+    'disk_cleanup_delete_progress': {
+        LANG_ZH_CN: '删除进度 {current}/{total}',
+        LANG_EN_US: 'Delete progress {current}/{total}',
+    },
+    'disk_cleanup_delete_fail': {
+        LANG_ZH_CN: '❌ 删除失败: {path}\n   错误: {error}',
+        LANG_EN_US: '❌ Failed to delete: {path}\n   Error: {error}',
+    },
+    'disk_cleanup_delete_done_log': {
+        LANG_ZH_CN: '✅ 清理完成！',
+        LANG_EN_US: '✅ Cleanup complete!',
+    },
+    'disk_cleanup_delete_success_count': {
+        LANG_ZH_CN: '成功删除: {count} 个文件',
+        LANG_EN_US: 'Deleted: {count} files',
+    },
+    'disk_cleanup_delete_space_freed': {
+        LANG_ZH_CN: '释放空间: {size_mb:.2f} MB ({size_gb:.3f} GB)',
+        LANG_EN_US: 'Space freed: {size_mb:.2f} MB ({size_gb:.3f} GB)',
+    },
+    'disk_cleanup_delete_failed_count': {
+        LANG_ZH_CN: '删除失败: {count} 个文件',
+        LANG_EN_US: 'Failed deletes: {count} files',
+    },
+    'disk_cleanup_delete_bar_done': {
+        LANG_ZH_CN: '删除完成',
+        LANG_EN_US: 'Delete complete',
+    },
+    'disk_cleanup_delete_done_title': {
+        LANG_ZH_CN: '✅ 清理完成',
+        LANG_EN_US: '✅ Cleanup Done',
+    },
+    'disk_cleanup_delete_done_text': {
+        LANG_ZH_CN: '成功删除 {count} 个文件\n释放空间 {size_mb:.2f} MB',
+        LANG_EN_US: 'Deleted {count} files\nSpace freed {size_mb:.2f} MB',
+    },
+    'disk_cleanup_send2trash_missing': {
+        LANG_ZH_CN: '⚠️ 未安装 send2trash，改为直接删除。',
+        LANG_EN_US: '⚠️ send2trash not installed, falling back to direct delete.',
+    },
+    'word_yes': {
+        LANG_ZH_CN: '是',
+        LANG_EN_US: 'Yes',
+    },
+    'word_no': {
+        LANG_ZH_CN: '否',
+        LANG_EN_US: 'No',
+    },
+    'unit_day': {
+        LANG_ZH_CN: '天',
+        LANG_EN_US: 'day',
+    },
+    'unit_second': {
+        LANG_ZH_CN: '秒',
+        LANG_EN_US: 'sec',
+    },
 }
 
 
