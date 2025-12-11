@@ -1,19 +1,19 @@
-# Changelog (concise)
+# 版本摘要（精简版）
 
 ## v3.1.1
-- DiskCleanupDialog: async scan/delete workers, recycle-bin option (send2trash fallback), full i18n coverage, fixed window sizing with scroll area.
-- Version single-source via `src.__version__`; PyInstaller spec reads it for output names.
+- 磁盘清理：扫描/删除改为异步线程，支持回收站（send2trash 可选），国际化补齐，滚动区域避免窗口铺满。
+- 版本号单一来源：`src.__version__`，PyInstaller spec 读取生成产物名。
 
 ## v3.1.0
-- SMB/FTP modes refactor, FTP server toggle, password visibility toggle.
-- Dep checks on startup; modular UI/worker split; packaging script retained for backward compatibility.
+- SMB/FTP 模式重构，新增 FTP 服务器开关、密码可见性切换。
+- 启动时依赖检查；UI/worker 模块化；保留兼容入口。
 
 ## v3.0.x
-- Modularized project structure; trimmed legacy entry to wrapper `pyqt_app.py`.
-- UI polish, logging/permissions improvements.
+- 项目模块化，精简旧入口为 `pyqt_app.py` 包装。
+- UI 细节、日志与权限优化。
 
-## v2.x (summary)
-- Introduced protocol options, permissions, auto-backup; early disk-clean notes and performance reports.
+## v2.x（概览）
+- 引入协议选项、权限与自动备份；磁盘清理早期说明与性能报告。
 
-Notes
-- See `docs/README.md` for current architecture/usage; older scattered docs have been merged/removed.
+说明
+- 当前架构与使用请见 `docs/README.md`；历史零散文档已合并/删除。
