@@ -72,7 +72,7 @@ def show_dependency_warning(missing_required: List[str], missing_optional: List[
     
     if missing_optional:
         print("\n" + "-" * 60)
-        print("⚠️ 缺少可选依赖，部分功能不可用：")
+        print("ℹ️ 缺少可选依赖，部分功能不可用：")
         for dep in missing_optional:
             print(f"   - {dep}")
         print("-" * 60 + "\n")
@@ -81,23 +81,6 @@ def show_dependency_warning(missing_required: List[str], missing_optional: List[
 # 导入核心模块
 from src.core import get_app_dir, get_app_version, get_app_title
 from src.config import ConfigManager
-
-# 导入 Qt 库
-try:
-    from PySide6 import QtCore, QtWidgets
-    from PySide6.QtNetwork import QLocalServer, QLocalSocket
-    QT_LIB = 'PySide6'
-except ImportError:
-    try:
-        from PyQt5 import QtCore, QtWidgets  # type: ignore[import-not-found]
-        from PyQt5.QtNetwork import QLocalServer, QLocalSocket  # type: ignore[import-not-found]
-        QT_LIB = 'PyQt5'
-    except ImportError:
-        raise ImportError("Neither PySide6 nor PyQt5 is installed.")
-
-# 导入主窗口
-from src.ui import MainWindow
-
 
 def check_single_instance(server_name: str) -> bool:
     """检查并尝试唤醒已运行的实例
@@ -128,7 +111,7 @@ def check_single_instance(server_name: str) -> bool:
 
 def main():
     """主程序入口"""
-    # v3.1.0: 依赖检查
+    # 依赖检查（在导入 Qt 之前，便于提示）
     all_ok, missing_required, missing_optional = check_dependencies()
     if not all_ok:
         show_dependency_warning(missing_required, missing_optional)
@@ -138,6 +121,24 @@ def main():
     if missing_optional:
         show_dependency_warning([], missing_optional)
     
+    # 延迟导入 Qt，避免缺依赖时直接 ImportError
+    global QtCore, QtWidgets, QLocalServer, QLocalSocket, QT_LIB  # type: ignore
+    try:
+        from PySide6 import QtCore, QtWidgets  # type: ignore
+        from PySide6.QtNetwork import QLocalServer, QLocalSocket  # type: ignore
+        QT_LIB = 'PySide6'
+    except ImportError:
+        try:
+            from PyQt5 import QtCore, QtWidgets  # type: ignore[import-not-found]
+            from PyQt5.QtNetwork import QLocalServer, QLocalSocket  # type: ignore[import-not-found]
+            QT_LIB = 'PyQt5'
+        except ImportError:
+            show_dependency_warning(["PySide6 (or PyQt5): pip install PySide6"], [])
+            return 1
+
+    # 导入主窗口（依赖 Qt）
+    from src.ui import MainWindow  # type: ignore
+
     app = QtWidgets.QApplication(sys.argv)
     
     # 设置应用程序信息

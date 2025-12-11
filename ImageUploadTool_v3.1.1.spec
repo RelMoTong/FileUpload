@@ -1,11 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller 打包配置文件 - v3.1.1
+PyInstaller 打包配置文件（版本由 src.__version__ 提供）
 断点续传 + 中英文切换版本
 """
 
 import os
 import sys
+from src import __version__ as VERSION
 
 block_cipher = None
 
@@ -65,7 +66,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='ImageUploadTool_v3.1.1',
+    name=f'ImageUploadTool_v{VERSION}',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -87,5 +88,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='ImageUploadTool_v3.1.1',
+    name=f'ImageUploadTool_v{VERSION}',
 )

@@ -11,6 +11,11 @@ import os
 from typing import Optional, List, Tuple, Dict, Any, TYPE_CHECKING, Protocol
 
 try:
+    from send2trash import send2trash
+except ImportError:
+    send2trash = None  # type: ignore
+
+try:
     from PySide6 import QtWidgets, QtCore, QtGui
     from PySide6.QtCore import Qt
     QtEnum = Qt
@@ -18,6 +23,9 @@ except ImportError:
     from PyQt5 import QtWidgets, QtCore, QtGui  # type: ignore[import-not-found]
     from PyQt5.QtCore import Qt  # type: ignore[import-not-found]
     QtEnum = QtCore.Qt
+
+# 兼容 PySide / PyQt 的信号定义
+Signal = getattr(QtCore, "Signal", getattr(QtCore, "pyqtSignal"))
 
 # 类型检查时的协议定义
 if TYPE_CHECKING:
@@ -251,16 +259,111 @@ class CollapsibleBox(QtWidgets.QWidget):  # type: ignore[misc]
     
     def setTitle(self, title: str) -> None:
         """设置标题文本（用于多语言切换）
-        
+
         Args:
             title: 新的标题文本
         """
         self.toggle_button.setText(title)
 
 
+class ScanWorker(QtCore.QObject):  # type: ignore[misc]
+    """磁盘扫描线程工作者"""
+    progress = Signal(str)
+    finished = Signal(list, int)
+
+    def __init__(self, folders: List[str], formats: List[str]) -> None:
+        super().__init__()
+        self.folders = folders
+        self.formats = formats
+
+    def _emit(self, text: str) -> None:
+        self.progress.emit(text)
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        files: List[Tuple[str, int]] = []
+        total_size = 0
+        self._emit("🔍 开始扫描...\n")
+        self._emit(f"扫描目录: {len(self.folders)} 个")
+        self._emit(f"文件格式: {', '.join(self.formats)}\n")
+
+        for folder in self.folders:
+            if not os.path.exists(folder):
+                self._emit(f"⚠️ 跳过不存在的路径: {folder}")
+                continue
+
+            self._emit(f"\n📁 扫描: {folder}")
+            folder_count = 0
+            folder_size = 0
+
+            try:
+                for root, dirs, files_list in os.walk(folder):
+                    for file in files_list:
+                        file_lower = file.lower()
+                        if any(file_lower.endswith(ext) for ext in self.formats):
+                            file_path = os.path.join(root, file)
+                            try:
+                                file_size = os.path.getsize(file_path)
+                                files.append((file_path, file_size))
+                                folder_count += 1
+                                folder_size += file_size
+                            except Exception as e:  # pragma: no cover - OS errors
+                                self._emit(f"  ⚠️ 无法访问: {file} ({e})")
+
+                self._emit(
+                    f"  找到 {folder_count} 个文件，共 {folder_size / (1024*1024):.2f} MB"
+                )
+                total_size += folder_size
+            except Exception as e:  # pragma: no cover
+                self._emit(f"  ❌ 扫描失败: {e}")
+
+        self.finished.emit(files, total_size)
+
+
+class DeleteWorker(QtCore.QObject):  # type: ignore[misc]
+    """删除文件线程工作者"""
+    progress = Signal(str)
+    progress_value = Signal(int, int)
+    finished = Signal(int, int, int)
+
+    def __init__(self, files: List[Tuple[str, int]], use_trash: bool) -> None:
+        super().__init__()
+        self.files = files
+        self.use_trash = use_trash
+
+    def _emit(self, text: str) -> None:
+        self.progress.emit(text)
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        deleted_count = 0
+        deleted_size = 0
+        failed_count = 0
+        total_files = len(self.files)
+        use_trash = self.use_trash and send2trash is not None
+        if self.use_trash and send2trash is None:
+            self._emit("⚠️ 未安装 send2trash，改为直接删除。")
+
+        for idx, (file_path, file_size) in enumerate(self.files, start=1):
+            try:
+                if use_trash:
+                    send2trash(file_path)  # type: ignore[misc]
+                else:
+                    os.remove(file_path)
+                deleted_count += 1
+                deleted_size += file_size
+            except Exception as e:  # pragma: no cover
+                failed_count += 1
+                self._emit(f"❌ 删除失败: {file_path}\n   错误: {e}")
+            finally:
+                self.progress_value.emit(idx, total_files)
+
+        self.finished.emit(deleted_count, deleted_size, failed_count)
+
+
 class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
     """磁盘清理对话框
-    
+
     支持选择文件夹路径和文件格式进行磁盘清理。
     整合自动清理配置功能。
     
@@ -590,17 +693,21 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.btn_delete.setMinimumHeight(40)
         self.btn_delete.setEnabled(False)
         self.btn_delete.clicked.connect(self._delete_files)
-        
+
+        self.cb_use_trash = QtWidgets.QCheckBox("移到回收站（需 send2trash）")
+        self.cb_use_trash.setChecked(False)
+
         btn_close = QtWidgets.QPushButton("❌ 关闭")
         btn_close.setProperty("class", "Secondary")
         btn_close.setMinimumHeight(40)
         btn_close.clicked.connect(self.reject)
-        
+
         button_layout.addWidget(self.btn_scan)
         button_layout.addWidget(self.btn_delete)
+        button_layout.addWidget(self.cb_use_trash)
         button_layout.addStretch()
         button_layout.addWidget(btn_close)
-        
+
         return button_layout
     
     # 事件处理方法
@@ -674,15 +781,14 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             )
     
     def _scan_files(self) -> None:
-        """扫描符合条件的文件"""
+        """扫描符合条件的文件（异步线程，避免卡界面）"""
         self.files_to_delete = []
         self.result_text.clear()
         if hasattr(self, 'progress_bar'):
             self.progress_bar.setRange(0, 0)
             self.progress_bar.setFormat("正在扫描...")
-        
-        # 获取要扫描的文件夹（从父窗口输入框读取最新路径）
-        folders_to_scan = []
+
+        folders_to_scan: List[str] = []
         if self.cb_backup.isChecked() and self.parent_window and hasattr(self.parent_window, 'bak_edit'):
             backup_path = self.parent_window.bak_edit.text().strip()
             if backup_path:
@@ -697,66 +803,92 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
                 folders_to_scan.append(monitor_path)
         if self.cb_custom.isChecked() and self.edit_custom.text().strip():
             folders_to_scan.append(self.edit_custom.text().strip())
-        
+
         if not folders_to_scan:
             self.result_text.setPlainText("❌ 错误：请至少选择一个文件夹！")
             return
-        
-        # 获取要扫描的文件格式
-        formats_to_scan = []
+
+        formats_to_scan: List[str] = []
         for ext, cb in self.format_checkboxes.items():
             if cb.isChecked():
                 formats_to_scan.append(ext.lower())
-        
-        # 添加自定义格式
+
         custom_format = self.edit_custom_format.text().strip()
         if custom_format:
             if not custom_format.startswith('.'):
                 custom_format = '.' + custom_format
             formats_to_scan.append(custom_format.lower())
-        
+
         if not formats_to_scan:
             self.result_text.setPlainText("❌ 错误：请至少选择一个文件格式！")
             return
-        
-        # 开始扫描
-        self.result_text.appendPlainText("🔍 开始扫描...\n")
-        self.result_text.appendPlainText(f"扫描目录: {len(folders_to_scan)} 个")
-        self.result_text.appendPlainText(f"文件格式: {', '.join(formats_to_scan)}\n")
-        
-        total_size = 0
-        for folder in folders_to_scan:
-            if not os.path.exists(folder):
-                self.result_text.appendPlainText(f"⚠️ 跳过不存在的路径: {folder}")
-                continue
-            
-            self.result_text.appendPlainText(f"\n📁 扫描: {folder}")
-            folder_count = 0
-            folder_size = 0
-            
-            try:
-                for root, dirs, files in os.walk(folder):
-                    for file in files:
-                        file_lower = file.lower()
-                        if any(file_lower.endswith(ext) for ext in formats_to_scan):
-                            file_path = os.path.join(root, file)
-                            try:
-                                file_size = os.path.getsize(file_path)
-                                self.files_to_delete.append((file_path, file_size))
-                                folder_count += 1
-                                folder_size += file_size
-                            except Exception as e:
-                                self.result_text.appendPlainText(f"  ⚠️ 无法访问: {file} ({e})")
-                
-                self.result_text.appendPlainText(
-                    f"  找到 {folder_count} 个文件，"
-                    f"共 {folder_size / (1024*1024):.2f} MB"
-                )
-                total_size += folder_size
-            except Exception as e:
-                self.result_text.appendPlainText(f"  ❌ 扫描失败: {e}")
-        
-        # 显示汇总
+
+        # 线程扫描
+        self.btn_scan.setEnabled(False)
+        self.btn_delete.setEnabled(False)
+        self.scan_thread = QtCore.QThread(self)
+        self.scan_worker = ScanWorker(folders_to_scan, formats_to_scan)
+        self.scan_worker.moveToThread(self.scan_thread)
+        self.scan_worker.progress.connect(self._append_result_line)
+        self.scan_worker.finished.connect(self._on_scan_finished)
+        self.scan_thread.started.connect(self.scan_worker.run)
+        self.scan_worker.finished.connect(self.scan_thread.quit)
+        self.scan_thread.finished.connect(self.scan_worker.deleteLater)
+        self.scan_thread.finished.connect(lambda: setattr(self, "scan_thread", None))
+        self.scan_thread.start()
+    
+    def _delete_files(self) -> None:
+        """删除扫描到的文件（异步线程，支持回收站）"""
+        if not self.files_to_delete:
+            return
+
+        total_size = sum(size for _, size in self.files_to_delete)
+        confirm_text = (
+            f"确定要删除 {len(self.files_to_delete)} 个文件吗？\n\n"
+            f"总大小: {total_size / (1024*1024):.2f} MB\n\n"
+            f"⚠️ 警告：此操作不可恢复！"
+        )
+        reply = QtWidgets.QMessageBox.warning(
+            self,
+            "⚠️ 确认删除",
+            confirm_text,
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No
+        )
+
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+
+        use_trash = self.cb_use_trash.isChecked()
+        self.btn_delete.setEnabled(False)
+        self.btn_scan.setEnabled(False)
+        if hasattr(self, 'progress_bar'):
+            total_files = len(self.files_to_delete)
+            self.progress_bar.setRange(0, total_files if total_files > 0 else 1)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat(f"删除进度 0/{total_files}")
+
+        self.result_text.appendPlainText("\n" + "="*50)
+        self.result_text.appendPlainText("🗑️ 开始删除文件...\n")
+
+        self.delete_thread = QtCore.QThread(self)
+        self.delete_worker = DeleteWorker(self.files_to_delete, use_trash)
+        self.delete_worker.moveToThread(self.delete_thread)
+        self.delete_worker.progress.connect(self._append_result_line)
+        self.delete_worker.progress_value.connect(self._on_delete_progress_value)
+        self.delete_worker.finished.connect(self._on_delete_finished)
+        self.delete_thread.started.connect(self.delete_worker.run)
+        self.delete_worker.finished.connect(self.delete_thread.quit)
+        self.delete_thread.finished.connect(self.delete_worker.deleteLater)
+        self.delete_thread.finished.connect(lambda: setattr(self, "delete_thread", None))
+        self.delete_thread.start()
+
+    def _append_result_line(self, text: str) -> None:
+        """线程安全地追加日志"""
+        self.result_text.appendPlainText(text)
+
+    def _on_scan_finished(self, files: List[Tuple[str, int]], total_size: int) -> None:
+        self.files_to_delete = sorted(files, key=lambda x: x[1], reverse=True)
         self.result_text.appendPlainText("\n" + "="*50)
         self.result_text.appendPlainText(
             f"📊 扫描完成！共找到 {len(self.files_to_delete)} 个文件"
@@ -765,72 +897,26 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             f"💾 总大小: {total_size / (1024*1024):.2f} MB "
             f"({total_size / (1024*1024*1024):.3f} GB)"
         )
-        # 按大小降序排序，便于优先处理大文件
-        self.files_to_delete.sort(key=lambda x: x[1], reverse=True)
         if self.files_to_delete:
             top_file, top_size = self.files_to_delete[0]
             self.result_text.appendPlainText(
                 f"📌 最大文件: {top_file} ({top_size/(1024*1024):.2f} MB)"
             )
-        
-        # 启用删除按钮
+
+        self.btn_scan.setEnabled(True)
         self.btn_delete.setEnabled(len(self.files_to_delete) > 0)
         if hasattr(self, 'progress_bar'):
             max_val = max(1, len(self.files_to_delete))
             self.progress_bar.setRange(0, max_val)
             self.progress_bar.setValue(0)
             self.progress_bar.setFormat(f"待清理文件：{len(self.files_to_delete)} 个")
-    
-    def _delete_files(self) -> None:
-        """删除扫描到的文件"""
-        if not self.files_to_delete:
-            return
-        
-        # 确认对话框
-        total_size = sum(size for _, size in self.files_to_delete)
-        reply = QtWidgets.QMessageBox.warning(
-            self,
-            "⚠️ 确认删除",
-            f"确定要删除 {len(self.files_to_delete)} 个文件吗？\n\n"
-            f"总大小: {total_size / (1024*1024):.2f} MB\n\n"
-            f"⚠️ 警告：此操作不可恢复！",
-            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
-            QtWidgets.QMessageBox.StandardButton.No
-        )
-        
-        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
-            return
-        
-        # 执行删除
-        self.result_text.appendPlainText("\n" + "="*50)
-        self.result_text.appendPlainText("🗑️ 开始删除文件...\n")
 
-        deleted_count = 0
-        deleted_size = 0
-        failed_count = 0
-        total_files = len(self.files_to_delete)
+    def _on_delete_progress_value(self, current: int, total: int) -> None:
         if hasattr(self, 'progress_bar'):
-            self.progress_bar.setRange(0, total_files if total_files > 0 else 1)
-            self.progress_bar.setValue(0)
-            self.progress_bar.setFormat(f"删除进度 0/{total_files}")
-        
-        for file_path, file_size in self.files_to_delete:
-            try:
-                os.remove(file_path)
-                deleted_count += 1
-                deleted_size += file_size
-            except Exception as e:
-                failed_count += 1
-                self.result_text.appendPlainText(f"❌ 删除失败: {file_path}\n   错误: {e}")
-            finally:
-                if hasattr(self, 'progress_bar'):
-                    self.progress_bar.setValue(deleted_count + failed_count)
-                    self.progress_bar.setFormat(
-                        f"删除进度 {deleted_count + failed_count}/{total_files}"
-                    )
-                    QtWidgets.QApplication.processEvents()
-        
-        # 显示结果
+            self.progress_bar.setValue(current)
+            self.progress_bar.setFormat(f"删除进度 {current}/{total}")
+
+    def _on_delete_finished(self, deleted_count: int, deleted_size: int, failed_count: int) -> None:
         self.result_text.appendPlainText("\n" + "="*50)
         self.result_text.appendPlainText("✅ 清理完成！\n")
         self.result_text.appendPlainText(f"成功删除: {deleted_count} 个文件")
@@ -840,15 +926,14 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         )
         if failed_count > 0:
             self.result_text.appendPlainText(f"删除失败: {failed_count} 个文件")
-        
-        # 清空待删除列表并禁用删除按钮
+
         self.files_to_delete = []
+        self.btn_scan.setEnabled(True)
         self.btn_delete.setEnabled(False)
         if hasattr(self, 'progress_bar'):
             self.progress_bar.setValue(self.progress_bar.maximum())
             self.progress_bar.setFormat("删除完成")
 
-        # 显示成功消息
         QtWidgets.QMessageBox.information(
             self,
             "✅ 清理完成",

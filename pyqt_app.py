@@ -43,7 +43,7 @@ except ImportError as e:
     print("[提示] 如需 FTP 功能，请运行: pip install pyftpdlib")
 
 # 版本信息（保持向后兼容）
-APP_VERSION = "3.1.1"
+APP_VERSION = get_app_version()
 APP_TITLE = f"图片异步上传工具 v{APP_VERSION}"
 
 

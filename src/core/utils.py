@@ -7,6 +7,12 @@
 import sys
 from pathlib import Path
 
+# 版本号单一来源
+try:
+    from src import __version__  # type: ignore  # 屏蔽类型检查在运行时动态导入
+except Exception:
+    __version__ = "0.0.0"
+
 
 def get_app_dir() -> Path:
     """获取应用程序数据目录（用于配置和日志等可写文件）
@@ -51,7 +57,7 @@ def get_app_version() -> str:
     Returns:
         str: 版本号，如 "3.1.1"
     """
-    return "3.1.1"
+    return __version__
 
 
 def get_app_title() -> str:
