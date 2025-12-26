@@ -4,6 +4,7 @@
 
 负责配置文件的加载、保存和默认值生成
 """
+import copy
 import json
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -26,7 +27,6 @@ class ConfigManager:
         'filter_jpg': True,
         'filter_png': True,
         'filter_bmp': True,
-        'filter_tiff': True,
         'filter_gif': True,
         'filter_raw': True,
         # 自动启动
@@ -49,6 +49,7 @@ class ConfigManager:
         'enable_auto_delete': False,
         'auto_delete_folder': '',
         'auto_delete_threshold': 80,
+        'auto_delete_target_percent': 40,
         'auto_delete_keep_days': 10,
         'auto_delete_check_interval': 300,
         # 协议配置
@@ -98,6 +99,17 @@ class ConfigManager:
         """
         self.config_path = config_path
         self._config: Dict[str, Any] = {}
+
+    @staticmethod
+    def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+        """递归合并配置，确保保留默认值且不污染全局默认配置。"""
+        result = copy.deepcopy(base)
+        for key, value in override.items():
+            if isinstance(value, dict) and isinstance(result.get(key), dict):
+                result[key] = ConfigManager._deep_merge(result[key], value)
+            else:
+                result[key] = copy.deepcopy(value)
+        return result
     
     def load(self) -> Dict[str, Any]:
         """加载配置文件
@@ -106,22 +118,21 @@ class ConfigManager:
             配置字典
         """
         if not self.config_path.exists():
-            self._config = self.DEFAULT_CONFIG.copy()
-            return self._config.copy()
+            self._config = copy.deepcopy(self.DEFAULT_CONFIG)
+            return copy.deepcopy(self._config)
         
         try:
             with open(self.config_path, 'r', encoding='utf-8') as f:
                 loaded_config = json.load(f)
             
-            # 合并默认配置和加载的配置
-            self._config = self.DEFAULT_CONFIG.copy()
-            self._config.update(loaded_config)
+            # 合并默认配置和加载的配置（深度合并，保留新增默认值）
+            self._config = self._deep_merge(self.DEFAULT_CONFIG, loaded_config)
             
-            return self._config.copy()
+            return copy.deepcopy(self._config)
         except Exception as e:
             print(f"配置加载失败: {e}")
-            self._config = self.DEFAULT_CONFIG.copy()
-            return self._config.copy()
+            self._config = copy.deepcopy(self.DEFAULT_CONFIG)
+            return copy.deepcopy(self._config)
     
     def save(self, config: Dict[str, Any]) -> bool:
         """保存配置文件
@@ -145,7 +156,7 @@ class ConfigManager:
             with open(self.config_path, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
             
-            self._config = config.copy()
+            self._config = copy.deepcopy(config)
             return True
         except Exception as e:
             print(f"配置保存失败: {e}")
@@ -179,4 +190,4 @@ class ConfigManager:
         Returns:
             默认配置字典
         """
-        return ConfigManager.DEFAULT_CONFIG.copy()
+        return copy.deepcopy(ConfigManager.DEFAULT_CONFIG)

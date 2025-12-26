@@ -28,6 +28,7 @@
   "enable_auto_delete": false,
   "auto_delete_folder": "",
   "auto_delete_threshold": 80,
+  "auto_delete_target_percent": 40,
   "auto_delete_keep_days": 10,
   "auto_delete_check_interval": 300,
   "upload_protocol": "smb",

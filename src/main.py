@@ -8,6 +8,7 @@ v3.1.1 - 断点续传、中英文切换、配置加载修复
 """
 import sys
 import os
+import time
 from pathlib import Path
 from typing import List, Tuple
 
@@ -82,31 +83,33 @@ def show_dependency_warning(missing_required: List[str], missing_optional: List[
 from src.core import get_app_dir, get_app_version, get_app_title
 from src.config import ConfigManager
 
-def check_single_instance(server_name: str) -> bool:
+def wakeup_existing_instance(
+    server_name: str,
+    attempts: int = 5,
+    wait_ms: int = 200,
+    connect_ms: int = 300
+) -> bool:
     """检查并尝试唤醒已运行的实例
     
     Args:
         server_name: 服务器名称
         
     Returns:
-        True - 是新实例，应该继续启动
-        False - 已有实例运行，已发送唤醒消息
+        True - 已有实例运行，已发送唤醒消息（调用方应退出）
+        False - 未发现已有实例（调用方可继续启动）
     """
-    socket = QLocalSocket()
-    socket.connectToServer(server_name)
-    
-    # 尝试连接到已运行的实例
-    if socket.waitForConnected(500):  # 等待500ms
-        # 连接成功，说明程序已在运行
-        # 发送唤醒消息
-        socket.write(b"WAKEUP")
-        socket.flush()
-        socket.waitForBytesWritten(1000)
-        socket.disconnectFromServer()
-        return False  # 不是新实例
-    
-    # 连接失败，说明没有其他实例在运行
-    return True  # 是新实例
+    for _ in range(attempts):
+        socket = QLocalSocket()
+        socket.connectToServer(server_name)
+        if socket.waitForConnected(connect_ms):
+            socket.write(b"WAKEUP")
+            socket.flush()
+            socket.waitForBytesWritten(1000)
+            socket.disconnectFromServer()
+            return True
+        time.sleep(wait_ms / 1000.0)
+
+    return False
 
 
 def main():
@@ -148,13 +151,15 @@ def main():
     
     # 单例检查
     server_name = "ImageUploadTool_SingleInstance_Server"
-    if not check_single_instance(server_name):
+    if wakeup_existing_instance(server_name, attempts=1, wait_ms=0, connect_ms=200):
         # 已有实例运行，已发送唤醒消息，直接退出
         return 0
     
     # 使用共享内存作为辅助锁（防止极端情况下的竞态条件）
     shared_mem = QtCore.QSharedMemory("ImageUploadTool_SingleInstance")
     if not shared_mem.create(1):
+        if wakeup_existing_instance(server_name):
+            return 0
         # 极少情况：LocalServer 未响应但共享内存存在
         msg = QtWidgets.QMessageBox()
         msg.setIcon(QtWidgets.QMessageBox.Icon.Warning)
@@ -167,6 +172,7 @@ def main():
     
     # 创建主窗口
     window = MainWindow()
+    window._setup_single_instance_server()
     window.show()
     
     # 启动应用程序事件循环

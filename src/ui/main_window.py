@@ -5,6 +5,7 @@ Main window UI module extracted from pyqt_app.py.
 import os
 import sys
 import json
+import copy
 import time
 import shutil
 import threading
@@ -15,6 +16,11 @@ import hashlib
 from pathlib import Path
 from typing import List, Tuple, Optional, Any
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+
+try:
+    from send2trash import send2trash  # type: ignore[import-not-found]
+except ImportError:
+    send2trash = None  # type: ignore[assignment]
 
 try:
     from src.protocols.ftp import FTPProtocolManager, FTPServerManager, FTPClientUploader
@@ -44,8 +50,9 @@ except ImportError:
     Signal = QtCore.pyqtSignal  # type: ignore[attr-defined]
 
 from src.core import get_app_dir, get_resource_path, get_app_version, get_app_title
+from src.config import ConfigManager
 from src.core.i18n import t, set_language, get_language, add_language_listener, SUPPORTED_LANGUAGES  # v3.0.2: 多语言支持
-from src.ui.widgets import Toast, ChipWidget, CollapsibleBox, DiskCleanupDialog
+from src.ui.widgets import Toast, ChipWidget, CollapsibleBox, DiskCleanupDialog, trash_supported, send_to_trash
 from src.workers.upload_worker import UploadWorker
 
 APP_VERSION = get_app_version()
@@ -90,7 +97,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.mode = 'periodic'
         self.disk_threshold_percent = 10
         self.retry_count = 3
-        self.filters = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.gif', '.raw']
+        self.filters = ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.raw']
         self.autoscroll = True
         self.auto_start_windows = False  # 开机自启动
         self.auto_run_on_startup = False  # 软件自动运行
@@ -121,8 +128,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         # v1.9 新增：自动删除配置
         self.enable_auto_delete = False
         self.auto_delete_folder = ''
-        self.auto_delete_threshold = 80  # 磁盘使用率达到80%时触发
-        self.auto_delete_keep_days = 10  # 保留最近10天的文件
+        self.auto_delete_threshold = 80  # 磁盘使用率达到此值时触发
+        self.auto_delete_target_percent = 40  # 触发后回落到此值
+        self.auto_delete_keep_days = 10  # 已废弃：保留天数（兼容旧配置）
         self.auto_delete_check_interval = 300  # 每5分钟检查一次
         
         # v2.0 新增：FTP 协议配置
@@ -154,6 +162,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         
         # 日志写入线程池（避免阻塞主线程）
         self._log_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="LogWriter")
+        self._disk_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="DiskCheck")
+        self._cleanup_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="AutoCleanup")
+        self._auto_cleanup_timer = QtCore.QTimer(self)
+        self._auto_cleanup_timer.timeout.connect(self._auto_cleanup_tick)
+        self._auto_cleanup_running = False
+        self._auto_cleanup_lock = threading.Lock()
+        self._auto_cleanup_last_warn = 0.0
         
         # v2.2.0 新增：系统托盘配置
         self.minimize_to_tray = True  # 最小化到托盘
@@ -170,6 +185,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         # UI
         self._build_ui()
         self._load_config()
+        self._update_auto_cleanup_schedule()
         self._apply_theme()
         self._update_ui_permissions()
         
@@ -805,7 +821,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         grid.setSpacing(10)
         self.cb_ext = {}
         exts = [
-            ("JPG", ".jpg"), ("PNG", ".png"), ("BMP", ".bmp"), ("TIFF", ".tiff"), ("GIF", ".gif"), ("RAW", ".raw")
+            ("JPG", ".jpg"), ("PNG", ".png"), ("BMP", ".bmp"), ("GIF", ".gif"), ("RAW", ".raw")
         ]
         for i, (name, ext) in enumerate(exts):
             cb = QtWidgets.QCheckBox(name)
@@ -1784,32 +1800,78 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         if folder:
             self.ftp_server_share.setText(folder)
             self.config_modified = True
+
+    def _collect_ftp_server_config(self) -> dict:
+        return {
+            'host': self.ftp_server_host.text().strip(),
+            'port': self.ftp_server_port.value(),
+            'username': self.ftp_server_user.text().strip(),
+            'password': self.ftp_server_pass.text().strip(),
+            'shared_folder': self.ftp_server_share.text().strip(),
+            'enable_passive': self.cb_server_passive.isChecked(),
+            'passive_ports_start': self.ftp_server_passive_start.value(),
+            'passive_ports_end': self.ftp_server_passive_end.value(),
+            'enable_tls': self.cb_server_tls.isChecked(),
+            'max_connections': self.ftp_server_max_conn.value(),
+            'max_connections_per_ip': self.ftp_server_max_conn_per_ip.value(),
+        }
+
+    def _collect_ftp_client_config(self) -> dict:
+        return {
+            'host': self.ftp_client_host.text().strip(),
+            'port': self.ftp_client_port.value(),
+            'username': self.ftp_client_user.text().strip(),
+            'password': self.ftp_client_pass.text().strip(),
+            'remote_path': self.ftp_client_remote.text().strip(),
+            'timeout': self.ftp_client_timeout.value(),
+            'retry_count': self.ftp_client_retry.value(),
+            'passive_mode': self.cb_client_passive.isChecked(),
+            'enable_tls': self.cb_client_tls.isChecked(),
+        }
+
+    def _build_ftp_server_manager_config(self, server_cfg: dict) -> dict:
+        passive_ports = None
+        if server_cfg.get('enable_passive', True):
+            passive_ports = (
+                server_cfg.get('passive_ports_start', 60000),
+                server_cfg.get('passive_ports_end', 65535)
+            )
+        return {
+            'host': server_cfg.get('host', '0.0.0.0'),
+            'port': server_cfg.get('port', 2121),
+            'username': server_cfg.get('username', 'upload_user'),
+            'password': server_cfg.get('password', 'upload_pass'),
+            'shared_folder': server_cfg.get('shared_folder', ''),
+            'enable_tls': server_cfg.get('enable_tls', False),
+            'passive_ports': passive_ports,
+            'passive_ports_start': server_cfg.get('passive_ports_start', 60000),
+            'passive_ports_end': server_cfg.get('passive_ports_end', 65535),
+            'enable_passive': server_cfg.get('enable_passive', True),
+            'max_cons': server_cfg.get('max_connections', 256),
+            'max_cons_per_ip': server_cfg.get('max_connections_per_ip', 5),
+        }
     
     def _test_ftp_server_config(self):
         """测试FTP服务器配置"""
         self._append_log("🧪 开始测试FTP服务器配置...")
         
         # 收集当前配置
-        config = {
-            'host': self.ftp_server_host.text().strip(),
-            'port': self.ftp_server_port.value(),
-            'username': self.ftp_server_user.text().strip(),
-            'password': self.ftp_server_pass.text().strip(),
-            'shared_folder': self.ftp_server_share.text().strip()
-        }
+        server_cfg = self._collect_ftp_server_config()
+        self.ftp_server_config = copy.deepcopy(server_cfg)
+        config = self._build_ftp_server_manager_config(server_cfg)
         
         # 验证配置
         errors = []
-        if not config['host']:
+        if not server_cfg['host']:
             errors.append("主机地址为空")
-        if not config['username']:
+        if not server_cfg['username']:
             errors.append("用户名为空")
-        if not config['password']:
+        if not server_cfg['password']:
             errors.append("密码为空")
-        if not config['shared_folder']:
+        if not server_cfg['shared_folder']:
             errors.append("共享目录为空")
-        elif not os.path.exists(config['shared_folder']):
-            errors.append(f"共享目录不存在: {config['shared_folder']}")
+        elif not os.path.exists(server_cfg['shared_folder']):
+            errors.append(f"共享目录不存在: {server_cfg['shared_folder']}")
         
         if errors:
             error_msg = "\n".join(errors)
@@ -1859,26 +1921,22 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self._append_log("🔌 开始测试FTP客户端连接...")
         
         # 收集当前配置
+        client_cfg = self._collect_ftp_client_config()
+        self.ftp_client_config = copy.deepcopy(client_cfg)
         config = {
             'name': 'test_client',
-            'host': self.ftp_client_host.text().strip(),
-            'port': self.ftp_client_port.value(),
-            'username': self.ftp_client_user.text().strip(),
-            'password': self.ftp_client_pass.text().strip(),
-            'remote_path': self.ftp_client_remote.text().strip(),
-            'timeout': self.ftp_client_timeout.value(),
-            'retry_count': self.ftp_client_retry.value(),
+            **client_cfg
         }
         
         # 验证配置
         errors = []
-        if not config['host']:
+        if not client_cfg['host']:
             errors.append("服务器地址为空")
-        if not config['username']:
+        if not client_cfg['username']:
             errors.append("用户名为空")
-        if not config['password']:
+        if not client_cfg['password']:
             errors.append("密码为空")
-        if not config['remote_path']:
+        if not client_cfg['remote_path']:
             errors.append("远程路径为空")
         
         if errors:
@@ -2372,11 +2430,15 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             return True, []
         
         self._append_log("🔍 正在验证FTP配置...")
+        server_cfg = self._collect_ftp_server_config()
+        client_cfg = self._collect_ftp_client_config()
+        self.ftp_server_config = copy.deepcopy(server_cfg)
+        self.ftp_client_config = copy.deepcopy(client_cfg)
         
         # 验证FTP服务器配置 (v3.1.0 重构：由独立开关控制)
         if self.enable_ftp_server:
             # 主机地址验证
-            host = self.ftp_server_config.get('host', '').strip()
+            host = server_cfg.get('host', '').strip()
             if not host:
                 errors.append("FTP服务器主机地址为空")
             elif host not in ['0.0.0.0', 'localhost', '127.0.0.1']:
@@ -2386,28 +2448,28 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     errors.append(f"FTP服务器主机地址格式无效: {host}")
             
             # 端口验证
-            port = self.ftp_server_config.get('port', 0)
+            port = server_cfg.get('port', 0)
             if not isinstance(port, int) or port < 1 or port > 65535:
                 errors.append(f"FTP服务器端口无效: {port}（范围：1-65535）")
             elif port < 1024 and port != 21:
                 self._append_log(f"⚠️  FTP服务器使用特权端口 {port}，可能需要管理员权限")
             
             # 用户名验证
-            username = self.ftp_server_config.get('username', '').strip()
+            username = server_cfg.get('username', '').strip()
             if not username:
                 errors.append("FTP服务器用户名为空")
             elif len(username) < 3:
                 errors.append("FTP服务器用户名至少需要3个字符")
             
             # 密码验证
-            password = self.ftp_server_config.get('password', '').strip()
+            password = server_cfg.get('password', '').strip()
             if not password:
                 errors.append("FTP服务器密码为空")
             elif len(password) < 6:
                 errors.append("FTP服务器密码至少需要6个字符")
             
             # 共享目录验证
-            share_folder = self.ftp_server_config.get('shared_folder', '').strip()
+            share_folder = server_cfg.get('shared_folder', '').strip()
             if not share_folder:
                 errors.append("FTP服务器共享目录为空")
             elif not os.path.exists(share_folder):
@@ -2420,7 +2482,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         # 验证FTP客户端配置
         if self.current_protocol in ['ftp_client', 'both']:
             # 主机地址验证
-            host = self.ftp_client_config.get('host', '').strip()
+            host = client_cfg.get('host', '').strip()
             if not host:
                 errors.append("FTP客户端主机地址为空")
             else:
@@ -2432,22 +2494,22 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     errors.append(f"FTP客户端主机地址格式无效: {host}")
             
             # 端口验证
-            port = self.ftp_client_config.get('port', 0)
+            port = client_cfg.get('port', 0)
             if not isinstance(port, int) or port < 1 or port > 65535:
                 errors.append(f"FTP客户端端口无效: {port}（范围：1-65535）")
             
             # 用户名验证
-            username = self.ftp_client_config.get('username', '').strip()
+            username = client_cfg.get('username', '').strip()
             if not username:
                 errors.append("FTP客户端用户名为空")
             
             # 密码验证
-            password = self.ftp_client_config.get('password', '').strip()
+            password = client_cfg.get('password', '').strip()
             if not password:
                 errors.append("FTP客户端密码为空")
             
             # 远程路径验证
-            remote_path = self.ftp_client_config.get('remote_path', '').strip()
+            remote_path = client_cfg.get('remote_path', '').strip()
             if not remote_path:
                 errors.append("FTP客户端远程路径为空")
             elif not remote_path.startswith('/'):
@@ -2514,7 +2576,6 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             'filter_jpg': self.cb_ext['.jpg'].isChecked(),
             'filter_png': self.cb_ext['.png'].isChecked(),
             'filter_bmp': self.cb_ext['.bmp'].isChecked(),
-            'filter_tiff': self.cb_ext['.tiff'].isChecked(),
             'filter_gif': self.cb_ext['.gif'].isChecked(),
             'filter_raw': self.cb_ext['.raw'].isChecked(),
             'auto_start_windows': self.cb_auto_start_windows.isChecked(),
@@ -2536,6 +2597,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             'enable_auto_delete': self.enable_auto_delete,
             'auto_delete_folder': self.auto_delete_folder,
             'auto_delete_threshold': self.auto_delete_threshold,
+            'auto_delete_target_percent': self.auto_delete_target_percent,
             'auto_delete_keep_days': self.auto_delete_keep_days,
             'auto_delete_check_interval': self.auto_delete_check_interval,
             # v2.0 新增：FTP 协议配置 (v3.1.0 重构)
@@ -2576,10 +2638,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             
             # 保存成功后清除修改标记并更新保存的配置
             self.config_modified = False
-            self.saved_config = cfg.copy()
+            self.saved_config = copy.deepcopy(cfg)
             
             self._append_log("✓ 配置已成功保存到文件")
             self._toast('配置已保存', 'success')
+            self._update_auto_cleanup_schedule()
         except Exception as e:
             self._append_log(f"❌ 配置保存失败: {e}")
             self._toast(f'保存失败: {e}', 'danger')
@@ -2594,7 +2657,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             return
         try:
             with open(path, 'r', encoding='utf-8') as f:
-                cfg = json.load(f)
+                loaded_cfg = json.load(f)
+
+            default_cfg = ConfigManager.get_default_config()
+            cfg = ConfigManager._deep_merge(default_cfg, loaded_cfg)
             
             self._append_log(f"✓ 配置文件加载成功")
             
@@ -2616,7 +2682,6 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.cb_ext['.jpg'].setChecked(cfg.get('filter_jpg', True))
             self.cb_ext['.png'].setChecked(cfg.get('filter_png', True))
             self.cb_ext['.bmp'].setChecked(cfg.get('filter_bmp', True))
-            self.cb_ext['.tiff'].setChecked(cfg.get('filter_tiff', True))
             self.cb_ext['.gif'].setChecked(cfg.get('filter_gif', True))
             self.cb_ext['.raw'].setChecked(cfg.get('filter_raw', True))
             
@@ -2683,8 +2748,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.enable_auto_delete = cfg.get('enable_auto_delete', False)
             self.auto_delete_folder = cfg.get('auto_delete_folder', '')
             self.auto_delete_threshold = cfg.get('auto_delete_threshold', 80)
+            self.auto_delete_target_percent = cfg.get('auto_delete_target_percent', 40)
             self.auto_delete_keep_days = cfg.get('auto_delete_keep_days', 10)
             self.auto_delete_check_interval = cfg.get('auto_delete_check_interval', 300)
+            if self.auto_delete_target_percent >= self.auto_delete_threshold:
+                self.auto_delete_target_percent = max(0, self.auto_delete_threshold - 10)
             
             # 这些控件在磁盘清理对话框中，主窗口可能没有
             if hasattr(self, 'cb_enable_auto_delete'):
@@ -2700,6 +2768,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             if hasattr(self, 'spin_auto_del_threshold'):
                 self.spin_auto_del_threshold.setValue(self.auto_delete_threshold)
                 self.spin_auto_del_threshold.setEnabled(self.enable_auto_delete)
+            if hasattr(self, 'spin_auto_del_target'):
+                self.spin_auto_del_target.setValue(self.auto_delete_target_percent)
+                self.spin_auto_del_target.setEnabled(self.enable_auto_delete)
             if hasattr(self, 'spin_auto_del_keep_days'):
                 self.spin_auto_del_keep_days.setValue(self.auto_delete_keep_days)
                 self.spin_auto_del_keep_days.setEnabled(self.enable_auto_delete)
@@ -2779,9 +2850,12 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             # v2.0 新增：加载高级选项
             self.cb_client_passive.setChecked(ftp_client.get('passive_mode', True))
             self.cb_client_tls.setChecked(ftp_client.get('enable_tls', False))
+
+            self.ftp_server_config = copy.deepcopy(ftp_server)
+            self.ftp_client_config = copy.deepcopy(ftp_client)
             
             # 保存已加载的配置（用于回退）
-            self.saved_config = cfg.copy()
+            self.saved_config = copy.deepcopy(cfg)
             self.config_modified = False
             
             self._append_log(f"✓ 已加载配置: 源={cfg.get('source_folder', '未设置')}")
@@ -2931,17 +3005,12 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     self.ftp_manager = FTPProtocolManager()  # type: ignore[misc]
                 
                 self._append_log("🔧 正在启动FTP服务器...")
-                share_folder = self.ftp_server_config.get('shared_folder', '')
+                server_cfg = self._collect_ftp_server_config()
+                self.ftp_server_config = copy.deepcopy(server_cfg)
+                share_folder = server_cfg.get('shared_folder', '')
                 if not share_folder or not os.path.exists(share_folder):
                     raise ValueError(f"FTP共享文件夹无效: {share_folder}")
-                
-                server_config = {
-                    'host': self.ftp_server_config.get('host', '0.0.0.0'),
-                    'port': self.ftp_server_config.get('port', 2121),
-                    'username': self.ftp_server_config.get('username', 'upload_user'),
-                    'password': self.ftp_server_config.get('password', 'upload_pass'),
-                    'shared_folder': share_folder
-                }
+                server_config = self._build_ftp_server_manager_config(server_cfg)
                 
                 success = self.ftp_manager.start_server(server_config)
                 if not success:
@@ -2971,7 +3040,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 # v2.0 增强：端口冲突等系统错误详细日志
                 error_msg = str(e)
                 if 'already in use' in error_msg.lower() or 'address already in use' in error_msg.lower():
-                    port = self.ftp_server_config.get('port', 2121)
+                    port = server_cfg.get('port', 2121)
                     self._append_log(f"❌ [FTP-PORT] 端口 {port} 已被占用，请更换端口")
                 else:
                     self._append_log(f"❌ [FTP-OS] 系统错误: {e}")
@@ -2998,15 +3067,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         
         # v2.0 新增：更新FTP客户端配置
         if self.current_protocol in ['ftp_client', 'both']:
-            self.ftp_client_config = {
-                'host': self.ftp_client_host.text(),
-                'port': self.ftp_client_port.value(),
-                'username': self.ftp_client_user.text(),
-                'password': self.ftp_client_pass.text(),
-                'remote_path': self.ftp_client_remote.text(),
-                'timeout': self.ftp_client_timeout.value(),
-                'retry_count': self.ftp_client_retry.value(),
-            }
+            self.ftp_client_config = self._collect_ftp_client_config()
             self._append_log(f"📡 FTP客户端配置: {self.ftp_client_config['host']}:{self.ftp_client_config['port']}")
             self._append_log(f"  超时时间: {self.ftp_client_config['timeout']}秒, 重试次数: {self.ftp_client_config['retry_count']}次")
         
@@ -3461,6 +3522,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             icon_type=get_qt_enum(QtWidgets.QSystemTrayIcon, 'Warning', 2)
         )
 
+    def _log_message(self, message: str):
+        self._append_log(message)
+
     def _append_log(self, line: str): 
         # If autoscroll is disabled, preserve the current scrollbar position.
         try:
@@ -3704,7 +3768,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                             self._disk_update_signal.emit("target", -1.0)
                 
                 # 更新归档磁盘
-                if backup_path:
+                if self.enable_backup and backup_path:
                     if _is_network_path(backup_path) and getattr(self, 'network_status', 'unknown') != 'good':
                         self._disk_update_signal.emit("backup", -1.0)
                     else:
@@ -3717,14 +3781,113 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                                 self._disk_update_signal.emit("backup", -1.0)
                         except Exception:
                             self._disk_update_signal.emit("backup", -1.0)
+                else:
+                    self._disk_update_signal.emit("backup", -1.0)
             except Exception as e:
-                print(f"磁盘空间检查失败: {e}")
+                try:
+                    QtCore.QTimer.singleShot(0, lambda: self._append_log(f"磁盘空间检查失败: {e}"))
+                except Exception:
+                    pass
         
         # 提交到线程池异步执行
         try:
-            self._log_executor.submit(update_disk_async)
+            self._disk_executor.submit(update_disk_async)
         except Exception:
             pass
+
+    def _update_auto_cleanup_schedule(self) -> None:
+        if not hasattr(self, "_auto_cleanup_timer"):
+            return
+        if not self.enable_auto_delete:
+            self._auto_cleanup_timer.stop()
+            return
+        if not self.auto_delete_folder:
+            self._append_log("⚠️ 已启用自动清理但未设置监控路径")
+            self._auto_cleanup_timer.stop()
+            return
+        if not os.path.isdir(self.auto_delete_folder):
+            self._append_log(f"⚠️ 自动清理路径不可用: {self.auto_delete_folder}")
+            self._auto_cleanup_timer.stop()
+            return
+        if not trash_supported():
+            self._append_log("⚠️ 回收站不可用，自动清理无法启用")
+            self._auto_cleanup_timer.stop()
+            return
+        interval = max(60, int(self.auto_delete_check_interval))
+        self._auto_cleanup_timer.start(interval * 1000)
+        self._append_log(f"ℹ️ 自动清理已启用，每 {interval} 秒检查一次")
+
+    def _auto_cleanup_tick(self) -> None:
+        if not self.enable_auto_delete or not self.auto_delete_folder:
+            return
+        with self._auto_cleanup_lock:
+            if self._auto_cleanup_running:
+                return
+            self._auto_cleanup_running = True
+        self._cleanup_executor.submit(self._auto_cleanup_task)
+
+    def _auto_cleanup_task(self) -> None:
+        def log(msg: str) -> None:
+            try:
+                QtCore.QTimer.singleShot(0, lambda m=msg: self._append_log(m))
+            except Exception:
+                pass
+
+        try:
+            folder = self.auto_delete_folder
+            if not os.path.isdir(folder):
+                log(f"⚠️ 自动清理路径不可用: {folder}")
+                return
+            if not trash_supported():
+                log("⚠️ 回收站不可用，自动清理已暂停（避免永久删除）")
+                return
+            if self.auto_delete_target_percent >= self.auto_delete_threshold:
+                log("⚠️ 自动清理阈值配置无效（目标阈值必须小于触发阈值），已跳过")
+                return
+
+            usage = shutil.disk_usage(folder)
+            total = usage.total
+            used_bytes = usage.total - usage.free
+            used_percent = (used_bytes / total) * 100 if total > 0 else 0.0
+            if used_percent < self.auto_delete_threshold:
+                return
+
+            log(
+                f"⚠️ 磁盘使用率 {used_percent:.1f}% 达到触发阈值 {self.auto_delete_threshold}%"
+                f"，开始自动清理至目标阈值 {self.auto_delete_target_percent}%"
+            )
+            deleted_count = 0
+            deleted_size = 0
+            failed_count = 0
+
+            candidates = []
+            for root, _, files in os.walk(folder):
+                for name in files:
+                    path = os.path.join(root, name)
+                    try:
+                        stat = os.stat(path)
+                        candidates.append((stat.st_mtime, stat.st_size, path))
+                    except Exception:
+                        failed_count += 1
+
+            candidates.sort(key=lambda item: item[0])
+
+            for _, size, path in candidates:
+                if used_percent <= self.auto_delete_target_percent:
+                    break
+                try:
+                    send_to_trash(path)
+                    deleted_count += 1
+                    deleted_size += size
+                    used_percent = ((used_bytes - deleted_size) / total) * 100 if total > 0 else 0.0
+                except Exception:
+                    failed_count += 1
+
+            size_mb = deleted_size / (1024 * 1024)
+            log(f"✅ 自动清理完成：删除 {deleted_count} 个文件，释放 {size_mb:.2f} MB，失败 {failed_count} 个")
+        finally:
+            with self._auto_cleanup_lock:
+                self._auto_cleanup_running = False
     
     def _on_disk_update(self, disk_type: str, free_percent: float):
         """处理磁盘更新信号（在主线程中执行）"""
@@ -3932,6 +4095,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         # 关闭日志线程池
         try:
             self._log_executor.shutdown(wait=False)
+        except Exception:
+            pass
+        try:
+            self._disk_executor.shutdown(wait=False)
+        except Exception:
+            pass
+        try:
+            self._cleanup_executor.shutdown(wait=False)
         except Exception:
             pass
         

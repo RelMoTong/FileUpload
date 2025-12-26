@@ -1169,8 +1169,12 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_EN_US: '⏰ Enable Auto Cleanup',
     },
     'disk_cleanup_auto_threshold': {
-        LANG_ZH_CN: '磁盘阈值:',
-        LANG_EN_US: 'Disk Threshold:',
+        LANG_ZH_CN: '触发阈值:',
+        LANG_EN_US: 'Trigger Threshold:',
+    },
+    'disk_cleanup_auto_target': {
+        LANG_ZH_CN: '目标阈值:',
+        LANG_EN_US: 'Target Threshold:',
     },
     'disk_cleanup_auto_keep_days': {
         LANG_ZH_CN: '保留天数:',
@@ -1181,8 +1185,12 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_EN_US: 'Check Interval:',
     },
     'disk_cleanup_auto_threshold_tip': {
-        LANG_ZH_CN: '磁盘使用率达到此值时自动清理',
-        LANG_EN_US: 'Auto clean when disk usage reaches this threshold',
+        LANG_ZH_CN: '磁盘使用率达到此值时触发自动清理',
+        LANG_EN_US: 'Trigger auto cleanup when disk usage reaches this threshold',
+    },
+    'disk_cleanup_auto_target_tip': {
+        LANG_ZH_CN: '自动清理删除到该阈值后停止',
+        LANG_EN_US: 'Stop cleanup when usage drops to this target',
     },
     'disk_cleanup_auto_keep_tip': {
         LANG_ZH_CN: '只删除超过此天数的文件',
@@ -1193,8 +1201,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_EN_US: 'Interval between automatic checks',
     },
     'disk_cleanup_auto_hint': {
-        LANG_ZH_CN: '💡 启用后，程序会定期检查磁盘空间，当达到阈值时自动删除超过保留期限的文件',
-        LANG_EN_US: '💡 When enabled, the app checks disk space periodically and deletes files older than keep days once threshold is reached.',
+        LANG_ZH_CN: '💡 启用后，程序会定期检查磁盘空间。当达到触发阈值时，按最旧优先删除，直到降到目标阈值。',
+        LANG_EN_US: '?? When enabled, the app checks disk space and deletes oldest files until it reaches the target threshold.',
     },
     'disk_cleanup_auto_save': {
         LANG_ZH_CN: '💾 保存自动清理配置',
@@ -1205,8 +1213,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_EN_US: '✅ Settings Saved',
     },
     'disk_cleanup_config_saved_body': {
-        LANG_ZH_CN: '自动清理配置已成功保存！\n\n启用状态: {enabled}\n监控文件夹: {monitor}\n磁盘阈值: {threshold}%\n保留天数: {days}天\n检查间隔: {interval}秒',
-        LANG_EN_US: 'Auto cleanup settings saved!\n\nEnabled: {enabled}\nMonitor folder: {monitor}\nDisk threshold: {threshold}%\nKeep days: {days} days\nCheck interval: {interval} seconds',
+        LANG_ZH_CN: '自动清理配置已成功保存！\n\n启用状态: {enabled}\n监控文件夹: {monitor}\n触发阈值: {threshold}%\n目标阈值: {target}%\n检查间隔: {interval}秒',
+        LANG_EN_US: 'Auto cleanup settings saved!\n\nEnabled: {enabled}\nMonitor folder: {monitor}\nTrigger threshold: {threshold}%\nTarget threshold: {target}%\nCheck interval: {interval} seconds',
     },
     'disk_cleanup_config_save_fail_title': {
         LANG_ZH_CN: '❌ 保存失败',

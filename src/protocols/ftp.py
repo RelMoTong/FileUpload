@@ -124,8 +124,22 @@ class FTPServerManager:
             handler.authorizer = authorizer
             
             # 设置被动模式端口范围
-            passive_ports = self.config.get('passive_ports', (60000, 65535))
-            handler.passive_ports = range(passive_ports[0], passive_ports[1] + 1)  # type: ignore
+            enable_passive = self.config.get('enable_passive', True)
+            passive_ports = self.config.get('passive_ports')
+            if passive_ports is None:
+                passive_start = self.config.get('passive_ports_start', 60000)
+                passive_end = self.config.get('passive_ports_end', 65535)
+                passive_ports = (passive_start, passive_end)
+            if enable_passive and isinstance(passive_ports, (list, tuple)) and len(passive_ports) == 2:
+                try:
+                    start_port, end_port = int(passive_ports[0]), int(passive_ports[1])
+                except Exception:
+                    start_port, end_port = 60000, 65535
+                passive_ports = (start_port, end_port)
+                if start_port <= end_port:
+                    handler.passive_ports = range(start_port, end_port + 1)  # type: ignore
+                else:
+                    handler.passive_ports = range(end_port, start_port + 1)  # type: ignore
             
             # 设置 banner
             handler.banner = "图片异步上传工具 v2.0 FTP 服务器"
@@ -140,12 +154,15 @@ class FTPServerManager:
             self.server = FTPServer((host, port), handler)
             
             # 设置连接限制
-            self.server.max_cons = self.config.get('max_cons', 256)
-            self.server.max_cons_per_ip = self.config.get('max_cons_per_ip', 5)
+            self.server.max_cons = self.config.get('max_cons', self.config.get('max_connections', 256))
+            self.server.max_cons_per_ip = self.config.get('max_cons_per_ip', self.config.get('max_connections_per_ip', 5))
             
             logger.info(f"FTP 服务器配置完成: {host}:{port}")
             logger.info(f"共享目录: {shared_folder}")
-            logger.info(f"被动端口范围: {passive_ports[0]}-{passive_ports[1]}")
+            if enable_passive and isinstance(passive_ports, (list, tuple)) and len(passive_ports) == 2:
+                logger.info(f"被动端口范围: {passive_ports[0]}-{passive_ports[1]}")
+            else:
+                logger.info("被动端口范围: 默认")
             logger.info(f"最大连接数: {self.server.max_cons}")
             logger.info(f"单IP最大连接数: {self.server.max_cons_per_ip}")
             
@@ -249,8 +266,8 @@ class FTPServerManager:
             'address': f"{self.config.get('host')}:{self.config.get('port')}",
             'shared_folder': self.config.get('shared_folder'),
             'tls_enabled': self.config.get('enable_tls', False),
-            'max_connections': self.config.get('max_cons', 256),
-            'max_connections_per_ip': self.config.get('max_cons_per_ip', 5)
+            'max_connections': self.config.get('max_cons', self.config.get('max_connections', 256)),
+            'max_connections_per_ip': self.config.get('max_cons_per_ip', self.config.get('max_connections_per_ip', 5))
         }
     
     def __del__(self):
