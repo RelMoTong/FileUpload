@@ -1,34 +1,29 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller 打包配置文件（版本由 src.__version__ 提供）
-断点续传 + 中英文切换版本
+PyInstaller build spec.
+Version is sourced from src.__version__.
 """
-
 import os
 import sys
 
 block_cipher = None
 
-# 项目根目录
 project_root = os.path.dirname(os.path.abspath(SPEC))
-# 确保项目根目录可导入
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from src import __version__ as VERSION
 
 a = Analysis(
-    ['pyqt_app.py'],
+    ['src/main.py'],
     pathex=[project_root],
     binaries=[],
     datas=[
         ('assets', 'assets'),
-        ('version.txt', '.'),
-        ('config.json', '.'),
     ],
     hiddenimports=[
         'PySide6.QtCore',
-        'PySide6.QtGui', 
+        'PySide6.QtGui',
         'PySide6.QtWidgets',
         'PySide6.QtNetwork',
         'src.core',
@@ -75,7 +70,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,  # 不显示控制台窗口
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

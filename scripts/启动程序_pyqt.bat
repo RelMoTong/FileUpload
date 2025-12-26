@@ -65,7 +65,7 @@ echo ========================================
 echo.
 
 REM 运行程序
-python pyqt_app.py
+python -m src.main
 
 REM 程序退出后的处理
 if errorlevel 1 (

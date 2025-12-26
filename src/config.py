@@ -119,6 +119,7 @@ class ConfigManager:
         """
         if not self.config_path.exists():
             self._config = copy.deepcopy(self.DEFAULT_CONFIG)
+            self.save(self._config)
             return copy.deepcopy(self._config)
         
         try:
@@ -126,12 +127,15 @@ class ConfigManager:
                 loaded_config = json.load(f)
             
             # 合并默认配置和加载的配置（深度合并，保留新增默认值）
-            self._config = self._deep_merge(self.DEFAULT_CONFIG, loaded_config)
-            
+            merged_config = self._deep_merge(self.DEFAULT_CONFIG, loaded_config)
+            self._config = merged_config
+            if merged_config != loaded_config:
+                self.save(merged_config)
             return copy.deepcopy(self._config)
         except Exception as e:
             print(f"配置加载失败: {e}")
             self._config = copy.deepcopy(self.DEFAULT_CONFIG)
+            self.save(self._config)
             return copy.deepcopy(self._config)
     
     def save(self, config: Dict[str, Any]) -> bool:

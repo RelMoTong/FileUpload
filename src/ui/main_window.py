@@ -240,14 +240,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             logs_dir = self.app_dir / 'logs'
             logs_dir.mkdir(parents=True, exist_ok=True)
             
-            # 如果不存在 config.json，从资源目录复制默认配置
+            # 如果不存在 config.json，则使用默认配置生成
             config_path = self.app_dir / 'config.json'
             if not config_path.exists():
-                # 尝试从资源目录复制
-                resource_config = get_resource_path('config.json')
-                if resource_config.exists():
-                    import shutil
-                    shutil.copy2(resource_config, config_path)
+                ConfigManager(config_path).save(ConfigManager.get_default_config())
         except Exception as e:
             print(f"创建目录失败: {e}")
 
@@ -2653,17 +2649,12 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         
         path = self.app_dir / 'config.json'
         if not path.exists():
-            self._append_log("⚠ 配置文件不存在，使用默认配置")
-            return
+            self._append_log("⚠ 配置文件不存在，已生成默认配置")
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                loaded_cfg = json.load(f)
+            cfg = ConfigManager(path).load()
 
-            default_cfg = ConfigManager.get_default_config()
-            cfg = ConfigManager._deep_merge(default_cfg, loaded_cfg)
-            
-            self._append_log(f"✓ 配置文件加载成功")
-            
+            self._append_log("✓ 配置文件加载成功")
+
             self.src_edit.setText(cfg.get('source_folder', ''))
             self.tgt_edit.setText(cfg.get('target_folder', ''))
             self.bak_edit.setText(cfg.get('backup_folder', ''))
