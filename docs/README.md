@@ -1,6 +1,6 @@
 文档概要
 ========
-本仓库仅保留精简文档：阅读本文件了解架构/使用，版本变更见 `docs/CHANGELOG.md`。
+本仓库仅保留精简文档：阅读本文件了解架构/使用，版本变更见 `docs/CHANGELOG.md`，GitHub 发布文案见 `docs/GITHUB_RELEASE_v3.2.0.md`。
 
 项目功能
 --------
@@ -28,5 +28,5 @@
 
 清理建议
 --------
-- 文档仅保留 `docs/README.md`、`docs/CHANGELOG.md`；历史/零散说明已合并删除。
+- 当前主要文档入口为 `docs/README.md`、`docs/CHANGELOG.md` 和 `docs/GITHUB_RELEASE_v3.2.0.md`；历史/零散说明已合并删除。
 - 打包产物保留最新 `dist/ImageUploadTool_v<version>/`，旧版可归档到仓库外。

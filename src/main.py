@@ -1,16 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-图片异步上传工具 - 主程序入口 (模块化版本)
+图片异步上传工具 - 主程序入口
 
 v3.1.1 - 断点续传、中英文切换、配置加载修复
 - 使用新的模块化结构
-- 保持与 pyqt_app.py 的兼容性
 """
 import sys
 import os
 import time
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PySide6 import QtCore, QtWidgets  # type: ignore[import-not-found]
+    from PySide6.QtNetwork import QLocalServer, QLocalSocket  # type: ignore[import-not-found]
 
 # 添加项目根目录到 Python 路径
 project_root = Path(__file__).parent.parent
@@ -162,11 +165,11 @@ def main():
             return 0
         # 极少情况：LocalServer 未响应但共享内存存在
         msg = QtWidgets.QMessageBox()
-        msg.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        msg.setIcon(QtWidgets.QMessageBox.Icon.Warning)  # type: ignore[arg-type]
         msg.setWindowTitle("程序启动异常")
         msg.setText("检测到程序可能未正常退出")
         msg.setInformativeText("建议：\n1. 检查任务管理器是否有残留进程\n2. 重启计算机后重试")
-        msg.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
+        msg.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)  # type: ignore[arg-type]
         msg.exec() if hasattr(msg, 'exec') else msg.exec_()
         return 1
     

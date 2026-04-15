@@ -14,7 +14,7 @@
   "reportMissingImports": "warning",
   "reportMissingTypeStubs": false,
   "reportGeneralTypeIssues": "warning",
-  "pythonVersion": "3.8",
+  "pythonVersion": "3.13",
   "pythonPlatform": "Windows",
   "typeCheckingMode": "basic"
 }

@@ -17,15 +17,9 @@ src/
 ├── main.py                 # 程序入口 (110行)
 ├── config.py               # 配置管理 (160行)
 ├── core/                   # 核心功能
-│   ├── utils.py           # 工具函数 (70行)
-│   └── permissions.py     # 权限管理 (150行)
 ├── protocols/              # 协议模块
-│   └── ftp.py             # FTP协议 (1026行)
 ├── ui/                     # 用户界面
-│   ├── widgets.py         # 自定义控件 (730行)
-│   └── main_window.py     # 主窗口 (4017行)
 └── workers/                # 后台工作
-    └── upload_worker.py   # 上传Worker (1070行)
 ```
 
 ### ✨ 改进内容
@@ -33,7 +27,7 @@ src/
 - **代码可维护性提升**: 8个独立模块，职责清晰
 - **更好的可测试性**: 每个模块可独立测试
 - **类型安全**: 完整的类型注解，Pylance零错误
-- **向后兼容**: 旧版 `pyqt_app.py` 入口仍可使用
+- **统一入口**: 开发环境统一通过 `python -m src.main` 启动
 
 ## 主要功能
 
@@ -85,7 +79,7 @@ src/
 
 ### 从源代码运行
 
-**环境要求**: Python 3.8+, PyQt5
+**环境要求**: Python 3.8+, PySide6 或 PyQt5
 
 1. 安装依赖：
    ```powershell
@@ -94,12 +88,12 @@ src/
 
 2. 运行程序：
    ```powershell
-   python pyqt_app.py
+   python -m src.main
    ```
 
 3. 或使用快捷脚本：
    ```powershell
-   scripts\启动程序_pyqt.bat
+   scripts\启动程序.bat
    ```
 
 ## 配置参数说明
@@ -314,18 +308,16 @@ A: 不会，日志采用独立线程异步写入，不会阻塞主界面
 
 ## 技术文档
 
-- **开发任务书**: [文件上传软件开发任务书.md](docs/开发文档/文件上传软件开发任务书.md)
-- **使用说明书**: [软件使用说明书_v2.0.md](docs/软件使用说明书_v2.0.md)
-- **快速参考**: [v2.0_快速参考.md](docs/开发文档/v2.0_快速参考.md)
-- **性能测试报告**: [v2.1_性能测试报告.md](docs/v2.1_性能测试报告.md) 🆕
-- **版本说明**: [版本说明.md](docs/开发文档/版本说明.md)
-- **更新日志**: [更新日志_v2.0.md](docs/历史版本/更新日志_v2.0.md)
+- **仓库文档总览**: [docs/README.md](docs/README.md)
+- **版本变更摘要**: [docs/CHANGELOG.md](docs/CHANGELOG.md)
+- **GitHub 发布说明**: [docs/GITHUB_RELEASE_v3.2.0.md](docs/GITHUB_RELEASE_v3.2.0.md)
+- **详细发布说明**: [RELEASE_NOTES_v3.2.0.md](RELEASE_NOTES_v3.2.0.md)
 
 ## 技术规格
 
 ### 基础信息
 - **开发语言**: Python 3.8+
-- **GUI框架**: PyQt5
+- **GUI框架**: PySide6（兼容 PyQt5）
 - **支持系统**: Windows（已适配打包版）
 - **文件大小**: 支持任意大小文件
 
@@ -351,13 +343,13 @@ A: 不会，日志采用独立线程异步写入，不会阻塞主界面
 ### 运行源码（开发调试）
 
 **一键启动（推荐）**
-- Windows: 双击 `启动程序_pyqt.bat`
+- Windows: 双击 `启动程序.bat`
   - 脚本会自动检测并安装 PySide6 依赖
   - 如果 PySide6 安装失败，会自动尝试 PyQt5 作为后备
 
 **手动运行**
 1. 安装依赖：`pip install -r requirements.txt`
-2. 运行程序：`python pyqt_app.py`
+2. 运行程序：`python -m src.main`
 
 > 💡 VS Code 提示：请确保"Python: Select Interpreter"选择的是已安装 PySide6 的解释器
 
@@ -367,7 +359,7 @@ A: 不会，日志采用独立线程异步写入，不会阻塞主界面
 1. 检查 Python 与 pip 环境
 2. 安装/校验 PyInstaller
 3. 打包 PySide6 版本程序
-4. 在 `dist/` 目录下生成 `图片异步上传工具_PySide6_v1.0.exe`
+4. 在 `dist/` 目录下生成 `ImageUploadTool_v<版本>/ImageUploadTool_v<版本>.exe`
 
 首次运行 exe 时将自动在可执行文件目录创建：
 - `logs/` 日志目录

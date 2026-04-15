@@ -1,0 +1,12 @@
+Looking in indexes: https://pypi.tuna.tsinghua.edu.cn/simple
+Collecting PyQt5
+  Downloading https://pypi.tuna.tsinghua.edu.cn/packages/56/d5/68eb9f3d19ce65df01b6c7b7a577ad3bbc9ab3a5dd3491a4756e71838ec9/PyQt5-5.15.11-cp38-abi3-win_amd64.whl (6.9 MB)
+     ---------------------------------------- 6.9/6.9 MB 4.6 MB/s  0:00:01
+Collecting PyQt5-sip<13,>=12.15 (from PyQt5)
+  Downloading https://pypi.tuna.tsinghua.edu.cn/packages/3f/36/e251623c12968730730512a9e5150430e36246afbe64894610190b896f61/pyqt5_sip-12.18.0-cp313-cp313-win_amd64.whl (58 kB)
+Collecting PyQt5-Qt5<5.16.0,>=5.15.2 (from PyQt5)
+  Downloading https://pypi.tuna.tsinghua.edu.cn/packages/37/97/5d3b222b924fa2ed4c2488925155cd0b03fd5d09ee1cfcf7c553c11c9f66/PyQt5_Qt5-5.15.2-py3-none-win_amd64.whl (50.1 MB)
+     ---------------------------------------- 50.1/50.1 MB 354.8 kB/s  0:01:06
+Installing collected packages: PyQt5-Qt5, PyQt5-sip, PyQt5
+
+Successfully installed PyQt5-5.15.11 PyQt5-Qt5-5.15.2 PyQt5-sip-12.18.0

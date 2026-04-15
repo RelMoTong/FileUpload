@@ -120,6 +120,8 @@ class TestConfigManager(unittest.TestCase):
         self.assertEqual(ftp_server['host'], '0.0.0.0')
         self.assertEqual(ftp_server['port'], 2121)
         self.assertEqual(ftp_server['username'], 'upload_user')
+        self.assertEqual(ftp_server['password'], '')
+        self.assertEqual(ftp_server['password_encrypted'], '')
         self.assertTrue(ftp_server['enable_passive'])
     
     def test_ftp_client_config(self):
@@ -129,6 +131,8 @@ class TestConfigManager(unittest.TestCase):
         
         ftp_client = config['ftp_client']
         self.assertEqual(ftp_client['port'], 21)
+        self.assertEqual(ftp_client['password'], '')
+        self.assertEqual(ftp_client['password_encrypted'], '')
         self.assertEqual(ftp_client['remote_path'], '/upload')
         self.assertEqual(ftp_client['timeout'], 30)
         self.assertTrue(ftp_client['passive_mode'])
@@ -155,6 +159,29 @@ class TestConfigManager(unittest.TestCase):
         # 默认字段应该被补全
         self.assertIn('target_folder', config)
         self.assertIn('enable_backup', config)
+
+    def test_config_merge_adds_encrypted_password_fields(self):
+        """测试旧版 FTP 配置会补全加密字段。"""
+        partial_config = {
+            "ftp_server": {
+                "host": "127.0.0.1",
+                "password": "legacy-password",
+            },
+            "ftp_client": {
+                "password": "legacy-client-password",
+            }
+        }
+
+        with open(self.config_path, 'w', encoding='utf-8') as f:
+            json.dump(partial_config, f)
+
+        manager = ConfigManager(self.config_path)
+        config = manager.load()
+
+        self.assertIn('password_encrypted', config['ftp_server'])
+        self.assertIn('password_encrypted', config['ftp_client'])
+        self.assertEqual(config['ftp_server']['password'], 'legacy-password')
+        self.assertEqual(config['ftp_client']['password'], 'legacy-client-password')
 
 
 if __name__ == '__main__':

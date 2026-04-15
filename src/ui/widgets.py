@@ -11,6 +11,7 @@ import os
 import subprocess
 import platform
 import ctypes
+import tempfile
 from ctypes import wintypes
 from datetime import datetime
 from typing import Optional, List, Tuple, Dict, Any, TYPE_CHECKING, Protocol
@@ -55,19 +56,25 @@ def send_to_trash(path: str) -> None:
     if rc != 0 or op.fAnyOperationsAborted:
         raise OSError(rc, "Send to Recycle Bin failed", path)
 
-try:
+if TYPE_CHECKING:
     from PySide6 import QtWidgets, QtCore, QtGui
     from PySide6.QtCore import Qt
+    from PySide6.QtCore import Signal, Slot
     QtEnum = Qt
-except ImportError:
-    from PyQt5 import QtWidgets, QtCore, QtGui  # type: ignore[import-not-found]
-    from PyQt5.QtCore import Qt  # type: ignore[import-not-found]
-    QtEnum = QtCore.Qt
+else:
+    try:
+        from PySide6 import QtWidgets, QtCore, QtGui
+        from PySide6.QtCore import Qt
+        QtEnum = Qt
+    except ImportError:
+        from PyQt5 import QtWidgets, QtCore, QtGui
+        from PyQt5.QtCore import Qt
+        QtEnum = QtCore.Qt
 
-# 兼容 PySide / PyQt 的信号定义
-Signal = getattr(QtCore, "Signal", None)
-if Signal is None:
-    Signal = getattr(QtCore, "pyqtSignal")  # type: ignore[attr-defined]
+    # 兼容 PySide / PyQt 的信号定义
+    Signal = getattr(QtCore, "Signal", None)
+    if Signal is None:
+        Signal = getattr(QtCore, "pyqtSignal")
 
 from src.core.i18n import t
 
@@ -83,13 +90,15 @@ if TYPE_CHECKING:
         bak_edit: QtWidgets.QLineEdit
         tgt_edit: QtWidgets.QLineEdit
         auto_delete_folder: str
+        auto_delete_folders: List[str]
         enable_auto_delete: bool
         auto_delete_threshold: int
         auto_delete_target_percent: int
         auto_delete_keep_days: int
         auto_delete_check_interval: int
+        last_config_save_error: str
         
-        def _save_config(self) -> None: ...
+        def _save_config(self) -> bool: ...
 
 
 class Toast(QtWidgets.QWidget):  # type: ignore[misc]
@@ -146,7 +155,7 @@ class Toast(QtWidgets.QWidget):  # type: ignore[misc]
     def showEvent(self, e: QtGui.QShowEvent) -> None:
         """显示事件，自动定位到父窗口右上角"""
         if self.parent():
-            p = self.parent()
+            p: QtWidgets.QWidget = self.parent()  # type: ignore[assignment]
             geo = p.geometry()
             self.adjustSize()
             x = geo.x() + geo.width() - self.width() - 16
@@ -406,9 +415,10 @@ class ScanWorker(QtCore.QObject):  # type: ignore[misc]
                             except Exception as e:  # pragma: no cover - OS errors
                                 self._emit(tr("disk_cleanup_cannot_access", file=file, error=e))
 
-                self._emit(
-                    tr("disk_cleanup_found_folder", count=folder_count, size_mb=folder_size / (1024 * 1024))
-                )
+                if not self._cancelled:
+                    self._emit(
+                        tr("disk_cleanup_found_folder", count=folder_count, size_mb=folder_size / (1024 * 1024))
+                    )
             except Exception as e:  # pragma: no cover
                 self._emit(tr("disk_cleanup_scan_fail", error=e))
 
@@ -458,6 +468,7 @@ class DeleteWorker(QtCore.QObject):  # type: ignore[misc]
 
 class FileListTable(QtWidgets.QTableWidget):  # type: ignore[misc]
     """文件列表表格"""
+    check_state_changed = Signal()  # v3.3.0：复选框状态变化信号
     
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
@@ -522,12 +533,24 @@ class FileListTable(QtWidgets.QTableWidget):  # type: ignore[misc]
         """打开文件所在文件夹"""
         try:
             if platform.system() == "Windows":
-                subprocess.run(['explorer', '/select,', file_path], check=False)
+                subprocess.run(
+                    ['explorer', '/select,', file_path],
+                    check=False,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                )
             elif platform.system() == "Darwin":  # macOS
-                subprocess.run(['open', '-R', file_path], check=False)
+                subprocess.run(
+                    ['open', '-R', file_path],
+                    check=False,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                )
             else:  # Linux
                 folder = os.path.dirname(file_path)
-                subprocess.run(['xdg-open', folder], check=False)
+                subprocess.run(
+                    ['xdg-open', folder],
+                    check=False,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                )
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "错误", f"无法打开文件夹：{e}")
     
@@ -579,6 +602,7 @@ class FileListTable(QtWidgets.QTableWidget):  # type: ignore[misc]
         """复选框状态改变"""
         if row < len(self.file_items):
             self.file_items[row].checked = (state == Qt.CheckState.Checked.value if hasattr(Qt.CheckState, 'Checked') else state == 2)
+        self.check_state_changed.emit()
     
     def get_checked_files(self) -> List[FileItem]:
         """获取已勾选的文件"""
@@ -592,6 +616,7 @@ class FileListTable(QtWidgets.QTableWidget):  # type: ignore[misc]
                 checkbox = widget.findChild(QtWidgets.QCheckBox)
                 if checkbox:
                     checkbox.setChecked(True)
+        self.check_state_changed.emit()
     
     def select_none(self) -> None:
         """取消全选"""
@@ -601,6 +626,7 @@ class FileListTable(QtWidgets.QTableWidget):  # type: ignore[misc]
                 checkbox = widget.findChild(QtWidgets.QCheckBox)
                 if checkbox:
                     checkbox.setChecked(False)
+        self.check_state_changed.emit()
 
 
 class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
@@ -625,17 +651,151 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.parent_window: Any = parent  # type: ignore[assignment]
         self.all_files: List[FileItem] = []  # 所有扫描到的文件
         self.scan_worker: Optional[ScanWorker] = None  # 扫描线程
+        self._hidden_auto_cleanup_folders: List[str] = []
         
         # 检查回收站可用性
         self.trash_available = trash_supported()
         
         # 延迟加载标志
         self._advanced_tab_created = False
-        self.tab_widget: Optional[QtWidgets.QTabWidget] = None
+        self.tab_widget: QtWidgets.QTabWidget
         
         self._build_ui()
+        self._apply_permission_state()
         if not self.trash_available:
             self._append_log_line("回收站不可用，删除将为永久删除。")
+
+    def _can_manage_cleanup(self) -> bool:
+        """当前窗口是否允许执行扫描、删除和保存清理配置。"""
+        role = getattr(self.parent_window, "current_role", "guest")
+        is_running = bool(getattr(self.parent_window, "is_running", False))
+        return role in ("user", "admin") and not is_running
+
+    def _get_cleanup_block_reason(self) -> str:
+        """返回当前不可操作时的阻止原因。"""
+        role = getattr(self.parent_window, "current_role", "guest")
+        if role == "guest":
+            return "请先登录后再使用磁盘清理功能。"
+        if bool(getattr(self.parent_window, "is_running", False)):
+            return "上传运行中，不能执行磁盘清理。"
+        return ""
+
+    def _ensure_cleanup_permission(self, action: str) -> bool:
+        """执行危险操作前做权限校验。"""
+        if self._can_manage_cleanup():
+            return True
+        reason = self._get_cleanup_block_reason() or "当前状态不允许执行该操作。"
+        self._append_log_line(f"{action}已阻止：{reason}")
+        QtWidgets.QMessageBox.warning(self, "权限不足", reason)
+        return False
+
+    def _apply_permission_state(self) -> None:
+        """根据主窗口角色和运行状态更新对话框操作权限。"""
+        can_manage = self._can_manage_cleanup()
+        editable_names = [
+            "cb_backup", "cb_target", "cb_monitor", "cb_custom",
+            "edit_backup", "edit_target", "edit_monitor", "edit_custom",
+            "btn_backup_browse", "btn_target_browse", "btn_monitor_browse", "btn_custom_browse",
+            "btn_scan", "btn_auto_config", "btn_delete_dropdown",
+            "cb_enable_auto", "btn_save_auto",
+        ]
+        for name in editable_names:
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setEnabled(can_manage)
+
+        if hasattr(self, "spin_threshold"):
+            auto_enabled = bool(getattr(self, "cb_enable_auto", None) and self.cb_enable_auto.isChecked())
+            self.spin_threshold.setEnabled(can_manage and auto_enabled)
+        if hasattr(self, "spin_target"):
+            auto_enabled = bool(getattr(self, "cb_enable_auto", None) and self.cb_enable_auto.isChecked())
+            self.spin_target.setEnabled(can_manage and auto_enabled)
+        if hasattr(self, "spin_check_interval"):
+            auto_enabled = bool(getattr(self, "cb_enable_auto", None) and self.cb_enable_auto.isChecked())
+            self.spin_check_interval.setEnabled(can_manage and auto_enabled)
+
+        for action_name in ("action_trash", "action_permanent"):
+            action = getattr(self, action_name, None)
+            if action is not None:
+                action.setEnabled(can_manage and (action_name != "action_trash" or self.trash_available))
+
+        if hasattr(self, "btn_delete"):
+            self.btn_delete.setEnabled(can_manage and bool(self.file_table.get_checked_files()))
+
+        if hasattr(self, "progress_label") and not can_manage:
+            self.progress_label.setText(self._get_cleanup_block_reason())
+
+    def _on_file_check_changed(self) -> None:
+        """v3.3.0：复选框状态变化时刷新删除按钮"""
+        if hasattr(self, 'btn_delete'):
+            can_manage = self._can_manage_cleanup()
+            self.btn_delete.setEnabled(can_manage and bool(self.file_table.get_checked_files()))
+
+    @staticmethod
+    def _format_folder_summary(folders: List[str]) -> str:
+        """格式化目录摘要文本。"""
+        if not folders:
+            return "未设置"
+        auto_path_text = "；".join(folders[:2])
+        if len(folders) > 2:
+            auto_path_text = f"{auto_path_text}..."
+        return auto_path_text
+
+    def _get_parent_auto_cleanup_folders(self) -> List[str]:
+        """读取父窗口当前生效的自动清理目录。"""
+        folders = self._get_saved_auto_cleanup_folders()
+        if not folders and self.parent_window and hasattr(self.parent_window, "auto_delete_folder"):
+            legacy_path = str(self.parent_window.auto_delete_folder or "").strip()
+            if legacy_path:
+                folders = [legacy_path]
+        return folders
+
+    def _refresh_auto_cleanup_card_from_parent(self) -> None:
+        """仅根据父窗口已保存状态刷新自动清理摘要。"""
+        if hasattr(self, "auto_status_label"):
+            auto_enabled = bool(
+                self.parent_window.enable_auto_delete
+                if self.parent_window and hasattr(self.parent_window, "enable_auto_delete")
+                else False
+            )
+            self._update_auto_cleanup_status_summary(auto_enabled)
+        if hasattr(self, "auto_path_label"):
+            self.auto_path_label.setText(
+                f"清理路径: {self._format_folder_summary(self._get_parent_auto_cleanup_folders())}"
+            )
+
+    @staticmethod
+    def _validate_folder_access(path: str, require_write: bool = False) -> str:
+        """通过实际访问验证目录权限，返回空字符串表示可用。"""
+        if not os.path.exists(path):
+            return "路径不存在"
+        if not os.path.isdir(path):
+            return "不是文件夹"
+
+        try:
+            with os.scandir(path) as iterator:
+                next(iterator, None)
+        except PermissionError:
+            return "无读取权限"
+        except OSError as exc:
+            return f"无法读取目录: {exc}"
+
+        if require_write:
+            temp_path = ""
+            try:
+                fd, temp_path = tempfile.mkstemp(prefix=".cleanup_probe_", dir=path)
+                os.close(fd)
+                os.remove(temp_path)
+            except PermissionError:
+                return "无删除/写入权限"
+            except OSError as exc:
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except OSError:
+                        pass
+                return f"无删除/写入权限: {exc}"
+        return ""
     
     def _apply_unified_stylesheet(self) -> None:
         """应用统一的样式表"""
@@ -1014,6 +1174,8 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         
         # 文件列表表格
         self.file_table = FileListTable()
+        # v3.3.0：复选框变化时刷新删除按钮状态
+        self.file_table.check_state_changed.connect(self._on_file_check_changed)
         layout.addWidget(self.file_table)
         
         # 表格操作按钮和统计
@@ -1130,20 +1292,17 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         # 如果切换到高级页且未创建，则创建
         if index == 1 and not self._advanced_tab_created:
             # 禁用更新减少重排
-            if self.tab_widget:
-                self.tab_widget.setUpdatesEnabled(False)
+            self.tab_widget.setUpdatesEnabled(False)
             
             try:
                 # 创建高级设置页
                 advanced_tab = self._create_advanced_settings_tab()
-                if self.tab_widget:
-                    self.tab_widget.removeTab(1)  # 移除占位页
-                    self.tab_widget.insertTab(1, advanced_tab, "高级设置")
-                    self._advanced_tab_created = True
+                self.tab_widget.removeTab(1)  # 移除占位页
+                self.tab_widget.insertTab(1, advanced_tab, "高级设置")
+                self._advanced_tab_created = True
             finally:
                 # 延迟恢复更新，避免抖动
-                if self.tab_widget:
-                    QtCore.QTimer.singleShot(0, lambda w=self.tab_widget: w.setUpdatesEnabled(True))
+                QtCore.QTimer.singleShot(0, lambda w=self.tab_widget: w.setUpdatesEnabled(True))
     
     def _on_filter_days_toggled(self, checked: bool) -> None:
         """过滤天数复选框切换"""
@@ -1164,43 +1323,150 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         # 从父窗口读取路径配置
         backup_path = self.parent_window.bak_edit.text() if self.parent_window and hasattr(self.parent_window, 'bak_edit') else ""
         target_path = self.parent_window.tgt_edit.text() if self.parent_window and hasattr(self.parent_window, 'tgt_edit') else ""
-        monitor_path = self.parent_window.auto_delete_folder if self.parent_window and hasattr(self.parent_window, 'auto_delete_folder') else ""
+        auto_folders = self._get_saved_auto_cleanup_folders()
+        auto_folder_set = set(auto_folders)
+        known_paths = {backup_path, target_path}
+        extra_paths = [path for path in auto_folders if path not in known_paths]
+
+        monitor_path = ""
+        legacy_monitor_path = ""
+        if self.parent_window and hasattr(self.parent_window, 'auto_delete_folder'):
+            legacy_monitor_path = self.parent_window.auto_delete_folder.strip()
+
+        if legacy_monitor_path and legacy_monitor_path not in known_paths:
+            if legacy_monitor_path in extra_paths:
+                monitor_path = legacy_monitor_path
+                extra_paths = [path for path in extra_paths if path != legacy_monitor_path]
+            elif not auto_folders:
+                monitor_path = legacy_monitor_path
+
+        if not monitor_path and extra_paths:
+            monitor_path = extra_paths.pop(0)
+
+        custom_path = extra_paths[0] if extra_paths else ""
+        self._hidden_auto_cleanup_folders = extra_paths[1:] if len(extra_paths) > 1 else []
+        backup_checked = backup_path in auto_folder_set if auto_folders else bool(backup_path)
+        target_checked = target_path in auto_folder_set if auto_folders else bool(target_path)
+        monitor_checked = monitor_path in auto_folder_set if auto_folders else bool(monitor_path)
+        custom_checked = custom_path in auto_folder_set if auto_folders else bool(custom_path)
         
         # 备份文件夹行
-        self.cb_backup, self.edit_backup, backup_btns = self._create_folder_row("备份目录", backup_path, True)
+        self.cb_backup, self.edit_backup, backup_btns = self._create_folder_row("备份目录", backup_path, backup_checked)
         folder_layout.addLayout(self._create_folder_form_row(self.cb_backup, self.edit_backup, backup_btns))
-        
+        self.btn_backup_browse = backup_btns[0]
+        self.btn_backup_open = backup_btns[1]
+        self.btn_backup_copy = backup_btns[2]
+
         # 目标文件夹行
-        self.cb_target, self.edit_target, target_btns = self._create_folder_row("目标目录", target_path, False)
+        self.cb_target, self.edit_target, target_btns = self._create_folder_row("目标目录", target_path, target_checked)
         folder_layout.addLayout(self._create_folder_form_row(self.cb_target, self.edit_target, target_btns))
-        
+        self.btn_target_browse = target_btns[0]
+        self.btn_target_open = target_btns[1]
+        self.btn_target_copy = target_btns[2]
+
         # 监控文件夹行
-        self.cb_monitor, self.edit_monitor, monitor_btns = self._create_folder_row("监控目录", monitor_path, False)
+        self.cb_monitor, self.edit_monitor, monitor_btns = self._create_folder_row("监控目录", monitor_path, monitor_checked)
         folder_layout.addLayout(self._create_folder_form_row(self.cb_monitor, self.edit_monitor, monitor_btns))
         self.btn_monitor_browse = monitor_btns[0]
         self.btn_monitor_open = monitor_btns[1]
+        self.btn_monitor_copy = monitor_btns[2]
         
         # 自定义文件夹行
-        self.cb_custom, self.edit_custom, custom_btns = self._create_folder_row("自定义目录", "", False)
+        self.cb_custom, self.edit_custom, custom_btns = self._create_folder_row("自定义目录", custom_path, custom_checked)
         folder_layout.addLayout(self._create_folder_form_row(self.cb_custom, self.edit_custom, custom_btns))
         self.btn_custom_browse = custom_btns[0]
         self.btn_custom_open = custom_btns[1]
+        self.btn_custom_copy = custom_btns[2]
+
+        if self._hidden_auto_cleanup_folders:
+            hidden_hint = QtWidgets.QLabel(
+                f"另有 {len(self._hidden_auto_cleanup_folders)} 个自动清理目录已保留；当前窗口不会覆盖这些隐藏目录。"
+            )
+            hidden_hint.setProperty("class", "hint")
+            hidden_hint.setWordWrap(True)
+            folder_layout.addWidget(hidden_hint)
         
         return folder_group
+
+    def _get_saved_auto_cleanup_folders(self) -> List[str]:
+        """读取新版多目录自动清理配置。"""
+        if not self.parent_window:
+            return []
+
+        folders: List[str] = []
+        raw_folders = getattr(self.parent_window, "auto_delete_folders", [])
+        if isinstance(raw_folders, list):
+            for path in raw_folders:
+                if isinstance(path, str):
+                    path = path.strip()
+                    if path and path not in folders:
+                        folders.append(path)
+
+        return folders
+
+    def _collect_selected_folders(self, include_hidden: bool = False) -> List[str]:
+        """收集当前勾选的目录，保持顺序并去重。"""
+        folders_to_clean: List[str] = []
+        folder_rows = [
+            ("cb_backup", "edit_backup"),
+            ("cb_target", "edit_target"),
+            ("cb_monitor", "edit_monitor"),
+            ("cb_custom", "edit_custom"),
+        ]
+        for cb_name, edit_name in folder_rows:
+            cb = getattr(self, cb_name, None)
+            edit = getattr(self, edit_name, None)
+            if cb is None or edit is None or not cb.isChecked():
+                continue
+            path = edit.text().strip()
+            if path and path not in folders_to_clean:
+                folders_to_clean.append(path)
+        if include_hidden:
+            for path in self._hidden_auto_cleanup_folders:
+                cleaned = path.strip()
+                if cleaned and cleaned not in folders_to_clean:
+                    folders_to_clean.append(cleaned)
+        return folders_to_clean
+
+    def _update_folder_action_buttons(
+        self,
+        cb: QtWidgets.QCheckBox,
+        edit: QtWidgets.QLineEdit,
+        btn_open: QtWidgets.QPushButton,
+        btn_copy: QtWidgets.QPushButton,
+    ) -> None:
+        """根据勾选和路径内容刷新操作按钮状态。"""
+        enabled = cb.isChecked() and bool(edit.text().strip())
+        btn_open.setEnabled(enabled)
+        btn_copy.setEnabled(enabled)
+
+    def _update_auto_cleanup_path_summary(self, folders_to_clean: Optional[List[str]] = None) -> None:
+        """更新自动清理卡片上的路径摘要。"""
+        if not hasattr(self, 'auto_path_label'):
+            return
+
+        if folders_to_clean is None:
+            folders_to_clean = self._collect_selected_folders()
+        self.auto_path_label.setText(f"清理路径: {self._format_folder_summary(folders_to_clean)}")
+
+    def _update_auto_cleanup_status_summary(self, enabled: bool) -> None:
+        """更新自动清理卡片上的启用状态摘要。"""
+        if hasattr(self, 'auto_status_label'):
+            status_text = "已启用" if enabled else "未启用"
+            self.auto_status_label.setText(f"当前状态: {status_text}")
     
     def _create_folder_row(self, label: str, path: str, checked: bool) -> Tuple[QtWidgets.QCheckBox, QtWidgets.QLineEdit, List[QtWidgets.QPushButton]]:
         """创建单个文件夹选择行的组件"""
-        # 复选框
+        # 复选框 - 始终可用，让用户自行选择是否启用该目录
         cb = QtWidgets.QCheckBox(label)
-        cb.setChecked(checked if path else False)
-        cb.setEnabled(bool(path) or label in ["监控目录", "自定义目录"])
+        cb.setChecked(bool(checked))
         cb.toggled.connect(lambda checked, e=None: self._on_folder_toggled(cb, e))
         
-        # 只读路径输入框
+        # 路径输入框（可直接输入也可浏览选择）
         edit = QtWidgets.QLineEdit(path)
-        edit.setReadOnly(True)
-        edit.setPlaceholderText(f"选择{label}...")
+        edit.setPlaceholderText(f"选择{label}或直接输入路径...")
         edit.setEnabled(cb.isChecked())
+        edit.editingFinished.connect(self._sync_auto_cleanup_folders)
         
         # 按钮组：浏览、打开、复制
         btn_browse = QtWidgets.QPushButton("...")
@@ -1223,6 +1489,10 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         btn_copy.setProperty("variant", "tool")
         btn_copy.setEnabled(cb.isChecked() and bool(edit.text()))
         btn_copy.clicked.connect(lambda: self._copy_path(edit.text()))
+        edit.textChanged.connect(
+            lambda _text, checkbox=cb, line_edit=edit, open_btn=btn_open, copy_btn=btn_copy:
+            self._update_folder_action_buttons(checkbox, line_edit, open_btn, copy_btn)
+        )
         
         return cb, edit, [btn_browse, btn_open, btn_copy]
     
@@ -1243,27 +1513,39 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         # 找到对应的输入框和按钮
         if cb == self.cb_backup:
             self.edit_backup.setEnabled(checked)
+            self.btn_backup_browse.setEnabled(checked)
+            self._update_folder_action_buttons(self.cb_backup, self.edit_backup, self.btn_backup_open, self.btn_backup_copy)
         elif cb == self.cb_target:
             self.edit_target.setEnabled(checked)
+            self.btn_target_browse.setEnabled(checked)
+            self._update_folder_action_buttons(self.cb_target, self.edit_target, self.btn_target_open, self.btn_target_copy)
         elif cb == self.cb_monitor:
             self.edit_monitor.setEnabled(checked)
             self.btn_monitor_browse.setEnabled(checked)
-            self.btn_monitor_open.setEnabled(checked and bool(self.edit_monitor.text()))
+            self._update_folder_action_buttons(self.cb_monitor, self.edit_monitor, self.btn_monitor_open, self.btn_monitor_copy)
         elif cb == self.cb_custom:
             self.edit_custom.setEnabled(checked)
             self.btn_custom_browse.setEnabled(checked)
-            self.btn_custom_open.setEnabled(checked and bool(self.edit_custom.text()))
+            self._update_folder_action_buttons(self.cb_custom, self.edit_custom, self.btn_custom_open, self.btn_custom_copy)
+        self._sync_auto_cleanup_folders()
     
     def _browse_folder(self, edit: QtWidgets.QLineEdit) -> None:
         """浏览选择文件夹"""
+        if not self._ensure_cleanup_permission("编辑清理路径"):
+            return
         path = QtWidgets.QFileDialog.getExistingDirectory(self, "选择文件夹")
         if path:
             edit.setText(path)
             # 更新按钮状态（根据编辑框找到对应的按钮组）
-            if edit == self.edit_monitor:
-                self.btn_monitor_open.setEnabled(True)
+            if edit == self.edit_backup:
+                self._update_folder_action_buttons(self.cb_backup, self.edit_backup, self.btn_backup_open, self.btn_backup_copy)
+            elif edit == self.edit_target:
+                self._update_folder_action_buttons(self.cb_target, self.edit_target, self.btn_target_open, self.btn_target_copy)
+            elif edit == self.edit_monitor:
+                self._update_folder_action_buttons(self.cb_monitor, self.edit_monitor, self.btn_monitor_open, self.btn_monitor_copy)
             elif edit == self.edit_custom:
-                self.btn_custom_open.setEnabled(True)
+                self._update_folder_action_buttons(self.cb_custom, self.edit_custom, self.btn_custom_open, self.btn_custom_copy)
+            self._sync_auto_cleanup_folders()
     
     def _open_folder_in_explorer(self, path: str) -> None:
         """在文件管理器中打开文件夹"""
@@ -1274,9 +1556,17 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             if platform.system() == "Windows":
                 os.startfile(path)
             elif platform.system() == "Darwin":
-                subprocess.run(['open', path], check=False)
+                subprocess.run(
+                    ['open', path],
+                    check=False,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                )
             else:
-                subprocess.run(['xdg-open', path], check=False)
+                subprocess.run(
+                    ['xdg-open', path],
+                    check=False,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                )
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "错误", f"无法打开文件夹：{e}")
     
@@ -1392,16 +1682,16 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.auto_status_label.setStyleSheet("color: #757575; font-size: 9pt;")
         layout.addWidget(self.auto_status_label)
 
-        auto_path = self.parent_window.auto_delete_folder if self.parent_window and hasattr(self.parent_window, 'auto_delete_folder') else ""
-        self.auto_path_label = QtWidgets.QLabel(f"监控路径: {auto_path or '未设置'}")
+        auto_paths = self._get_parent_auto_cleanup_folders()
+        self.auto_path_label = QtWidgets.QLabel(f"清理路径: {self._format_folder_summary(auto_paths)}")
         self.auto_path_label.setStyleSheet("color: #757575; font-size: 9pt;")
         layout.addWidget(self.auto_path_label)
         
         # 配置按钮
-        btn_config = QtWidgets.QPushButton("配置...")
-        btn_config.setToolTip("打开自动清理配置窗口")
-        btn_config.clicked.connect(self._open_auto_cleanup_config)
-        layout.addWidget(btn_config)
+        self.btn_auto_config = QtWidgets.QPushButton("配置...")
+        self.btn_auto_config.setToolTip("打开自动清理配置窗口")
+        self.btn_auto_config.clicked.connect(self._open_auto_cleanup_config)
+        layout.addWidget(self.btn_auto_config)
         
         return card
     
@@ -1459,7 +1749,38 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         config_grid.addWidget(interval_label, 1, 0)
         config_grid.addWidget(self.spin_check_interval, 1, 1)
         
+        # 保留天数
+        keep_days_label = QtWidgets.QLabel("保留天数")
+        self.spin_keep_days = QtWidgets.QSpinBox()
+        self.spin_keep_days.setRange(0, 365)
+        auto_keep_days = self.parent_window.auto_delete_keep_days if self.parent_window and hasattr(self.parent_window, 'auto_delete_keep_days') else 0
+        self.spin_keep_days.setValue(auto_keep_days)
+        self.spin_keep_days.setSuffix(" 天")
+        self.spin_keep_days.setToolTip("0 = 不限制，仅清理修改时间超过指定天数的文件")
+        self.spin_keep_days.setEnabled(auto_enabled)
+        config_grid.addWidget(keep_days_label, 1, 2)
+        config_grid.addWidget(self.spin_keep_days, 1, 3)
+        
+        # 格式过滤
+        formats_label = QtWidgets.QLabel("格式过滤")
+        self.edit_formats = QtWidgets.QLineEdit()
+        auto_formats = self.parent_window.auto_delete_formats if self.parent_window and hasattr(self.parent_window, 'auto_delete_formats') else []
+        self.edit_formats.setText(','.join(auto_formats) if auto_formats else '')
+        self.edit_formats.setPlaceholderText("留空=不限制格式，例: .jpg,.png,.bmp")
+        self.edit_formats.setToolTip("逗号分隔的文件后缀名，留空表示清理所有格式")
+        self.edit_formats.setEnabled(auto_enabled)
+        config_grid.addWidget(formats_label, 2, 0)
+        config_grid.addWidget(self.edit_formats, 2, 1, 1, 3)
+        
         auto_layout.addLayout(config_grid)
+        
+        # v3.3.0：删除模式（回收站/永久删除）
+        self.cb_auto_use_trash = QtWidgets.QCheckBox("使用回收站删除（更安全）")
+        auto_use_trash = self.parent_window.auto_delete_use_trash if self.parent_window and hasattr(self.parent_window, 'auto_delete_use_trash') else True
+        self.cb_auto_use_trash.setChecked(auto_use_trash)
+        self.cb_auto_use_trash.setEnabled(auto_enabled)
+        self.cb_auto_use_trash.setToolTip("勾选后文件将移至回收站而非永久删除，可在回收站中恢复")
+        auto_layout.addWidget(self.cb_auto_use_trash)
         
         # 说明文本
         auto_hint = QtWidgets.QLabel(tr("disk_cleanup_auto_hint"))
@@ -1471,9 +1792,11 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         btn_save_auto = QtWidgets.QPushButton(tr("disk_cleanup_auto_save"))
         btn_save_auto.setProperty("class", "Secondary")
         btn_save_auto.clicked.connect(self._save_auto_config)
+        self.btn_save_auto = btn_save_auto
         auto_layout.addWidget(btn_save_auto)
         
         auto_box.setContentLayout(auto_layout)
+        self._apply_permission_state()
         return auto_box
     
     def _create_button_layout(self) -> QtWidgets.QHBoxLayout:
@@ -1509,16 +1832,16 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         
         self.btn_delete.clicked.connect(self._delete_files)
         
-        btn_delete_dropdown = QtWidgets.QPushButton("▼")
-        btn_delete_dropdown.setMaximumWidth(30)
-        btn_delete_dropdown.setMinimumHeight(36)
-        btn_delete_dropdown.setProperty("class", "Danger")
-        btn_delete_dropdown.setProperty("split", "right")
-        btn_delete_dropdown.setProperty("hasMenu", True)
-        btn_delete_dropdown.setMenu(delete_mode_menu)
-        
+        self.btn_delete_dropdown = QtWidgets.QPushButton("▼")
+        self.btn_delete_dropdown.setMaximumWidth(30)
+        self.btn_delete_dropdown.setMinimumHeight(36)
+        self.btn_delete_dropdown.setProperty("class", "Danger")
+        self.btn_delete_dropdown.setProperty("split", "right")
+        self.btn_delete_dropdown.setProperty("hasMenu", True)
+        self.btn_delete_dropdown.setMenu(delete_mode_menu)
+
         delete_group.addWidget(self.btn_delete)
-        delete_group.addWidget(btn_delete_dropdown)
+        delete_group.addWidget(self.btn_delete_dropdown)
         button_layout.addLayout(delete_group)
         
         # 显示当前删除模式（灰色小标签）
@@ -1570,12 +1893,18 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         path = QtWidgets.QFileDialog.getExistingDirectory(self, tr("disk_cleanup_dialog_custom_folder"))
         if path:
             self.edit_custom.setText(path)
+            self._sync_auto_cleanup_folders()
     
     def _choose_monitor(self) -> None:
         """选择监控文件夹"""
         path = QtWidgets.QFileDialog.getExistingDirectory(self, tr("disk_cleanup_dialog_monitor_folder"))
         if path:
             self.edit_monitor.setText(path)
+            self._sync_auto_cleanup_folders()
+
+    def _sync_auto_cleanup_folders(self) -> None:
+        """同步基础设置中勾选的扫描目录到自动清理监控列表"""
+        self._update_auto_cleanup_path_summary()
     
     def _on_format_preset_changed(self, index: int) -> None:
         """预设格式下拉改变"""
@@ -1617,6 +1946,9 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
     
     def _open_auto_cleanup_config(self) -> None:
         """打开自动清理配置独立窗口"""
+        if not self._ensure_cleanup_permission("打开自动清理配置"):
+            return
+
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("自动清理配置")
         dialog.setModal(True)
@@ -1631,7 +1963,10 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         # 底部按钮
         btn_layout = QtWidgets.QHBoxLayout()
         btn_save = QtWidgets.QPushButton("保存")
-        btn_save.clicked.connect(lambda: [self._save_auto_config(), dialog.accept()])
+        def _on_save_clicked(_dialog: QtWidgets.QDialog = dialog) -> None:
+            if self._save_auto_config():
+                _dialog.accept()
+        btn_save.clicked.connect(_on_save_clicked)
         btn_cancel = QtWidgets.QPushButton("取消")
         btn_cancel.clicked.connect(dialog.reject)
         btn_layout.addStretch()
@@ -1640,86 +1975,118 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         layout.addLayout(btn_layout)
         
         dialog.exec()
-        
-        # 更新状态标签
-        auto_enabled = self.cb_enable_auto.isChecked() if hasattr(self, 'cb_enable_auto') else False
-        status_text = "已启用" if auto_enabled else "未启用"
-        if hasattr(self, 'auto_status_label'):
-            self.auto_status_label.setText(f"当前状态: {status_text}")
-        if hasattr(self, 'auto_path_label'):
-            self.auto_path_label.setText(f"监控路径: {self.edit_monitor.text().strip() or '未设置'}")
+        self._refresh_auto_cleanup_card_from_parent()
     
     def _on_auto_clean_toggled(self, checked: bool) -> None:
         """自动清理开关切换"""
         self.spin_threshold.setEnabled(checked)
         self.spin_target.setEnabled(checked)
         self.spin_check_interval.setEnabled(checked)
+        if hasattr(self, 'spin_keep_days'):
+            self.spin_keep_days.setEnabled(checked)
+        if hasattr(self, 'edit_formats'):
+            self.edit_formats.setEnabled(checked)
+        if hasattr(self, 'cb_auto_use_trash'):
+            self.cb_auto_use_trash.setEnabled(checked)
+        self._apply_permission_state()
     
-    def _save_auto_config(self) -> None:
-        """保存自动清理配置到父窗口"""
+    def _save_auto_config(self) -> bool:
+        """保存自动清理配置到父窗口，返回 True 表示保存成功"""
         if not self.parent_window:
-            return
+            return False
+        if not self._ensure_cleanup_permission("保存自动清理配置"):
+            return False
         
         try:
-            monitor_path = self.edit_monitor.text().strip()
+            folders_to_clean = self._collect_selected_folders(include_hidden=True)
+
             if self.cb_enable_auto.isChecked():
-                if not monitor_path:
+                if not folders_to_clean:
                     QtWidgets.QMessageBox.warning(
                         self,
                         "配置无效",
-                        "已启用自动清理，但未设置监控文件夹路径。"
+                        "已启用自动清理，但未选择清理目录。"
                     )
-                    return
-                if not os.path.exists(monitor_path):
+                    return False
+                invalid_reasons = []
+                for path in folders_to_clean:
+                    reason = self._validate_folder_access(path, require_write=True)
+                    if reason:
+                        invalid_reasons.append(f"{path}：{reason}")
+                if invalid_reasons:
                     QtWidgets.QMessageBox.warning(
                         self,
                         "配置无效",
-                        f"监控文件夹不存在：\n{monitor_path}"
+                        "以下清理路径不可用：\n\n" + "\n".join(invalid_reasons)
                     )
-                    return
-                if not os.path.isdir(monitor_path):
-                    QtWidgets.QMessageBox.warning(
-                        self,
-                        "配置无效",
-                        f"监控路径不是文件夹：\n{monitor_path}"
-                    )
-                    return
-                if not os.access(monitor_path, os.R_OK):
-                    QtWidgets.QMessageBox.warning(
-                        self,
-                        "配置无效",
-                        f"监控文件夹无读取权限：\n{monitor_path}"
-                    )
-                    return
-                if not os.access(monitor_path, os.W_OK):
-                    QtWidgets.QMessageBox.warning(
-                        self,
-                        "配置无效",
-                        f"监控文件夹无删除/写入权限：\n{monitor_path}"
-                    )
-                    return
+                    return False
                 if self.spin_target.value() >= self.spin_threshold.value():
                     QtWidgets.QMessageBox.warning(
                         self,
                         "配置无效",
                         "目标阈值必须小于触发阈值，请调整配置。",
                     )
-                    return
+                    return False
 
-            # 更新父窗口的自动删除配置
-            self.parent_window.enable_auto_delete = self.cb_enable_auto.isChecked()
-            self.parent_window.auto_delete_folder = monitor_path  # 保存监控文件夹路径
-            self.parent_window.auto_delete_threshold = self.spin_threshold.value()
-            self.parent_window.auto_delete_target_percent = self.spin_target.value()
-            self.parent_window.auto_delete_check_interval = self.spin_check_interval.value()
+            # 解析格式过滤输入
+            formats_text = self.edit_formats.text().strip() if hasattr(self, 'edit_formats') else ''
+            formats_list = [f.strip() for f in formats_text.split(',') if f.strip()] if formats_text else []
+
+            cleanup_config = {
+                "enable_auto_delete": self.cb_enable_auto.isChecked(),
+                "auto_delete_folders": folders_to_clean,
+                "auto_delete_threshold": self.spin_threshold.value(),
+                "auto_delete_target_percent": self.spin_target.value(),
+                "auto_delete_check_interval": self.spin_check_interval.value(),
+                "auto_delete_use_trash": self.cb_auto_use_trash.isChecked(),
+                "auto_delete_keep_days": self.spin_keep_days.value() if hasattr(self, 'spin_keep_days') else 0,
+                "auto_delete_formats": formats_list,
+            }
             
-            # 保存配置到文件
-            self.parent_window._save_config()
+            save_result = True
+            if hasattr(self.parent_window, "_save_auto_cleanup_config"):
+                save_result = bool(self.parent_window._save_auto_cleanup_config(cleanup_config))
+            else:
+                snapshot = {
+                    "enable_auto_delete": getattr(self.parent_window, "enable_auto_delete", False),
+                    "auto_delete_folders": list(getattr(self.parent_window, "auto_delete_folders", []) or []),
+                    "auto_delete_folder": getattr(self.parent_window, "auto_delete_folder", ""),
+                    "auto_delete_threshold": getattr(self.parent_window, "auto_delete_threshold", 80),
+                    "auto_delete_target_percent": getattr(self.parent_window, "auto_delete_target_percent", 40),
+                    "auto_delete_check_interval": getattr(self.parent_window, "auto_delete_check_interval", 300),
+                }
+                self.parent_window.enable_auto_delete = cleanup_config["enable_auto_delete"]
+                self.parent_window.auto_delete_folders = list(folders_to_clean)
+                self.parent_window.auto_delete_folder = folders_to_clean[0] if folders_to_clean else ""
+                self.parent_window.auto_delete_threshold = cleanup_config["auto_delete_threshold"]
+                self.parent_window.auto_delete_target_percent = cleanup_config["auto_delete_target_percent"]
+                self.parent_window.auto_delete_check_interval = cleanup_config["auto_delete_check_interval"]
+                if hasattr(self.parent_window, "_save_config"):
+                    save_result = bool(self.parent_window._save_config())
+                if not save_result:
+                    self.parent_window.enable_auto_delete = snapshot["enable_auto_delete"]
+                    self.parent_window.auto_delete_folders = snapshot["auto_delete_folders"]
+                    self.parent_window.auto_delete_folder = snapshot["auto_delete_folder"]
+                    self.parent_window.auto_delete_threshold = snapshot["auto_delete_threshold"]
+                    self.parent_window.auto_delete_target_percent = snapshot["auto_delete_target_percent"]
+                    self.parent_window.auto_delete_check_interval = snapshot["auto_delete_check_interval"]
+            if not save_result:
+                error_message = getattr(self.parent_window, "last_config_save_error", "").strip() or "配置文件写入失败。"
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "保存失败",
+                    f"自动清理配置未写入配置文件：\n\n{error_message}",
+                )
+                return False
+
+            self._update_auto_cleanup_status_summary(self.cb_enable_auto.isChecked())
+            self._refresh_auto_cleanup_card_from_parent()
             
             # 显示成功消息
             enabled_text = tr("word_yes") if self.cb_enable_auto.isChecked() else tr("word_no")
+            monitor_text = "；".join(folders_to_clean) if folders_to_clean else tr("disk_cleanup_not_set")
             self._append_log_line(
-                f"自动清理配置已保存：启用={enabled_text}，监控={monitor_path or tr('disk_cleanup_not_set')}，触发={self.spin_threshold.value()}%，目标={self.spin_target.value()}%"
+                f"自动清理配置已保存：启用={enabled_text}，清理路径={monitor_text}，触发={self.spin_threshold.value()}%，目标={self.spin_target.value()}%"
             )
             QtWidgets.QMessageBox.information(
                 self,
@@ -1727,18 +2094,20 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
                 tr(
                     "disk_cleanup_config_saved_body",
                     enabled=enabled_text,
-                    monitor=self.edit_monitor.text().strip() or tr("disk_cleanup_not_set"),
+                    monitor=monitor_text,
                     threshold=self.spin_threshold.value(),
                     target=self.spin_target.value(),
                     interval=self.spin_check_interval.value(),
                 ),
             )
+            return True
         except Exception as e:
             QtWidgets.QMessageBox.warning(
                 self,
                 tr("disk_cleanup_config_save_fail_title"),
                 tr("disk_cleanup_config_save_fail_body", error=e),
             )
+            return False
     
     def _filter_files(self) -> None:
         """根据搜索框过滤文件（与快捷筛选结合）"""
@@ -1788,6 +2157,9 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
     
     def _scan_files(self) -> None:
         """扫描符合条件的文件（异步线程）"""
+        if not self._ensure_cleanup_permission("扫描文件"):
+            return
+
         # 更新摘要
         self._update_summary()
         self._clear_log()
@@ -1824,14 +2196,9 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         valid_folders: List[str] = []
         invalid_reasons: List[str] = []
         for path in folders_to_scan:
-            if not os.path.exists(path):
-                invalid_reasons.append(f"{path}：路径不存在")
-                continue
-            if not os.path.isdir(path):
-                invalid_reasons.append(f"{path}：不是文件夹")
-                continue
-            if not os.access(path, os.R_OK):
-                invalid_reasons.append(f"{path}：无读取权限")
+            reason = self._validate_folder_access(path, require_write=False)
+            if reason:
+                invalid_reasons.append(f"{path}：{reason}")
                 continue
             valid_folders.append(path)
 
@@ -1854,7 +2221,9 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             if cb.isChecked():
                 formats_to_scan.append(ext.lower())
 
-        custom_format = self.edit_custom_format.text().strip()
+        # edit_custom_format 属于高级设置 Tab，延迟加载，需用 getattr 安全访问
+        edit_custom_format = getattr(self, 'edit_custom_format', None)
+        custom_format = edit_custom_format.text().strip() if edit_custom_format is not None else ""
         if custom_format:
             for ext in custom_format.split(','):
                 ext = ext.strip()
@@ -1902,6 +2271,9 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
     
     def _delete_files(self) -> None:
         """删除选中的文件（异步线程，支持回收站）"""
+        if not self._ensure_cleanup_permission("删除文件"):
+            return
+
         checked_files = self.file_table.get_checked_files()
         if not checked_files:
             QtWidgets.QMessageBox.information(self, "提示", "没有选中任何文件！")
@@ -2005,8 +2377,9 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.progress_label.setText(f"扫描完成，找到 {len(self.all_files)} 个文件")
         self._append_log_line(f"扫描完成，找到 {len(self.all_files)} 个文件。")
 
-        self.btn_scan.setEnabled(True)
-        self.btn_delete.setEnabled(len(self.all_files) > 0)
+        can_manage = self._can_manage_cleanup()
+        self.btn_scan.setEnabled(can_manage)
+        self.btn_delete.setEnabled(can_manage and bool(self.file_table.get_checked_files()))
 
     def _on_delete_progress_value(self, current: int, total: int) -> None:
         """删除进度更新"""
@@ -2048,8 +2421,9 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         )
         self.progress_label.setText(f"删除完成，成功 {deleted_count} 个")
 
-        self.btn_scan.setEnabled(True)
-        self.btn_delete.setEnabled(len(self.all_files) > 0)
+        can_manage = self._can_manage_cleanup()
+        self.btn_scan.setEnabled(can_manage)
+        self.btn_delete.setEnabled(can_manage and bool(self.file_table.get_checked_files()))
 
         QtWidgets.QMessageBox.information(
             self,

@@ -301,7 +301,7 @@ def main():
         print("\n下一步:")
         print("  1. 查看任务书: docs/开发文档/v2.0_FTP功能设计任务书.md")
         print("  2. 开始开发 FTP 核心模块: ftp_protocol.py")
-        print("  3. 集成到主程序: pyqt_app.py")
+        print("  3. 集成到主程序: src.main")
     else:
         print("\n❌ 部分测试失败，请检查错误信息。")
 

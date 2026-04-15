@@ -4,7 +4,10 @@
 
 提供路径处理、资源访问等通用功能
 """
+import base64
+import ctypes
 import sys
+from ctypes import wintypes
 from pathlib import Path
 
 # 版本号单一来源
@@ -26,7 +29,7 @@ def get_app_dir() -> Path:
     if getattr(sys, 'frozen', False):
         # PyInstaller 打包后，返回 exe 所在目录
         return Path(sys.executable).parent
-    # 开发环境，返回项目根目录（pyqt_app.py 所在目录）
+    # 开发环境，返回项目根目录
     return Path(__file__).parent.parent.parent
 
 
@@ -55,7 +58,7 @@ def get_app_version() -> str:
     """获取应用程序版本号
     
     Returns:
-        str: 版本号，如 "3.1.1"
+        str: 版本号，如 "3.2.0"
     """
     return __version__
 
@@ -67,3 +70,97 @@ def get_app_title() -> str:
         str: 应用程序标题
     """
     return f"图片异步上传工具 v{get_app_version()}"
+
+
+_DPAPI_PREFIX = "dpapi:"
+
+
+class _DATA_BLOB(ctypes.Structure):
+    _fields_ = [
+        ("cbData", wintypes.DWORD),
+        ("pbData", ctypes.POINTER(ctypes.c_byte)),
+    ]
+
+
+def _create_data_blob(data: bytes) -> tuple[_DATA_BLOB, object]:
+    """将 bytes 转为 Windows DPAPI 需要的 DATA_BLOB。"""
+    buffer = ctypes.create_string_buffer(data)
+    blob = _DATA_BLOB(
+        len(data),
+        ctypes.cast(buffer, ctypes.POINTER(ctypes.c_byte)),
+    )
+    return blob, buffer
+
+
+def protect_secret(secret: str) -> str:
+    """使用 Windows DPAPI 加密敏感信息。
+
+    在非 Windows 平台上回退为原文，避免破坏兼容性。
+    """
+    if not secret:
+        return ""
+    if sys.platform != "win32":
+        return secret
+
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+    blob_in, buffer_in = _create_data_blob(secret.encode("utf-8"))
+    blob_out = _DATA_BLOB()
+
+    if not crypt32.CryptProtectData(
+        ctypes.byref(blob_in),
+        None,
+        None,
+        None,
+        None,
+        0x01,  # CRYPTPROTECT_UI_FORBIDDEN
+        ctypes.byref(blob_out),
+    ):
+        raise ctypes.WinError()
+
+    try:
+        encrypted = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+        return _DPAPI_PREFIX + base64.b64encode(encrypted).decode("ascii")
+    finally:
+        if blob_out.pbData:
+            kernel32.LocalFree(blob_out.pbData)
+
+
+def unprotect_secret(secret: str) -> str:
+    """解密由 protect_secret 生成的密文。"""
+    if not secret:
+        return ""
+    if not secret.startswith(_DPAPI_PREFIX):
+        return secret
+    if sys.platform != "win32":
+        return ""
+
+    try:
+        encrypted = base64.b64decode(secret[len(_DPAPI_PREFIX):])
+    except Exception:
+        return ""
+
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+    blob_in, buffer_in = _create_data_blob(encrypted)
+    blob_out = _DATA_BLOB()
+
+    if not crypt32.CryptUnprotectData(
+        ctypes.byref(blob_in),
+        None,
+        None,
+        None,
+        None,
+        0x01,  # CRYPTPROTECT_UI_FORBIDDEN
+        ctypes.byref(blob_out),
+    ):
+        return ""
+
+    try:
+        decrypted = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+        return decrypted.decode("utf-8")
+    except Exception:
+        return ""
+    finally:
+        if blob_out.pbData:
+            kernel32.LocalFree(blob_out.pbData)

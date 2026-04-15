@@ -18,9 +18,13 @@ import datetime
 import queue
 import hashlib
 import subprocess
+import logging
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+
+# 创建logger
+logger = logging.getLogger(__name__)
 
 # 导入 Qt 库
 try:
@@ -73,6 +77,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
     ask_user_duplicate = Signal(object)  # payload dict
     upload_error = Signal(str, str)      # filename, error_message
     disk_warning = Signal(float, float, int)  # target_percent, backup_percent, threshold
+    disk_cleanup_needed = Signal(bool)   # emergency_mode — 请求主窗口执行自动清理
 
     def __init__(
         self,
@@ -92,10 +97,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         network_auto_pause: bool = True,
         network_auto_resume: bool = True,
         enable_auto_delete: bool = False,
-        auto_delete_folder: str = '',
         auto_delete_threshold: int = 80,
-        auto_delete_keep_days: int = 10,
-        auto_delete_check_interval: int = 300,
+        auto_delete_target_percent: int = 40,
         upload_protocol: str = 'smb',
         ftp_client_config: Optional[Dict[str, Any]] = None,
         enable_backup: bool = True,
@@ -120,11 +123,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             network_check_interval: 网络检查间隔（秒）
             network_auto_pause: 网络中断时自动暂停
             network_auto_resume: 网络恢复时自动恢复
-            enable_auto_delete: 启用自动删除
-            auto_delete_folder: 自动删除监控文件夹
-            auto_delete_threshold: 自动删除磁盘阈值
-            auto_delete_keep_days: 自动删除保留天数
-            auto_delete_check_interval: 自动删除检查间隔
+            enable_auto_delete: 启用自动删除（磁盘不足时通知主窗口清理）
+            auto_delete_threshold: 自动删除磁盘阈值（使用率触发值）
+            auto_delete_target_percent: 自动删除目标阈值（清理后回落到此值）
             upload_protocol: 上传协议 ('smb'|'ftp_client'|'both')
             ftp_client_config: FTP客户端配置
             enable_backup: 是否启用备份
@@ -155,12 +156,10 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self.network_auto_pause = network_auto_pause
         self.network_auto_resume = network_auto_resume
         
-        # 自动删除配置
+        # 自动删除配置（Worker 仅做磁盘检测，实际清理由主窗口统一执行）
         self.enable_auto_delete = enable_auto_delete
-        self.auto_delete_folder = auto_delete_folder
         self.auto_delete_threshold = auto_delete_threshold
-        self.auto_delete_keep_days = auto_delete_keep_days
-        self.auto_delete_check_interval = auto_delete_check_interval
+        self.auto_delete_target_percent = max(0, min(auto_delete_target_percent, auto_delete_threshold - 5))
         
         # 协议配置
         self.upload_protocol = upload_protocol
@@ -197,7 +196,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self.network_retry_count = 0
         self.network_auto_retry = True
         self.last_network_check = 0.0
-        self.current_network_status = 'unknown'
+        self.current_network_status = None  # None=未检测, 'good'/'unstable'/'disconnected'=已检测
         self.network_pause_by_auto = False
         self._last_space_warn = 0.0
         
@@ -360,6 +359,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         try:
             self._net_executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
+            # 线程池shutdown失败静默忽略
             pass
         
         self.log.emit("✓ 上传任务已停止")
@@ -367,7 +367,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
 
     def _network_monitor_loop(self) -> None:
         """网络监控循环（独立线程）"""
-        last_status = 'unknown'
+        last_status = None  # None=未检测, 初始状态
         
         while getattr(self, '_net_running', False):
             try:
@@ -380,7 +380,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                     if self._is_backup_path_ready():
                         backup_ok = self._safe_net_check(self.backup, timeout=0.3, default=False)
                     status = 'unstable' if backup_ok else 'disconnected'
-            except Exception:
+            except Exception as e:
+                # 网络检查异常，假设断开
+                logger.debug(f"网络监控检查异常: {type(e).__name__}: {e}")
                 status = 'disconnected'
 
             # 状态变化时发送日志和信号
@@ -398,9 +400,11 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
 
                 # 自动暂停/恢复
                 if status == 'disconnected' and self.network_auto_pause and not self._paused:
+                    self.log.emit("⏸️ 检测到网络中断，自动暂停上传...")
                     self.network_pause_by_auto = True
                     self.pause()
                 if status == 'good' and self.network_auto_resume and self.network_pause_by_auto:
+                    self.log.emit("🔄 网络已恢复，自动继续上传...")
                     self.network_pause_by_auto = False
                     self.resume()
 
@@ -416,6 +420,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             try:
                 self.stats.emit(self.uploaded_count, self.failed_count, self.skipped_count, self.rate)
             except Exception:
+                # Signal发送失败静默忽略（UI可能已关闭，避免循环错误）
                 pass
 
             # 自适应间隔
@@ -447,6 +452,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 dtype = GetDriveTypeW(root)
                 return dtype == DRIVE_REMOTE
             except Exception:
+                # Windows API调用失败（非Windows平台或API不可用）
                 return False
 
         def mapped_to_unc(p: str) -> str:
@@ -468,6 +474,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                     return os.path.join(unc_prefix, rel).replace('/', '\\')
                 return ''
             except Exception:
+                # Windows API调用失败或非Windows平台
                 return ''
 
         def extract_host_from_unc(unc: str) -> str:
@@ -475,58 +482,70 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 parts = unc.split('\\')
                 return parts[2] if len(parts) > 2 else ''
             except Exception:
+                # 路径解析失败
                 return ''
 
         def ping_host(host: str, ms: int) -> bool:
             try:
+                create_flag = 0
+                if os.name == 'nt' and hasattr(subprocess, 'CREATE_NO_WINDOW'):
+                    create_flag = subprocess.CREATE_NO_WINDOW
                 completed = subprocess.run(
                     ['ping', '-n', '1', '-w', str(ms), host],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    timeout=max(0.2, ms/1000.0 + 0.5)
+                    timeout=max(0.2, ms/1000.0 + 0.5),
+                    creationflags=create_flag
                 )
                 return completed.returncode == 0
             except Exception:
+                # ping失败（命令不存在或网络不可用）
                 return False
 
         def path_exists_with_timeout(p: str, seconds: float) -> bool:
             try:
+                create_flag = 0
+                if os.name == 'nt' and hasattr(subprocess, 'CREATE_NO_WINDOW'):
+                    create_flag = subprocess.CREATE_NO_WINDOW
                 safe_path = p.replace('"', '""')
                 cmd = f'if exist "{safe_path}" (exit 0) else (exit 1)'
                 completed = subprocess.run(
                     ['cmd', '/c', cmd],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    timeout=max(0.2, seconds)
+                    timeout=max(0.2, seconds),
+                    creationflags=create_flag
                 )
                 return completed.returncode == 0
             except subprocess.TimeoutExpired:
                 return bool(default)
             except Exception:
+                # 命令执行失败（非Windows平台或cmd不可用）
                 return bool(default)
 
         try:
             if not path:
                 return bool(default)
             
-            # UNC 路径：优先 ping，再进行超时存在性检查
+            # UNC 路径：先 ping 主机，ping 通则直接返回 True；ping 不通再做路径存在性检查兜底
             if is_unc(path):
                 host = extract_host_from_unc(path)
-                if host:
-                    ping_host(host, int(timeout*1000))
+                if host and ping_host(host, int(timeout * 1000)):
+                    return True
                 return path_exists_with_timeout(path, timeout)
             
-            # 映射盘：转换为 UNC 再 ping
+            # 映射盘：转换 UNC 后先 ping，ping 通则直接返回 True；失败再做路径存在性检查兜底
             if is_mapped_drive(path):
                 unc = mapped_to_unc(path)
                 host = extract_host_from_unc(unc) if unc else ''
-                if host:
-                    ping_host(host, int(timeout*1000))
+                if host and ping_host(host, int(timeout * 1000)):
+                    return True
                 return path_exists_with_timeout(unc or path, timeout)
             
             # 本地路径：直接检查
             return bool(os.path.exists(path))
         except Exception:
+            # 网络检查失败，返回默认值
             return bool(default)
 
     def _rebuild_executor(self) -> None:
@@ -537,6 +556,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         try:
             old_executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
+            # shutdown失败静默忽略（线程池可能已关闭）
             pass
 
     def _record_executor_timeout(self) -> None:
@@ -572,12 +592,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             try:
                 self.log.emit(f"⏱️ 文件操作超时（{timeout}秒），可能网络中断")
             except Exception:
+                # 日志发送失败静默忽略
                 pass
             return default
         except Exception as e:
             try:
-                self.log.emit(f"⚠️ 文件操作异常: {str(e)[:50]}")
+                self.log.emit(f"⚠️ 文件操作异常: {str(e)[:100]}")
             except Exception:
+                # 日志发送失败静默忽略
                 pass
             return default
 
@@ -589,6 +611,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 suffix = " | " + " ".join(parts)
             self.log.emit(f"{level} [{code}] {message}{suffix}")
         except Exception:
+            # 日志发送失败静默忽略（避免循环错误）
             pass
 
     def _ensure_dir(self, path: str, label: str, create: bool = True) -> bool:
@@ -645,10 +668,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         """Check whether backup path is enabled and reachable."""
         if not self.enable_backup or not self.backup:
             return False
-        return bool(self._safe_path_operation(os.path.isdir, self.backup, timeout=1.0, default=False))
+        return self._safe_net_check(self.backup, timeout=1.5, default=False)
 
-    def _check_network_connection(self) -> str:
-        """检查网络连接状态"""
+    def _check_network_connection(self) -> Optional[str]:
+        """检查网络连接状态
+        
+        Returns:
+            'good' | 'unstable' | 'disconnected' | None (未检测)
+        """
         if self.upload_protocol == 'ftp_client':
             return 'good'
         if getattr(self, '_net_running', False):
@@ -657,8 +684,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 return self.current_network_status
             
             try:
-                target_ok = self._safe_path_operation(os.path.exists, self.target, timeout=1.5, default=False)
-            except Exception:
+                target_ok = self._safe_net_check(self.target, timeout=2.0, default=False)
+            except Exception as e:
+                logger.debug(f"目标路径检查异常: {type(e).__name__}: {e}")
                 target_ok = False
             
             if target_ok:
@@ -677,8 +705,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self.last_network_check = now
         
         try:
-            target_ok = self._safe_path_operation(os.path.exists, self.target, timeout=2.0, default=False)
-        except Exception:
+            target_ok = self._safe_net_check(self.target, timeout=2.0, default=False)
+        except Exception as e:
+            logger.debug(f"标记网络良好时检查失败: {type(e).__name__}: {e}")
             target_ok = False
         
         if target_ok:
@@ -688,9 +717,12 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             
             if old_status == 'disconnected':
                 self.log.emit("✅ 网络已恢复正常")
-                if self.network_auto_resume and self.network_pause_by_auto:
+                # 注意：自动恢复主要由主循环和网络监控线程处理
+                # 这里只记录状态变化，避免重复调用resume()
+                if self.network_auto_resume and self.network_pause_by_auto and not getattr(self, '_net_running', False):
+                    # 只有在网络监控线程未运行时才在这里恢复
                     self.log.emit("🔄 网络恢复，自动继续上传...")
-                    time.sleep(1)
+                    time.sleep(0.5)
                     self.network_pause_by_auto = False
                     self.resume()
             
@@ -823,7 +855,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             except Exception as e:
                 item['count'] = retry_count + 1
                 if item['count'] > self.retry_count:
-                    self._log_failed_file(file_path, f"重试{retry_count}次后仍然失败: {str(e)[:50]}")
+                    self._log_failed_file(file_path, f"重试{retry_count}次后仍然失败: {str(e)[:100]}")
                     del self.retry_queue[file_path]
                     self.failed_count += 1
                     self.stats.emit(self.uploaded_count, self.failed_count, self.skipped_count, self.rate)
@@ -898,7 +930,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 "SMB_ERROR",
                 "SMB 上传失败",
                 error=type(e).__name__,
-                detail=str(e)[:80]
+                detail=str(e)[:100]
             )
             return False
     
@@ -1012,7 +1044,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 "FTP_ERROR",
                 "FTP 上传异常",
                 error=error_type,
-                detail=str(e)[:80]
+                detail=str(e)[:100]
             )
             return False
 
@@ -1064,14 +1096,23 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                         target_hash = self._calculate_file_hash(target_file)
                         if target_hash == file_hash:
                             return target_file
-                    except Exception:
+                    except (OSError, IOError) as e:
+                        # 文件读取失败，继续检查下一个
+                        logger.debug(f"检查目标文件失败 {target_file}: {type(e).__name__}")
                         continue
             return ""
-        except Exception:
+        except (OSError, IOError) as e:
+            logger.debug(f"在目标目录查找文件失败: {type(e).__name__}: {e}")
             return ""
 
     def _get_unique_filename(self, base_path: str) -> str:
-        """生成唯一文件名"""
+        """生成唯一文件名
+        
+        Returns:
+            str: 唯一的文件路径
+            
+        注意：如果尝试9999次仍未找到唯一名称，将使用时间戳后缀强制生成唯一名
+        """
         if not os.path.exists(base_path):
             return base_path
         
@@ -1080,14 +1121,21 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         name, ext = os.path.splitext(filename)
         
         counter = 1
-        while True:
+        max_attempts = 9999
+        while counter <= max_attempts:
             new_name = f"{name} ({counter}){ext}"
             new_path = os.path.join(directory, new_name)
             if not os.path.exists(new_path):
                 return new_path
             counter += 1
-            if counter > 9999:
-                return base_path
+        
+        # 超过最大尝试次数，使用时间戳强制生成唯一名
+        import time
+        timestamp = int(time.time() * 1000000)  # 微秒级时间戳
+        new_name = f"{name}_conflict_{timestamp}{ext}"
+        new_path = os.path.join(directory, new_name)
+        self.log.emit(f"⚠️ 文件名冲突严重（已尝试{max_attempts}次），使用时间戳后缀: {new_name}")
+        return new_path
 
     def _resolve_duplicate_choice(self, src_path: str, dup_path: str) -> str:
         if self.duplicate_strategy != 'ask':
@@ -1104,7 +1152,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         }
         try:
             self.ask_user_duplicate.emit(payload)
-        except Exception:
+        except Exception as e:
+            # Signal发送失败（UI可能已关闭）
+            logger.debug(f"发送重复文件询问失败: {type(e).__name__}")
             return 'skip'
         wait_start = time.time()
         while self._running or not self.archive_queue.empty():
@@ -1116,6 +1166,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             try:
                 self.log.emit("?? 重复文件处理超时，默认跳过")
             except Exception:
+                # 日志发送失败静默忽略
                 pass
             return 'skip'
         choice = result.get('choice', 'skip')
@@ -1158,21 +1209,85 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                     error=type(e).__name__
                 )
 
-    def _disk_ok(self, path: str) -> Tuple[float, float, float]:
-        """检查磁盘空间"""
+    def _disk_ok(self, path: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+        """检查磁盘空间
+        
+        Returns:
+            (free_percent, total_gb, free_gb) 元组
+            - 成功: 返回实际的空闲百分比（0-100）、总容量GB、剩余空间GB
+            - 失败: 返回 (None, None, None) 表示检查失败，调用方应区别对待
+            
+        注意：0.0% 表示磁盘真的满了，None 表示检查失败（网络盘离线等）
+        """
         def check():
             try:
                 parent = os.path.dirname(path) or path
                 usage = shutil.disk_usage(parent)
                 total_gb = usage.total / (1024 ** 3)
                 free_gb = usage.free / (1024 ** 3)
-                free_percent = (usage.free / usage.total) * 100 if usage.total > 0 else 0
+                free_percent = (usage.free / usage.total) * 100 if usage.total > 0 else 0.0
                 return free_percent, total_gb, free_gb
-            except Exception:
-                return 0.0, 0.0, 0.0
+            except (OSError, IOError) as e:
+                # 检查失败返回None（区别于0%）
+                logger.debug(f"磁盘空间检查失败: {type(e).__name__}: {e}")
+                return None, None, None
         
-        result = self._safe_path_operation(check, timeout=2.0, default=(0.0, 0.0, 0.0))
-        return result if result is not None else (0.0, 0.0, 0.0)
+        result = self._safe_path_operation(check, timeout=2.0, default=(None, None, None))
+        return result if result is not None else (None, None, None)
+
+    def _ensure_disk_space(self) -> bool:
+        """检查磁盘空间，不足时通知主窗口执行清理。
+
+        Worker 不再自行删除文件，仅发射 disk_cleanup_needed 信号，
+        由主窗口的统一清理引擎执行。
+        """
+        if self.upload_protocol == 'ftp_client':
+            tf_ok = 100.0
+        else:
+            tf_ok, _, _ = self._disk_ok(self.target)
+            if tf_ok is None:
+                self.log.emit("⚠️ 目标磁盘检查失败，跳过清理")
+                return True
+        bf_ok = 100.0
+        backup_check = False
+        if self._is_backup_path_ready():
+            bf_ok, _, _ = self._disk_ok(self.backup)
+            if bf_ok is None:
+                self.log.emit("⚠️ 备份磁盘检查失败，仅检查目标磁盘")
+                bf_ok = 100.0
+            backup_check = True
+
+        used_target = 100.0 - tf_ok
+        used_backup = 100.0 - bf_ok if backup_check else 0.0
+
+        emergency_mode = (tf_ok < 5.0) or (backup_check and bf_ok < 5.0)
+
+        should_cleanup = self.enable_auto_delete and (
+            used_target >= self.auto_delete_threshold
+            or (backup_check and used_backup >= self.auto_delete_threshold)
+            or tf_ok < self.disk_threshold_percent
+            or (backup_check and bf_ok < self.disk_threshold_percent)
+        )
+
+        if should_cleanup:
+            # 通知主窗口执行清理（由主窗口统一引擎处理）
+            self.disk_cleanup_needed.emit(emergency_mode)
+
+        if tf_ok < self.disk_threshold_percent or (backup_check and bf_ok < self.disk_threshold_percent):
+            now = time.time()
+            if now - self._last_space_warn > 10:
+                self._last_space_warn = now
+                self._log_event(
+                    "⚠️",
+                    "DISK_LOW",
+                    "磁盘空间不足",
+                    target=f"{tf_ok:.0f}%",
+                    backup=f"{bf_ok:.0f}%" if backup_check else "n/a",
+                    threshold=f"{self.disk_threshold_percent}%"
+                )
+                self.disk_warning.emit(tf_ok, bf_ok, self.disk_threshold_percent)
+            return False
+        return True
 
     def _get_image_files(self) -> List[str]:
         """扫描图片文件"""
@@ -1226,12 +1341,28 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                     self._health_check_counter = 0
                     self.log_health_status()
                 
-                # 暂停处理
+                # 暂停处理（支持网络恢复自动继续）
                 pause_log_counter = 0
                 while self._paused and self._running:
                     time.sleep(0.2)
                     pause_log_counter += 1
-                    if pause_log_counter >= 50:
+                    
+                    # 每隔一段时间检查网络状态（如果是自动暂停）
+                    if self.network_pause_by_auto and pause_log_counter % 15 == 0:  # 每3秒检查一次
+                        try:
+                            network_status = self._check_network_connection()
+                            if network_status == 'good' and self.network_auto_resume:
+                                self.log.emit("✅ 检测到网络已恢复，自动继续上传...")
+                                self.network_pause_by_auto = False
+                                self._paused = False
+                                self.status.emit('running')
+                                break
+                        except Exception as e:
+                            # 记录异常而不是完全吞掉（限频避免刷屏）
+                            if pause_log_counter % 150 == 0:  # 每30秒记录一次
+                                self.log.emit(f"⚠️ 网络检查异常: {type(e).__name__}: {str(e)[:100]}")
+                    
+                    if pause_log_counter >= 50:  # 每10秒显示一次暂停提示
                         pause_log_counter = 0
                         self.log.emit("⏸️ 上传已暂停，等待恢复...")
                 
@@ -1242,7 +1373,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 try:
                     network_status = self._check_network_connection()
                 except Exception as e:
-                    self.log.emit(f"⚠️ 网络检测异常: {str(e)[:50]}")
+                    self.log.emit(f"⚠️ 网络检测异常: {str(e)[:100]}")
                     network_status = 'disconnected'
                 
                 if network_status == 'disconnected' and self._paused:
@@ -1250,30 +1381,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                     time.sleep(1)
                     continue
 
-                # 磁盘空间检查
-                if self.upload_protocol == 'ftp_client':
-                    tf_ok = 100.0
-                else:
-                    tf_ok, _, _ = self._disk_ok(self.target)
-                bf_ok = 100.0
-                backup_check = False
-                if self._is_backup_path_ready():
-                    bf_ok, _, _ = self._disk_ok(self.backup)
-                    backup_check = True
-                
-                if tf_ok < self.disk_threshold_percent or (backup_check and bf_ok < self.disk_threshold_percent):
-                    now = time.time()
-                    if now - self._last_space_warn > 10:
-                        self._last_space_warn = now
-                        self._log_event(
-                            "⚠️",
-                            "DISK_LOW",
-                            "磁盘空间不足",
-                            target=f"{tf_ok:.0f}%",
-                            backup=f"{bf_ok:.0f}%" if backup_check else "n/a",
-                            threshold=f"{self.disk_threshold_percent}%"
-                        )
-                        self.disk_warning.emit(tf_ok, bf_ok, self.disk_threshold_percent)
+                # 磁盘空间检查（不足则清理并暂停）
+                if not self._ensure_disk_space():
                     time.sleep(2)
                     continue
 
@@ -1290,9 +1399,30 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 for path in images:
                     if not self._running:
                         break
+                    if not self._ensure_disk_space():
+                        time.sleep(2)
+                        break
                     
+                    # 暂停处理（支持网络恢复自动继续）
+                    pause_check_counter = 0
                     while self._paused and self._running:
                         time.sleep(0.2)
+                        pause_check_counter += 1
+                        
+                        # 如果是网络自动暂停，定期检查网络状态
+                        if self.network_pause_by_auto and pause_check_counter % 15 == 0:
+                            try:
+                                network_status = self._check_network_connection()
+                                if network_status == 'good' and self.network_auto_resume:
+                                    self.log.emit("✅ 网络已恢复，自动继续上传...")
+                                    self.network_pause_by_auto = False
+                                    self._paused = False
+                                    self.status.emit('running')
+                                    break
+                            except Exception as e:
+                                # 记录异常（限频）
+                                if pause_check_counter % 150 == 0:
+                                    self.log.emit(f"⚠️ 网络检查异常: {type(e).__name__}: {str(e)[:100]}")
                     
                     if not self._running:
                         break
@@ -1307,6 +1437,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                     rel = os.path.relpath(path, self.source)
                     tgt = os.path.join(self.target, rel)
                     bkp = os.path.join(self.backup, rel)
+                    fname = os.path.basename(path)
                     
                     # 创建目标目录（FTP-only 不需要本地目标目录）
                     if self.upload_protocol in ('smb', 'both'):
@@ -1326,7 +1457,6 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                             self._handle_upload_failure(path)
                             continue
 
-                    fname = os.path.basename(path)
                     self.current_file_name = fname
                     
                     self.log.emit(f"📤 开始上传: {fname}")
@@ -1351,7 +1481,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                             # 获取文件大小
                             try:
                                 self.current_file_size = os.path.getsize(path)
-                            except Exception:
+                            except (OSError, IOError) as e:
+                                logger.debug(f"获取文件大小失败 {fname}: {type(e).__name__}")
                                 self.current_file_size = 0
                             
                             self.file_progress.emit(fname, 0)
@@ -1434,7 +1565,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                                     dur = max(time.time()-start_t, 1e-6)
                                     rate = size_mb / dur
                                     self.rate = f"{rate:.2f} MB/s"
-                                except Exception:
+                                except (OSError, IOError, ZeroDivisionError):
+                                    # 速率计算失败静默忽略（文件可能已删除）
                                     pass
                                 
                                 self.stats.emit(self.uploaded_count, self.failed_count, self.skipped_count, self.rate)

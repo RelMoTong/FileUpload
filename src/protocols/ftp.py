@@ -257,8 +257,13 @@ class FTPServerManager:
         try:
             # Note: _map 是 asyncore.dispatcher 的内部属性
             connection_count = len(self.server._map) if hasattr(self.server, '_map') else 0  # type: ignore[attr-defined]
-        except:
-            pass
+        except (AttributeError, TypeError):
+            # _map 属性访问或len()可能失败（预期情况）
+            connection_count = 0
+        except Exception as e:
+            # 意外错误，记录但不影响返回
+            print(f"⚠️ FTP状态获取异常: {type(e).__name__}: {str(e)[:100]}")
+            connection_count = 0
         
         return {
             'running': True,
@@ -388,11 +393,12 @@ class FTPClientUploader:
                     if self.ftp:
                         try:
                             self.ftp.close()
-                        except:
+                        except (OSError, IOError, error_perm):
+                            # 连接已关闭或无效，预期情况
                             pass
-                        self.ftp = None
-                    
-                    if attempt < retry_count - 1:
+                        except Exception as e:
+                            # 意外的关闭错误
+                            logger.debug(f"FTP关闭异常: {type(e).__name__}: {e}")
                         wait_time = (attempt + 1) * 5  # 5秒, 10秒, 15秒
                         logger.info(f"等待 {wait_time} 秒后重试...")
                         time.sleep(wait_time)
@@ -431,8 +437,12 @@ class FTPClientUploader:
                     if self.ftp:
                         self.ftp.close()
                         self.ftp = None
-                except:
+                except (OSError, IOError, error_perm):
+                    # 连接已关闭，预期情况
                     pass
+                except Exception as e:
+                    # 意外的关闭错误
+                    logger.debug(f"FTP强制关闭异常: {type(e).__name__}: {e}")
                 
                 self.connected = False
                 return False
@@ -473,8 +483,17 @@ class FTPClientUploader:
                 base_remote = self.config.get('remote_path', '/')
                 remote_path = f"{base_remote}/{local_file.name}"
             
+            # 标准化远程路径：FTP协议要求使用正斜杠
+            remote_path = remote_path.replace('\\', '/')
+            # 移除Windows盘符（C:/ → /）
+            if len(remote_path) > 2 and remote_path[1] == ':':
+                remote_path = remote_path[2:]
+            # 确保以 / 开头
+            if not remote_path.startswith('/'):
+                remote_path = '/' + remote_path
+            
             # 确保远程目录存在
-            remote_dir = os.path.dirname(remote_path).replace('\\', '/')
+            remote_dir = os.path.dirname(remote_path)
             self._ensure_remote_dir(remote_dir)
             
             # 获取文件大小
@@ -606,8 +625,13 @@ class FTPClientUploader:
                 self.ftp.cwd(remote_dir)
                 self.ftp.cwd(current)  # 切换回原目录
                 return  # 目录存在
-            except:
-                pass  # 目录不存在，需要创建
+            except error_perm:
+                # 目录不存在（预期情况），需要创建
+                pass
+            except Exception as e:
+                # 意外的目录检查错误
+                logger.debug(f"FTP目录检查异常: {type(e).__name__}: {e}")
+                return  # 出错时不创建
             
             # 递归创建目录
             parts = remote_dir.split('/')
@@ -670,8 +694,9 @@ class FTPClientUploader:
         if self.connected:
             try:
                 self.disconnect()
-            except:
-                pass
+            except Exception as e:
+                # 析构时断开连接失败（可能已断开）
+                logger.debug(f"FTPClient析构断开连接异常: {type(e).__name__}: {e}")
 
 
 class FTPProtocolManager:
@@ -698,7 +723,7 @@ class FTPProtocolManager:
         self.server: Optional[FTPServerManager] = None
         self.clients: Dict[str, FTPClientUploader] = {}
         self.mode = 'none'  # 'server', 'client', 'both', 'none'
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # 使用可重入锁防止stop_all()中的死锁
         
         logger.info("FTP 协议管理器初始化")
     
@@ -932,8 +957,9 @@ class FTPProtocolManager:
         """析构函数，确保所有服务被关闭"""
         try:
             self.stop_all()
-        except:
-            pass
+        except Exception as e:
+            # 析构时停止服务失败（可能已停止）
+            logger.debug(f"FTPManager析构停止服务异常: {type(e).__name__}: {e}")
 
 
 # 模块级别的便捷函数

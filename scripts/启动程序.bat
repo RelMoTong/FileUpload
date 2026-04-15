@@ -1,11 +1,11 @@
 @echo off
 chcp 65001 >nul
-title 图片异步上传工具 - PySide6版本
+title 图片异步上传工具 - 启动程序
 color 0A
 
 echo ========================================
 echo   图片异步上传工具 - 启动程序
-echo   PySide6/PyQt5 版本
+echo   统一入口: python -m src.main
 echo ========================================
 echo.
 
@@ -64,7 +64,7 @@ echo [步骤3] 启动程序...
 echo ========================================
 echo.
 
-REM 运行程序
+REM 统一运行入口
 python -m src.main
 
 REM 程序退出后的处理
