@@ -4312,8 +4312,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                             os.remove(path)
                         deleted_count += 1
                         deleted_size += size
-                    except Exception:
+                    except Exception as exc:
                         failed_count += 1
+                        if failed_count <= 10:
+                            log(f"⚠️ 自动清理删除失败: {path}（{exc}）")
 
                 size_mb = deleted_size / (1024 * 1024)
                 final_used_percent = ((used_bytes - deleted_size) / total) * 100 if total > 0 else 0.0
@@ -4322,6 +4324,12 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     f"✅ 自动清理完成（{mode_text}）：删除 {deleted_count} 个文件，释放 {size_mb:.2f} MB，"
                     f"失败 {failed_count} 个，预计使用率降至 {final_used_percent:.1f}%（路径：{folder}）"
                 )
+                if deleted_size < bytes_to_free:
+                    missing_mb = (bytes_to_free - deleted_size) / (1024 * 1024)
+                    log(
+                        f"⚠️ 自动清理未达到目标阈值，还需释放约 {missing_mb:.2f} MB；"
+                        f"请检查文件占用、权限或扩大清理目录（路径：{folder}）"
+                    )
         finally:
             with self._auto_cleanup_lock:
                 self._auto_cleanup_running = False

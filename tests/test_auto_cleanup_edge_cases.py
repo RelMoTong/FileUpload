@@ -144,6 +144,36 @@ class TestAutoCleanupSaveEdgeCases(unittest.TestCase):
         dialog.close()
         parent.close()
 
+    def test_enabled_without_visible_dirs_blocks_hidden_preserved_paths(self) -> None:
+        """存在隐藏历史目录时，全部可见目录取消勾选 → 保存仍应被阻止。"""
+        with tempfile.TemporaryDirectory() as d1, \
+             tempfile.TemporaryDirectory() as d2, \
+             tempfile.TemporaryDirectory() as d3, \
+             tempfile.TemporaryDirectory() as d4, \
+             tempfile.TemporaryDirectory() as d5:
+            parent = MockMainWindow(
+                backup_path=d1,
+                target_path=d2,
+                monitor_path=d3,
+                auto_delete_folders=[d1, d2, d3, d4, d5],
+            )
+            dialog = self._make_dialog(parent)
+            dialog.cb_enable_auto.setChecked(True)
+            dialog.cb_backup.setChecked(False)
+            dialog.cb_target.setChecked(False)
+            dialog.cb_monitor.setChecked(False)
+            dialog.cb_custom.setChecked(False)
+
+            result, info, warn = self._save_with_mocks(dialog)
+
+            self.assertFalse(result)
+            self.assertEqual(parent.save_calls, 0)
+            warn.assert_called_once()
+            info.assert_not_called()
+
+            dialog.close()
+            parent.close()
+
     # ---- 场景 2：目标阈值 >= 触发阈值 ----
 
     def test_target_equals_threshold_blocks_save(self) -> None:

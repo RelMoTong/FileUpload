@@ -1998,10 +1998,20 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             return False
         
         try:
+            visible_folders = self._collect_selected_folders(include_hidden=False)
             folders_to_clean = self._collect_selected_folders(include_hidden=True)
 
             if self.cb_enable_auto.isChecked():
-                if not folders_to_clean:
+                if not visible_folders:
+                    if self._hidden_auto_cleanup_folders:
+                        QtWidgets.QMessageBox.warning(
+                            self,
+                            "配置无效",
+                            "当前未勾选任何可见清理目录，但仍存在历史隐藏目录。\n\n"
+                            "为避免误删，请先至少勾选一个明确的清理目录，"
+                            "或关闭自动清理后再保存。"
+                        )
+                        return False
                     QtWidgets.QMessageBox.warning(
                         self,
                         "配置无效",

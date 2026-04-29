@@ -321,6 +321,7 @@ class FTPClientUploader:
         self.ftp: Optional[Union[FTP, FTP_TLS]] = None
         self.connected = False
         self._lock = threading.Lock()
+        self.last_error = ""
         
         logger.info(f"FTP 客户端初始化: {config.get('name', 'Unknown')} -> {config.get('host')}")
     
@@ -384,10 +385,12 @@ class FTPClientUploader:
                     self.ftp.encoding = 'utf-8'
                     
                     self.connected = True
+                    self.last_error = ""
                     logger.info(f"✓ 已连接到 FTP 服务器：{self.config.get('host')}")
                     return True
                     
                 except Exception as e:
+                    self.last_error = str(e)
                     logger.error(f"连接失败 (尝试 {attempt + 1}/{retry_count})：{e}")
                     
                     if self.ftp:
@@ -470,12 +473,14 @@ class FTPClientUploader:
         """
         if not self.connected:
             logger.error("未连接到 FTP 服务器")
+            self.last_error = "未连接到 FTP 服务器"
             return False
         
         try:
             local_file = Path(local_path)
             if not local_file.exists():
                 logger.error(f"文件不存在：{local_path}")
+                self.last_error = f"文件不存在：{local_path}"
                 return False
             
             # 确定远程路径
@@ -527,12 +532,15 @@ class FTPClientUploader:
                     self.ftp.storbinary(f'STOR {remote_path}', f, callback=callback)
             
             logger.info(f"✓ 文件上传成功：{local_file.name} → {remote_path} ({file_size} 字节)")
+            self.last_error = ""
             return True
             
         except error_perm as e:
+            self.last_error = str(e)
             logger.error(f"权限错误，上传失败：{e}")
             return False
         except Exception as e:
+            self.last_error = str(e)
             logger.error(f"上传文件失败：{e}")
             return False
     

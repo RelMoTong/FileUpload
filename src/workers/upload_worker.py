@@ -614,6 +614,43 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             # 日志发送失败静默忽略（避免循环错误）
             pass
 
+    @staticmethod
+    def _is_no_space_error(error: object) -> bool:
+        """判断异常文本是否表示目标磁盘空间不足。"""
+        text = str(error).lower()
+        return (
+            "no space left" in text
+            or "not enough space" in text
+            or "errno 28" in text
+            or "winerror 112" in text
+            or "552" in text
+            or "storage allocation" in text
+            or "quota" in text
+            or "磁盘空间不足" in text
+            or "空间不足" in text
+        )
+
+    def _log_disk_full(self, target_path: str, file_name: str, detail: str) -> None:
+        """记录目标磁盘写入失败告警，限频避免刷屏。"""
+        now = time.time()
+        if now - self._last_space_warn <= 10:
+            return
+        self._last_space_warn = now
+        free_percent, _, free_gb = self._disk_ok(target_path)
+        free_text = f"{free_percent:.1f}%" if free_percent is not None else "unknown"
+        free_gb_text = f"{free_gb:.2f}GB" if free_gb is not None else "unknown"
+        self._log_event(
+            "❌",
+            "DISK_FULL",
+            "目标磁盘空间不足，无法写入文件",
+            file=file_name,
+            target=target_path,
+            free=free_text,
+            free_gb=free_gb_text,
+            detail=detail[:120],
+        )
+        self.disk_warning.emit(free_percent if free_percent is not None else 0.0, 100.0, self.disk_threshold_percent)
+
     def _ensure_dir(self, path: str, label: str, create: bool = True) -> bool:
         if not path:
             self._log_event("❌", "PATH_EMPTY", f"{label}路径未设置")
@@ -916,12 +953,25 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             else:
                 # 小文件直接复制
                 def copy_file():
-                    shutil.copy2(src, dst)
-                    return True
+                    try:
+                        shutil.copy2(src, dst)
+                        return True, ""
+                    except Exception as exc:
+                        return False, f"{type(exc).__name__}: {exc}"
                 
-                copy_success = self._safe_path_operation(copy_file, timeout=30.0, default=False)
+                copy_result = self._safe_path_operation(
+                    copy_file,
+                    timeout=30.0,
+                    default=(False, "文件复制超时，网络可能已断开"),
+                )
+                if isinstance(copy_result, tuple):
+                    copy_success, copy_error = copy_result
+                else:
+                    copy_success, copy_error = bool(copy_result), ""
                 if not copy_success:
-                    raise Exception("文件复制超时，网络可能已断开")
+                    if self._is_no_space_error(copy_error):
+                        self._log_disk_full(dst, os.path.basename(src), copy_error)
+                    raise Exception(copy_error or "文件复制失败")
             
             return True
         except Exception as e:
@@ -979,6 +1029,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 self.log.emit(f"✓ 大文件上传完成: {os.path.basename(src)}")
                 return True
             else:
+                if self._is_no_space_error(error_msg):
+                    self._log_disk_full(dst, os.path.basename(src), error_msg)
                 if "中断" in error_msg:
                     self.log.emit(f"⏸️ 上传已暂停，进度已保存: {os.path.basename(src)}")
                 else:
@@ -1033,8 +1085,19 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                     "FTP_UPLOAD",
                     "FTP 上传失败",
                     file=os.path.basename(remote_file),
-                    remote=remote_file
+                    remote=remote_file,
+                    detail=getattr(self.ftp_client, "last_error", "")[:120]
                 )
+                ftp_error = getattr(self.ftp_client, "last_error", "")
+                if self._is_no_space_error(ftp_error):
+                    self._log_event(
+                        "❌",
+                        "FTP_DISK_FULL",
+                        "FTP 服务器空间不足，无法写入文件",
+                        file=os.path.basename(remote_file),
+                        remote=remote_file,
+                        detail=ftp_error[:120],
+                    )
                 return False
                 
         except Exception as e:
