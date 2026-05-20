@@ -24,9 +24,11 @@
   "network_check_interval": 12,
   "network_auto_pause": false,
   "network_auto_resume": false,
-  "enable_auto_delete": true,
+  "enable_auto_delete": false,
   "auto_delete_folder": "E:/Python/文件上传/build",
-  "auto_delete_folders": [],
+  "auto_delete_folders": [
+    "E:/Python/文件上传/build"
+  ],
   "auto_delete_threshold": 80,
   "auto_delete_target_percent": 40,
   "auto_delete_keep_days": 10,
@@ -63,5 +65,7 @@
     "passive_mode": true,
     "enable_tls": false
   },
-  "users": {}
+  "users": {},
+  "auto_delete_formats": [],
+  "auto_delete_use_trash": true
 }

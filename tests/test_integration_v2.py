@@ -12,7 +12,7 @@ sys.path.insert(0, str(project_root))
 
 from src.protocols.ftp import FTPProtocolManager, FTPServerManager, FTPClientUploader
 
-def test_ftp_module_import():
+def run_ftp_module_import():
     """测试1: FTP模块导入"""
     print("\n=== 测试1: FTP模块导入 ===")
     try:
@@ -25,7 +25,7 @@ def test_ftp_module_import():
         print(f"✗ FTP模块导入失败: {e}")
         return False
 
-def test_ftp_manager_creation():
+def run_ftp_manager_creation():
     """测试2: FTP管理器创建"""
     print("\n=== 测试2: FTP管理器创建 ===")
     try:
@@ -39,7 +39,7 @@ def test_ftp_manager_creation():
         print(f"✗ FTP管理器创建失败: {e}")
         return False
 
-def test_ftp_server_config():
+def run_ftp_server_config():
     """测试3: FTP服务器配置"""
     print("\n=== 测试3: FTP服务器配置 ===")
     try:
@@ -64,7 +64,7 @@ def test_ftp_server_config():
         print(f"✗ FTP服务器配置失败: {e}")
         return False
 
-def test_ftp_client_config():
+def run_ftp_client_config():
     """测试4: FTP客户端配置"""
     print("\n=== 测试4: FTP客户端配置 ===")
     try:
@@ -85,7 +85,7 @@ def test_ftp_client_config():
         print(f"✗ FTP客户端配置失败: {e}")
         return False
 
-def test_protocol_modes():
+def run_protocol_modes():
     """测试5: 协议模式切换"""
     print("\n=== 测试5: 协议模式切换 ===")
     try:
@@ -98,6 +98,26 @@ def test_protocol_modes():
         print(f"✗ 协议模式测试失败: {e}")
         return False
 
+def test_ftp_module_import():
+    assert run_ftp_module_import() is True
+
+
+def test_ftp_manager_creation():
+    assert run_ftp_manager_creation() is True
+
+
+def test_ftp_server_config():
+    assert run_ftp_server_config() is True
+
+
+def test_ftp_client_config():
+    assert run_ftp_client_config() is True
+
+
+def test_protocol_modes():
+    assert run_protocol_modes() is True
+
+
 def main():
     """运行所有测试"""
     print("=" * 60)
@@ -105,11 +125,11 @@ def main():
     print("=" * 60)
     
     tests = [
-        test_ftp_module_import,
-        test_ftp_manager_creation,
-        test_ftp_server_config,
-        test_ftp_client_config,
-        test_protocol_modes
+        run_ftp_module_import,
+        run_ftp_manager_creation,
+        run_ftp_server_config,
+        run_ftp_client_config,
+        run_protocol_modes
     ]
     
     results = []

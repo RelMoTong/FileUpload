@@ -49,7 +49,7 @@ def create_test_file(file_path, size_mb):
         f.write(os.urandom(int(size_mb * 1024 * 1024)))
 
 
-def test_performance_1_startup_time():
+def run_performance_1_startup_time():
     """
     性能测试1: 启动时间
     目标: ≤ 3秒
@@ -115,7 +115,7 @@ def test_performance_1_startup_time():
         return False
 
 
-def test_performance_2_ftp_upload_speed():
+def run_performance_2_ftp_upload_speed():
     """
     性能测试2: FTP上传速度
     目标: ≥ 2 MB/s（千兆网络）
@@ -242,7 +242,7 @@ def test_performance_2_ftp_upload_speed():
                 pass
 
 
-def test_performance_3_concurrent_clients():
+def run_performance_3_concurrent_clients():
     """
     性能测试3: 并发客户端上传
     目标: 支持5个客户端同时上传
@@ -416,7 +416,7 @@ def test_performance_3_concurrent_clients():
                 pass
 
 
-def test_performance_4_memory_usage():
+def run_performance_4_memory_usage():
     """
     性能测试4: 内存占用
     目标: ≤ 300 MB（运行状态）
@@ -522,7 +522,7 @@ def test_performance_4_memory_usage():
                 pass
 
 
-def test_performance_5_cpu_usage():
+def run_performance_5_cpu_usage():
     """
     性能测试5: CPU占用
     目标: ≤ 15%（上传中）
@@ -667,6 +667,26 @@ def generate_performance_report(results):
         return 1
 
 
+def test_performance_1_startup_time():
+    assert run_performance_1_startup_time() is True
+
+
+def test_performance_2_ftp_upload_speed():
+    assert run_performance_2_ftp_upload_speed() is True
+
+
+def test_performance_3_concurrent_clients():
+    assert run_performance_3_concurrent_clients() is True
+
+
+def test_performance_4_memory_usage():
+    assert run_performance_4_memory_usage() is True
+
+
+def test_performance_5_cpu_usage():
+    assert run_performance_5_cpu_usage() is True
+
+
 def main():
     """运行所有性能测试"""
     print("\n")
@@ -681,11 +701,11 @@ def main():
     # 运行所有测试
     print("\n⚡ 开始性能测试...")
     
-    results['1. 启动时间 (≤3秒)'] = test_performance_1_startup_time()
-    results['2. FTP上传速度 (≥2MB/s)'] = test_performance_2_ftp_upload_speed()
-    results['3. 并发客户端 (5个)'] = test_performance_3_concurrent_clients()
-    results['4. 内存占用 (≤300MB)'] = test_performance_4_memory_usage()
-    results['5. CPU占用 (≤15%)'] = test_performance_5_cpu_usage()
+    results['1. 启动时间 (≤3秒)'] = run_performance_1_startup_time()
+    results['2. FTP上传速度 (≥2MB/s)'] = run_performance_2_ftp_upload_speed()
+    results['3. 并发客户端 (5个)'] = run_performance_3_concurrent_clients()
+    results['4. 内存占用 (≤300MB)'] = run_performance_4_memory_usage()
+    results['5. CPU占用 (≤15%)'] = run_performance_5_cpu_usage()
     
     # 生成报告
     return generate_performance_report(results)

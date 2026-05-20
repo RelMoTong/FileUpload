@@ -12,7 +12,7 @@ echo.
 REM 检查 Python 是否安装
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [错误] 未检测到 Python，请先安装 Python 3.8+
+    echo [错误] 未检测到 Python，请先安装 Python 3.9+
     echo 下载地址: https://www.python.org/downloads/
     pause
     exit /b 1
@@ -37,10 +37,10 @@ REM 检查 PySide6 是否已安装
 python -c "import PySide6" >nul 2>&1
 if errorlevel 1 (
     echo [提示] PySide6 未安装，正在安装...
-    python -m pip install PySide6>=6.5 -i https://pypi.tuna.tsinghua.edu.cn/simple
+    python -m pip install "PySide6>=6.5" -i https://pypi.tuna.tsinghua.edu.cn/simple
     if errorlevel 1 (
         echo [警告] PySide6 安装失败，尝试安装 PyQt5 作为后备...
-        python -m pip install PyQt5>=5.15 -i https://pypi.tuna.tsinghua.edu.cn/simple
+        python -m pip install "PyQt5>=5.15" -i https://pypi.tuna.tsinghua.edu.cn/simple
         if errorlevel 1 (
             echo [错误] Qt 库安装失败，无法运行程序
             pause

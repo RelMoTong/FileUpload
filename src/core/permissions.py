@@ -127,7 +127,7 @@ class PermissionManager:
             'stop': [self.ROLE_USER, self.ROLE_ADMIN],
             'pause': [self.ROLE_USER, self.ROLE_ADMIN],
             'resume': [self.ROLE_USER, self.ROLE_ADMIN],
-            'save_config': [self.ROLE_USER, self.ROLE_ADMIN],
+            'save_config': [self.ROLE_ADMIN],
             'change_protocol': [self.ROLE_ADMIN],
             'manage_users': [self.ROLE_ADMIN],
             'view_stats': [self.ROLE_USER, self.ROLE_ADMIN, self.ROLE_GUEST],

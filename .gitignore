@@ -48,7 +48,9 @@ desktop.ini
 dist/
 dist-*/
 dist-V*/
+dist_hotfix/
 build/
+build_hotfix/
 *.exe
 
 # Backup files

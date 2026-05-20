@@ -208,6 +208,8 @@ class ChipWidget(QtWidgets.QFrame):  # type: ignore[misc]
         Args:
             text: 新的值文本
         """
+        if self.value_label.text() == text:
+            return
         self.value_label.setText(text)
 
 

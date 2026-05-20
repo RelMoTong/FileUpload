@@ -6,9 +6,12 @@
 """
 import base64
 import ctypes
+import re
+import shutil
 import sys
 from ctypes import wintypes
 from pathlib import Path
+from typing import Optional
 
 # 版本号单一来源
 try:
@@ -31,6 +34,84 @@ def get_app_dir() -> Path:
         return Path(sys.executable).parent
     # 开发环境，返回项目根目录
     return Path(__file__).parent.parent.parent
+
+
+_APP_DIR_PREFIX = "ImageUploadTool_v"
+_VERSION_RE = re.compile(r"^ImageUploadTool_v(\d+(?:\.\d+)*)$")
+
+
+def _parse_version_tuple(dirname: str) -> Optional[tuple[int, ...]]:
+    """从 ImageUploadTool_vX.Y.Z 目录名解析版本号。"""
+    match = _VERSION_RE.match(dirname)
+    if not match:
+        return None
+    try:
+        return tuple(int(part) for part in match.group(1).split("."))
+    except ValueError:
+        return None
+
+
+def migrate_config_from_previous_version(app_dir: Path, frozen: Optional[bool] = None) -> Optional[Path]:
+    """打包版首次启动时，从同级旧版本目录迁移 config.json。
+
+    Returns:
+        成功迁移的旧配置路径；未迁移则返回 None。
+    """
+    is_frozen = getattr(sys, 'frozen', False) if frozen is None else frozen
+    if not is_frozen:
+        return None
+
+    app_dir = Path(app_dir)
+    target_config = app_dir / 'config.json'
+    if target_config.exists():
+        return None
+
+    parent = app_dir.parent
+    if not parent.exists():
+        return None
+
+    current_version = _parse_version_tuple(app_dir.name)
+    versioned_candidates: list[tuple[tuple[int, ...], float, Path]] = []
+    fallback_candidates: list[tuple[float, Path]] = []
+
+    for candidate_dir in parent.iterdir():
+        if not candidate_dir.is_dir():
+            continue
+        if candidate_dir.resolve() == app_dir.resolve():
+            continue
+        if not candidate_dir.name.startswith(_APP_DIR_PREFIX):
+            continue
+
+        source_config = candidate_dir / 'config.json'
+        if not source_config.exists():
+            continue
+
+        version = _parse_version_tuple(candidate_dir.name)
+        mtime = source_config.stat().st_mtime
+        if version is None:
+            fallback_candidates.append((mtime, source_config))
+            continue
+        if current_version is not None and version >= current_version:
+            continue
+        versioned_candidates.append((version, mtime, source_config))
+
+    source: Optional[Path] = None
+    if versioned_candidates:
+        source = sorted(versioned_candidates, key=lambda item: (item[0], item[1]), reverse=True)[0][2]
+    elif fallback_candidates:
+        source = sorted(fallback_candidates, key=lambda item: item[0], reverse=True)[0][1]
+
+    if source is None:
+        return None
+
+    try:
+        app_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target_config)
+        print(f"已从旧版本迁移配置: {source} -> {target_config}")
+        return source
+    except Exception as e:
+        print(f"配置迁移失败: {e}")
+        return None
 
 
 def get_resource_path(relative_path: str) -> Path:
