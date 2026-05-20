@@ -6,8 +6,11 @@
 """
 import copy
 import json
+import os
+import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Iterator, BinaryIO
 
 
 class ConfigManager:
@@ -102,6 +105,44 @@ class ConfigManager:
         """
         self.config_path = config_path
         self._config: Dict[str, Any] = {}
+        self._save_lock = threading.Lock()
+
+    @contextmanager
+    def _locked_config_file(self) -> Iterator[None]:
+        """进程内和进程间配置文件锁。"""
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.config_path.with_name(self.config_path.name + '.lock')
+        with open(lock_path, 'a+b') as lock_file:
+            self._lock_file(lock_file)
+            try:
+                yield
+            finally:
+                self._unlock_file(lock_file)
+
+    @staticmethod
+    def _lock_file(lock_file: BinaryIO) -> None:
+        if os.name == 'nt':
+            import msvcrt
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            return
+
+        import fcntl  # type: ignore[import-not-found]
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+    @staticmethod
+    def _unlock_file(lock_file: BinaryIO) -> None:
+        try:
+            if os.name == 'nt':
+                import msvcrt
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                return
+
+            import fcntl  # type: ignore[import-not-found]
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
 
     @staticmethod
     def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -150,24 +191,67 @@ class ConfigManager:
         Returns:
             是否保存成功
         """
-        try:
-            # 保留现有的用户密码
-            if self.config_path.exists():
+        with self._save_lock, self._locked_config_file():
+            try:
+                config_to_save = copy.deepcopy(config)
+                # 保留现有的用户密码
+                if self.config_path.exists():
+                    try:
+                        with open(self.config_path, 'r', encoding='utf-8') as f:
+                            old_cfg = json.load(f)
+                            old_users = old_cfg.get('users', {})
+                            new_users = config_to_save.get('users', {})
+                            if isinstance(old_users, dict):
+                                if isinstance(new_users, dict) and new_users:
+                                    merged_users = copy.deepcopy(old_users)
+                                    merged_users.update(copy.deepcopy(new_users))
+                                    config_to_save['users'] = merged_users
+                                else:
+                                    config_to_save['users'] = copy.deepcopy(old_users)
+                    except Exception:
+                        pass
+
+                temp_path = self.config_path.with_name(
+                    f"{self.config_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+                )
+                bak_path = Path(str(self.config_path) + '.bak')
+                # Bug 9: 替换前备份原文件，replace() 失败时可恢复
+                backed_up = False
+                if self.config_path.exists():
+                    try:
+                        import shutil
+                        shutil.copy2(self.config_path, bak_path)
+                        backed_up = True
+                    except Exception:
+                        pass
                 try:
-                    with open(self.config_path, 'r', encoding='utf-8') as f:
-                        old_cfg = json.load(f)
-                        config['users'] = old_cfg.get('users', {})
+                    with open(temp_path, 'w', encoding='utf-8') as f:
+                        json.dump(config_to_save, f, indent=2, ensure_ascii=False)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(temp_path, self.config_path)
+                    if backed_up:
+                        try:
+                            bak_path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
                 except Exception:
-                    pass
-            
-            with open(self.config_path, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
-            
-            self._config = copy.deepcopy(config)
-            return True
-        except Exception as e:
-            print(f"配置保存失败: {e}")
-            return False
+                    try:
+                        temp_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    if backed_up and bak_path.exists() and not self.config_path.exists():
+                        try:
+                            bak_path.replace(self.config_path)
+                        except Exception:
+                            pass
+                    raise
+
+                self._config = copy.deepcopy(config_to_save)
+                return True
+            except Exception as e:
+                print(f"配置保存失败: {e}")
+                return False
     
     def get(self, key: str, default: Any = None) -> Any:
         """获取配置项

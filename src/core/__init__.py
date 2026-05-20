@@ -11,6 +11,7 @@ from .utils import (
     get_resource_path,
     get_app_version,
     get_app_title,
+    migrate_config_from_previous_version,
     protect_secret,
     unprotect_secret,
 )
@@ -23,6 +24,7 @@ __all__ = [
     'get_resource_path', 
     'get_app_version', 
     'get_app_title',
+    'migrate_config_from_previous_version',
     'protect_secret',
     'unprotect_secret',
     'PermissionManager',

@@ -336,8 +336,8 @@ class TestAutoCleanupTask(unittest.TestCase):
         submitted = []
 
         class FakeExecutor:
-            def submit(self, fn):
-                submitted.append(fn)
+            def submit(self, fn, *args):
+                submitted.append((fn, args))
 
         fw._cleanup_executor = FakeExecutor()
 
@@ -360,8 +360,8 @@ class TestAutoCleanupTask(unittest.TestCase):
         submitted = []
 
         class FakeExecutor:
-            def submit(self, fn):
-                submitted.append(fn)
+            def submit(self, fn, *args):
+                submitted.append((fn, args))
 
         fw._cleanup_executor = FakeExecutor()
         # _maybe_trigger_auto_cleanup 提交 self._auto_cleanup_task
@@ -374,6 +374,7 @@ class TestAutoCleanupTask(unittest.TestCase):
             MainWindow._maybe_trigger_auto_cleanup(fw, "测试")  # type: ignore[arg-type]
 
         self.assertEqual(len(submitted), 1)
+        self.assertEqual(submitted[0][1], (False,))
         self.assertTrue(fw._auto_cleanup_running)
 
     # ---- 场景 9：磁盘低于阈值不触发 ----

@@ -9,12 +9,19 @@ import sys
 import time
 import shutil
 import unittest
+import socket
 from pathlib import Path
 
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.protocols.ftp import FTPServerManager, FTPClientUploader
+
+
+def get_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(('127.0.0.1', 0))
+        return int(sock.getsockname()[1])
 
 
 class TestFTPServer(unittest.TestCase):
@@ -33,11 +40,12 @@ class TestFTPServer(unittest.TestCase):
         
         # 创建测试文件
         (cls.test_share / "test_file.txt").write_text("测试内容", encoding='utf-8')
+        cls.port = get_free_port()
         
         # 服务器配置
         cls.server_config = {
             'host': '127.0.0.1',
-            'port': 2121,
+            'port': cls.port,
             'username': 'test_user',
             'password': 'test_pass',
             'shared_folder': str(cls.test_share.absolute()),
@@ -67,7 +75,9 @@ class TestFTPServer(unittest.TestCase):
         # 验证状态
         status = server.get_status()
         self.assertTrue(status['running'], "服务器应该处于运行状态")
-        self.assertEqual(status['address'], '127.0.0.1:2121')
+        self.assertEqual(status['address'], f'127.0.0.1:{self.port}')
+        self.assertEqual(status['host'], '127.0.0.1')
+        self.assertEqual(status['port'], self.port)
         
         print(f"  ✓ 服务器启动成功: {status['address']}")
         print(f"  ✓ 共享目录: {status['shared_folder']}")
@@ -149,11 +159,12 @@ class TestFTPClient(unittest.TestCase):
         # 创建测试文件
         cls.test_file = cls.test_upload / "upload_test.txt"
         cls.test_file.write_text("这是要上传的测试内容", encoding='utf-8')
+        cls.port = get_free_port()
         
         # 启动测试服务器
         server_config = {
             'host': '127.0.0.1',
-            'port': 2122,
+            'port': cls.port,
             'username': 'client_test',
             'password': 'client_pass',
             'shared_folder': str(cls.test_share.absolute())
@@ -166,7 +177,7 @@ class TestFTPClient(unittest.TestCase):
         cls.client_config = {
             'name': 'test_client',
             'host': '127.0.0.1',
-            'port': 2122,
+            'port': cls.port,
             'username': 'client_test',
             'password': 'client_pass',
             'remote_path': '/upload',
@@ -201,7 +212,7 @@ class TestFTPClient(unittest.TestCase):
         status = client.get_status()
         self.assertTrue(status['connected'], "客户端应该处于连接状态")
         self.assertEqual(status['host'], '127.0.0.1')
-        self.assertEqual(status['port'], 2122)
+        self.assertEqual(status['port'], self.port)
         
         print(f"  ✓ 连接成功: {status['host']}:{status['port']}")
         
@@ -397,9 +408,10 @@ class TestAdvancedFeatures(unittest.TestCase):
         print("\n测试1: 连接数限制")
         
         # 配置连接限制
+        port = get_free_port()
         config = {
             'host': '127.0.0.1',
-            'port': 2125,
+            'port': port,
             'username': 'limit_test',
             'password': 'limit_pass',
             'shared_folder': str(self.test_share.absolute()),
@@ -428,9 +440,10 @@ class TestAdvancedFeatures(unittest.TestCase):
         print("\n测试2: 被动端口范围")
         
         # 配置被动端口范围
+        port = get_free_port()
         config = {
             'host': '127.0.0.1',
-            'port': 2126,
+            'port': port,
             'username': 'passive_test',
             'password': 'passive_pass',
             'shared_folder': str(self.test_share.absolute()),
@@ -473,9 +486,10 @@ class TestIntegration(unittest.TestCase):
         
         try:
             # 启动服务器
+            port = get_free_port()
             server_config = {
                 'host': '127.0.0.1',
-                'port': 2123,
+                'port': port,
                 'username': 'integration',
                 'password': 'integration_pass',
                 'shared_folder': str(share_dir.absolute())
@@ -489,7 +503,7 @@ class TestIntegration(unittest.TestCase):
             client_config = {
                 'name': 'integration_client',
                 'host': '127.0.0.1',
-                'port': 2123,
+                'port': port,
                 'username': 'integration',
                 'password': 'integration_pass',
                 'remote_path': '/data',

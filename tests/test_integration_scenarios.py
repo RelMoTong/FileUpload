@@ -29,7 +29,7 @@ def print_result(success, message):
     print(f"  {symbol} {message}")
 
 
-def test_scenario_1_smb_mode():
+def run_scenario_1_smb_mode():
     """
     场景1: 纯SMB模式（v1.9兼容性测试）
     模拟：用户从v1.9升级到v2.0，但继续使用SMB
@@ -71,7 +71,7 @@ def test_scenario_1_smb_mode():
         return False
 
 
-def test_scenario_2_ftp_server_mode():
+def run_scenario_2_ftp_server_mode():
     """
     场景2: FTP服务器模式
     模拟：用户将本机作为FTP服务器，其他设备上传文件到本机
@@ -143,7 +143,7 @@ def test_scenario_2_ftp_server_mode():
         return False
 
 
-def test_scenario_3_ftp_client_mode():
+def run_scenario_3_ftp_client_mode():
     """
     场景3: FTP客户端模式
     模拟：用户将文件上传到远程FTP服务器
@@ -228,7 +228,7 @@ def test_scenario_3_ftp_client_mode():
         return False
 
 
-def test_scenario_4_mixed_mode():
+def run_scenario_4_mixed_mode():
     """
     场景4: 混合模式
     模拟：同时运行FTP服务器（接收文件）和FTP客户端（发送文件）
@@ -327,7 +327,7 @@ def test_scenario_4_mixed_mode():
         return False
 
 
-def test_scenario_5_config_upgrade():
+def run_scenario_5_config_upgrade():
     """
     场景5: 配置升级测试（v1.9 → v2.0）
     模拟：用户升级后，旧配置文件仍然可用
@@ -388,7 +388,7 @@ def test_scenario_5_config_upgrade():
         return False
 
 
-def test_scenario_6_network_recovery():
+def run_scenario_6_network_recovery():
     """
     场景6: 网络断开恢复测试
     模拟：FTP上传过程中网络断开，然后恢复连接继续上传
@@ -552,6 +552,30 @@ def test_scenario_6_network_recovery():
                 pass
 
 
+def test_scenario_1_smb_mode():
+    assert run_scenario_1_smb_mode() is True
+
+
+def test_scenario_2_ftp_server_mode():
+    assert run_scenario_2_ftp_server_mode() is True
+
+
+def test_scenario_3_ftp_client_mode():
+    assert run_scenario_3_ftp_client_mode() is True
+
+
+def test_scenario_4_mixed_mode():
+    assert run_scenario_4_mixed_mode() is True
+
+
+def test_scenario_5_config_upgrade():
+    assert run_scenario_5_config_upgrade() is True
+
+
+def test_scenario_6_network_recovery():
+    assert run_scenario_6_network_recovery() is True
+
+
 def main():
     """运行所有集成测试场景"""
     print("\n")
@@ -564,12 +588,12 @@ def main():
     results = {}
     
     # 运行所有场景
-    results['场景1: SMB模式'] = test_scenario_1_smb_mode()
-    results['场景2: FTP服务器模式'] = test_scenario_2_ftp_server_mode()
-    results['场景3: FTP客户端模式'] = test_scenario_3_ftp_client_mode()
-    results['场景4: 混合模式'] = test_scenario_4_mixed_mode()
-    results['场景5: 配置升级'] = test_scenario_5_config_upgrade()
-    results['场景6: 网络断开恢复'] = test_scenario_6_network_recovery()
+    results['场景1: SMB模式'] = run_scenario_1_smb_mode()
+    results['场景2: FTP服务器模式'] = run_scenario_2_ftp_server_mode()
+    results['场景3: FTP客户端模式'] = run_scenario_3_ftp_client_mode()
+    results['场景4: 混合模式'] = run_scenario_4_mixed_mode()
+    results['场景5: 配置升级'] = run_scenario_5_config_upgrade()
+    results['场景6: 网络断开恢复'] = run_scenario_6_network_recovery()
     
     # 打印总结
     print("\n" + "=" * 70)

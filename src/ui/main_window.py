@@ -64,6 +64,7 @@ from src.core import (
     get_resource_path,
     get_app_version,
     get_app_title,
+    migrate_config_from_previous_version,
     protect_secret,
     unprotect_secret,
 )
@@ -93,7 +94,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
     _disk_update_signal = Signal(str, float)  # disk_type, free_percent
     _async_log_signal = Signal(str)
     _permission_changed_signal = Signal()  # 角色/运行状态变更
-    
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_TITLE)
@@ -101,7 +102,8 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.resize(1350, 880)  # 稍微减小高度
         self.setMinimumSize(1200, 750)  # 减小最小尺寸
         self.app_dir = get_app_dir()
-        
+        self._migrated_config_from = migrate_config_from_previous_version(self.app_dir)
+
         # 连接内部信号
         self._disk_update_signal.connect(self._on_disk_update)
         self._async_log_signal.connect(self._append_log)
@@ -138,18 +140,18 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.last_config_save_error = ''
         self.disk_check_interval = 5  # 磁盘空间检查间隔（秒）
         self.disk_check_counter = 0  # 磁盘空间检查计数器
-        
+
         # v1.9 新增：文件去重配置
         self.enable_deduplication = False  # 是否启用智能去重
         self.hash_algorithm = 'md5'  # 哈希算法：md5 或 sha256
         self.duplicate_strategy = 'ask'  # 去重策略：skip, rename, overwrite, ask
-        
+
         # v1.9 新增：网络监控配置
         self.network_check_interval = 10  # 网络检测间隔（秒）
         self.network_auto_pause = True  # 网络断开自动暂停
         self.network_auto_resume = True  # 网络恢复自动继续
         self.network_status = 'unknown'  # 网络状态：good, unstable, disconnected, unknown
-        
+
         # v1.9 新增：自动删除配置
         self.enable_auto_delete = False
         self.auto_delete_folder = ''
@@ -160,10 +162,12 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.auto_delete_check_interval = 300  # 每5分钟检查一次
         self.auto_delete_formats: List[str] = []  # 自动清理文件格式过滤
         self.auto_delete_use_trash = True  # 自动清理删除模式（True=回收站）
-        
+
         # v2.0 新增：FTP 协议配置
         self.current_protocol = 'smb'  # 上传协议：smb, ftp_client, both
         self.enable_ftp_server = False  # v3.1.0: FTP服务器独立开关
+        self._ftp_server_standalone = False  # v3.4: FTP服务器是否通过独立按钮启动（不依赖上传流程）
+        self.auto_ftp_on_startup = False  # v3.4: 启动时自动开启FTP服务器
         self.ftp_server_config = {
             'host': '0.0.0.0',
             'port': 2121,
@@ -180,14 +184,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             'timeout': 30,
             'retry_count': 3,
         }
-        
+
         # 日志文件路径（每天一个日志文件）
         self.log_file_path = None
         self._init_log_file()
-        
+
         # 确保必要的目录存在
         self._ensure_directories()
-        
+
         # 日志写入线程池（避免阻塞主线程）
         self._log_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="LogWriter")
         self._disk_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="DiskCheck")
@@ -197,29 +201,37 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self._auto_cleanup_running = False
         self._auto_cleanup_lock = threading.Lock()
         self._auto_cleanup_last_warn = 0.0
-        
+
         # v2.2.0 新增：系统托盘配置
         self.minimize_to_tray = True  # 最小化到托盘
         self.show_notifications = True  # 显示通知
         self.tray_icon = None  # 托盘图标对象
-        
+
         # v2.3.0 新增：速率限制配置
         self.limit_upload_rate = False
         self.max_upload_rate_mbps = 10.0
-        
+
         # v2.0 新增：FTP 协议管理器（延迟初始化，避免在UI创建前调用日志）
         self.ftp_manager = None
-        
+
+        # 高频 UI 刷新去重缓存，避免上传时重复 setText/setStyleSheet 触发布局抖动。
+        self._last_file_progress: Optional[Tuple[str, int]] = None
+        self._last_status_pill_state = ''
+        self._last_mode_chip_index: Optional[int] = None
+        self._last_ftp_server_btn_state: Optional[Tuple[bool, str]] = None
+
         # UI
         self._build_ui()
+        if self._migrated_config_from:
+            self._append_log(f"✓ 已从旧版本迁移配置: {self._migrated_config_from}")
         self._load_config()
         self._update_auto_cleanup_schedule()
         self._apply_theme()
         self._update_ui_permissions()
-        
+
         # v2.2.0 新增：初始化系统托盘
         self._init_tray_icon()
-        
+
         # v2.0 新增：初始化 FTP 协议管理器（在UI创建后）
         if FTP_AVAILABLE:
             try:
@@ -228,10 +240,12 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             except Exception as e:
                 self._append_log(f"⚠ FTP 协议管理器初始化失败: {e}")
                 self.ftp_manager = None
-        
+
         # 自动运行检查
         if self.auto_run_on_startup:
             QtCore.QTimer.singleShot(1000, self._auto_start_upload)
+        if self.auto_ftp_on_startup:
+            QtCore.QTimer.singleShot(1500, self._auto_start_ftp_server)
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(500)
         self._timer.timeout.connect(self._tick)
@@ -242,11 +256,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         try:
             logs_dir = self.app_dir / 'logs'
             logs_dir.mkdir(parents=True, exist_ok=True)
-            
+
             # 使用当前日期作为文件名
             today = datetime.datetime.now().strftime('%Y-%m-%d')
             self.log_file_path = logs_dir / f'upload_{today}.txt'
-            
+
             # 如果是新文件，写入文件头
             if not self.log_file_path.exists():
                 with open(self.log_file_path, 'w', encoding='utf-8') as f:
@@ -260,14 +274,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
 
     def _ensure_directories(self):
         """确保必要的目录存在（logs 等）
-        
+
         在打包后的程序中，需要在 exe 所在目录创建可写目录
         """
         try:
             # 创建 logs 目录
             logs_dir = self.app_dir / 'logs'
             logs_dir.mkdir(parents=True, exist_ok=True)
-            
+
             # 如果不存在 config.json，则使用默认配置生成
             config_path = self.app_dir / 'config.json'
             if not config_path.exists():
@@ -298,7 +312,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             QPushButton.Danger:hover{background:#FECACA;}
             QPushButton.Danger:disabled{background:#E5E7EB; color:#9CA3AF;}
             QProgressBar{border:1px solid #64B5F6; border-radius:6px; background:#EEF2F5; text-align:center; color:#1F2937;}
-            QProgressBar::chunk{border-radius:6px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4FACFE, stop:1 #00F2FE);} 
+            QProgressBar::chunk{border-radius:6px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4FACFE, stop:1 #00F2FE);}
             QPlainTextEdit{background:#FFFFFF; border:1px solid #64B5F6; color:#1F2937; border-radius:4px;}
             QSpinBox{background:#FFFFFF; color:#1F2937; border:1px solid #64B5F6; border-radius:4px; padding:4px; padding-right:2px;}
             QSpinBox:disabled{background:#F3F4F6; color:#9CA3AF; border:1px solid #D1D5DB;}
@@ -324,10 +338,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             QCheckBox::indicator:checked:disabled{background:#E0E0E0; border:2px solid #D1D5DB;}
             QToolButton{color:#1F2937; background:#FFFFFF; border:1px solid #64B5F6; border-radius:4px; padding:4px;}
             QToolButton:hover{background:#E3F2FD;}
+            QToolButton:disabled{color:#9CA3AF; background:#F3F4F6; border:1px solid #D1D5DB;}
             QToolButton::menu-indicator{image:none;}
             QMenu{background:#FFFFFF; color:#1F2937; border:1px solid #64B5F6; border-radius:4px; padding:4px;}
             QMenu::item{padding:6px 20px; border-radius:3px;}
             QMenu::item:selected{background:#E3F2FD; color:#1976D2;}
+            QMenu::item:disabled{color:#9CA3AF; background:transparent;}
+            QMenu::item:disabled:selected{color:#9CA3AF; background:transparent;}
             QMenu::separator{height:1px; background:#E5EAF0; margin:4px 0px;}
             QDialog{background:#E3F2FD;}
             QComboBox{background:#FFFFFF; color:#1F2937; border:1px solid #64B5F6; border-radius:4px; padding:4px;}
@@ -336,7 +353,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             QComboBox::down-arrow{image:none; border-left:4px solid transparent; border-right:4px solid transparent; border-top:6px solid #1976D2; margin-right:8px;}
             QComboBox::down-arrow:disabled{border-top-color:#9CA3AF;}
             QComboBox QAbstractItemView{background:#FFFFFF; color:#1F2937; border:1px solid #64B5F6; selection-background-color:#E3F2FD;}
-            
+
             /* 滚动条样式 */
             QScrollBar:vertical{background:#E3F2FD; width:12px; border-radius:6px; margin:0px;}
             QScrollBar::handle:vertical{background:#90CAF9; border-radius:6px; min-height:30px;}
@@ -344,7 +361,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             QScrollBar::handle:vertical:pressed{background:#42A5F5;}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical{height:0px;}
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical{background:transparent;}
-            
+
             QScrollBar:horizontal{background:#E3F2FD; height:12px; border-radius:6px; margin:0px;}
             QScrollBar::handle:horizontal{background:#90CAF9; border-radius:6px; min-width:30px;}
             QScrollBar::handle:horizontal:hover{background:#64B5F6;}
@@ -376,19 +393,19 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.setCentralWidget(scroll_area)
-        
+
         # 创建内容容器 - 优化宽度适配高分辨率
         central = QtWidgets.QWidget()
         central.setMinimumWidth(1250)  # 减小最小宽度
         scroll_area.setWidget(central)
-        
+
         root = QtWidgets.QVBoxLayout(central)
         root.setSpacing(12)  # 减小间距，节省空间
         root.setContentsMargins(12, 12, 12, 12)  # 减小边距
 
         # header
         header = QtWidgets.QHBoxLayout()
-        
+
         # Logo - 使用资源路径函数确保打包后也能访问
         logo_path = get_resource_path("assets/logo.png")
         if logo_path.exists():
@@ -405,7 +422,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self._append_log("⚠️ Logo 文件加载失败")
         else:
             self._append_log(f"⚠️ Logo 文件不存在: {logo_path}")
-        
+
         self.header_title = QtWidgets.QLabel(t('header_title'))
         self.header_title.setObjectName("Title")
         ver = QtWidgets.QLabel(f"v{APP_VERSION} (PyQt)")
@@ -445,16 +462,16 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 background: #1976D2;
             }
         """)
-        
+
         folder_card = self._folder_card()
         settings_card = self._settings_card()
-        
+
         left_splitter.addWidget(folder_card)
         left_splitter.addWidget(settings_card)
-        
+
         # 设置初始比例：文件夹卡片较小，设置卡片较大
         left_splitter.setSizes([200, 500])
-        
+
         left.addWidget(left_splitter)
 
         # middle cards - 同样使用 QSplitter
@@ -470,11 +487,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 background: #1976D2;
             }
         """)
-        
+
         middle_splitter.addWidget(self._control_card())
         middle_splitter.addWidget(self._status_card())
         middle_splitter.setSizes([250, 450])
-        
+
         middle.addWidget(middle_splitter)
 
         # right - log card
@@ -482,11 +499,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
 
     def _card(self, title_text: str, title_key: str = '') -> Tuple[QtWidgets.QFrame, QtWidgets.QVBoxLayout, Optional[QtWidgets.QLabel]]:
         """创建卡片容器
-        
+
         Args:
             title_text: 标题文本
             title_key: i18n 翻译键（用于动态切换语言）
-            
+
         Returns:
             (card, layout, title_label) - title_label 用于后续更新文本
         """
@@ -511,14 +528,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
 
     def _folder_card(self) -> QtWidgets.QFrame:
         card, v, self.title_folder = self._card("📁 文件夹设置", "card_folder_settings")
-        
+
         # source
         self.src_edit, self.btn_choose_src, self.lbl_src = self._path_row(v, "源文件夹", self._choose_source)
         # target
         self.tgt_edit, self.btn_choose_tgt, self.lbl_tgt = self._path_row(v, "目标文件夹", self._choose_target)
         # backup
         self.bak_edit, self.btn_choose_bak, self.lbl_bak = self._path_row(v, "备份文件夹", self._choose_backup)
-        
+
         # v2.1.1 新增：启用备份复选框
         self.cb_enable_backup = QtWidgets.QCheckBox(" 启用备份功能")
         self.cb_enable_backup.setProperty('orig_text', " 启用备份功能")
@@ -527,16 +544,16 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.cb_enable_backup.toggled.connect(self._on_backup_toggled)
         self._set_checkbox_mark(self.cb_enable_backup, self.cb_enable_backup.isChecked())
         v.addWidget(self.cb_enable_backup)
-        
+
         # 添加说明文本
         self.backup_hint = QtWidgets.QLabel(t('backup_hint'))
         self.backup_hint.setWordWrap(True)
         self.backup_hint.setStyleSheet("color: #666; font-size: 11px; padding: 5px 0;")
         v.addWidget(self.backup_hint)
-        
+
         # v3.0.0 修复：设置固定高度，防止被其他卡片挤压
         card.setFixedHeight(260)
-        
+
         return card
 
     def _path_row(self, layout: QtWidgets.QVBoxLayout, label: str, chooser):
@@ -565,7 +582,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
 
     def _settings_card(self) -> QtWidgets.QFrame:
         card, v, self.title_settings = self._card("⚙️ 上传设置", "card_upload_settings")
-        
+
         # v3.0.0 修复：将设置内容放入滚动区域，防止可折叠组件展开时影响其他卡片大小
         scroll_area = QtWidgets.QScrollArea()
         scroll_area.setWidgetResizable(True)
@@ -579,19 +596,19 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         )
         # 设置滚动区域的最小高度，防止被压缩得太小
         scroll_area.setMinimumHeight(200)
-        
+
         # 创建滚动内容容器
         scroll_content = QtWidgets.QWidget()
         scroll_layout = QtWidgets.QVBoxLayout(scroll_content)
         scroll_layout.setContentsMargins(0, 0, 8, 0)  # 右边留出滚动条空间
         scroll_layout.setSpacing(10)
-        
+
         # 将后续所有内容添加到 scroll_layout 而不是 v
         # ========== v2.0 新增：协议选择 ==========
         self.protocol_title_label = QtWidgets.QLabel(t('upload_protocol_title'))
         self.protocol_title_label.setStyleSheet("color:#1976D2; font-size:11px; font-weight:700;")
         scroll_layout.addWidget(self.protocol_title_label)
-        
+
         # 协议选择下拉框
         protocol_row = QtWidgets.QHBoxLayout()
         self.protocol_type_label = QtWidgets.QLabel(t('protocol_type_label'))
@@ -605,14 +622,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         protocol_row.addWidget(self.protocol_type_label)
         protocol_row.addWidget(self.combo_protocol, 1)
         scroll_layout.addLayout(protocol_row)
-        
+
         # 协议说明
         self.protocol_desc = QtWidgets.QLabel()
         self.protocol_desc.setWordWrap(True)
         self.protocol_desc.setStyleSheet("color: #6B7280; padding: 8px; background: #F3F4F6; border-radius: 6px; font-size: 10px;")
         scroll_layout.addWidget(self.protocol_desc)
         self._update_protocol_description(0)
-        
+
         # v3.1.0 新增：FTP 服务器独立开关（默认SMB模式下禁用）
         ftp_server_switch_row = QtWidgets.QHBoxLayout()
         self.cb_enable_ftp_server = QtWidgets.QCheckBox(t('enable_ftp_server'))
@@ -622,14 +639,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         ftp_server_switch_row.addWidget(self.cb_enable_ftp_server)
         ftp_server_switch_row.addStretch()
         scroll_layout.addLayout(ftp_server_switch_row)
-        
+
         # FTP 服务器提示
         self.ftp_server_hint = QtWidgets.QLabel(t('ftp_server_hint'))
         self.ftp_server_hint.setWordWrap(True)
         self.ftp_server_hint.setStyleSheet("color: #9CA3AF; font-size: 9px; padding-left: 20px;")
         self.ftp_server_hint.setVisible(False)
         scroll_layout.addWidget(self.ftp_server_hint)
-        
+
         # FTP 配置容器（v3.1.0: 始终可见但根据模式启用/禁用，避免布局跳动）
         self.ftp_config_widget = QtWidgets.QWidget()
         self.ftp_config_widget.setVisible(True)  # 始终可见
@@ -637,27 +654,27 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         ftp_layout = QtWidgets.QVBoxLayout(self.ftp_config_widget)
         ftp_layout.setContentsMargins(0, 8, 0, 0)
         ftp_layout.setSpacing(10)
-        
+
         # ========== FTP 服务器配置 - 可折叠 ==========
         self.ftp_server_collapsible = CollapsibleBox(t('ftp_server_config'), self)
         server_layout = QtWidgets.QFormLayout()
         server_layout.setSpacing(8)
         server_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         self.ftp_server_host = QtWidgets.QLineEdit("0.0.0.0")
         self.ftp_server_host.setToolTip(t('listen_address_tooltip'))
         server_layout.addRow(t('listen_address'), self.ftp_server_host)
-        
+
         self.ftp_server_port = QtWidgets.QSpinBox()
         self.ftp_server_port.setRange(1, 65535)
         self.ftp_server_port.setValue(2121)
         self.ftp_server_port.setToolTip(t('port_tooltip'))
         server_layout.addRow(t('port_label'), self.ftp_server_port)
-        
+
         self.ftp_server_user = QtWidgets.QLineEdit("upload_user")
         self.ftp_server_user.setToolTip(t('username_tooltip'))
         server_layout.addRow(t('username_label'), self.ftp_server_user)
-        
+
         # v3.1.0: 密码输入框带可见性切换按钮
         server_pass_row = QtWidgets.QHBoxLayout()
         self.ftp_server_pass = QtWidgets.QLineEdit("upload_pass")
@@ -667,13 +684,16 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.btn_toggle_server_pass.setText("👁")
         self.btn_toggle_server_pass.setToolTip(t('show_password'))
         self.btn_toggle_server_pass.setCheckable(True)
-        self.btn_toggle_server_pass.setStyleSheet("QToolButton { border: none; font-size: 14px; padding: 2px; }")
+        self.btn_toggle_server_pass.setStyleSheet(
+            "QToolButton { border: none; font-size: 14px; padding: 2px; }"
+            "QToolButton:disabled { border: none; font-size: 14px; padding: 2px; color: #D1D5DB; }"
+        )
         self.btn_toggle_server_pass.toggled.connect(lambda checked: self._toggle_password_visibility(
             self.ftp_server_pass, self.btn_toggle_server_pass, checked))
         server_pass_row.addWidget(self.ftp_server_pass, 1)
         server_pass_row.addWidget(self.btn_toggle_server_pass)
         server_layout.addRow(t('password_label'), server_pass_row)
-        
+
         # 共享目录选择
         share_row = QtWidgets.QHBoxLayout()
         self.ftp_server_share = QtWidgets.QLineEdit()
@@ -685,13 +705,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         share_row.addWidget(self.ftp_server_share, 1)
         share_row.addWidget(btn_choose_share)
         server_layout.addRow(t('share_directory'), share_row)
-        
+
         # v2.0 新增：高级选项 - 被动模式
         self.cb_server_passive = QtWidgets.QCheckBox(t('enable_passive'))
         self.cb_server_passive.setChecked(True)
         self.cb_server_passive.setToolTip(t('passive_mode_tooltip'))
         server_layout.addRow("", self.cb_server_passive)
-        
+
         # 被动端口范围
         passive_row = QtWidgets.QHBoxLayout()
         self.ftp_server_passive_start = QtWidgets.QSpinBox()
@@ -699,7 +719,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.ftp_server_passive_start.setValue(60000)
         self.ftp_server_passive_start.setPrefix(t('port_start') + " ")
         passive_row.addWidget(self.ftp_server_passive_start)
-        
+
         self.ftp_server_passive_end = QtWidgets.QSpinBox()
         self.ftp_server_passive_end.setRange(1024, 65535)
         self.ftp_server_passive_end.setValue(65535)
@@ -707,13 +727,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         passive_row.addWidget(self.ftp_server_passive_end)
         passive_row.addStretch()
         server_layout.addRow("  " + t('port_range'), passive_row)
-        
+
         # v2.0 新增：TLS/SSL选项
         self.cb_server_tls = QtWidgets.QCheckBox(t('enable_tls'))
         self.cb_server_tls.setChecked(False)
         self.cb_server_tls.setToolTip(t('enable_tls_tooltip'))
         server_layout.addRow("", self.cb_server_tls)
-        
+
         # v2.0 新增：连接数限制
         conn_row = QtWidgets.QHBoxLayout()
         self.conn_label = QtWidgets.QLabel(t('max_connections'))
@@ -723,7 +743,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.ftp_server_max_conn.setSuffix(" " + t('unit_connections'))
         conn_row.addWidget(self.conn_label)
         conn_row.addWidget(self.ftp_server_max_conn)
-        
+
         self.ip_label = QtWidgets.QLabel("  " + t('per_ip_limit'))
         self.ftp_server_max_conn_per_ip = QtWidgets.QSpinBox()
         self.ftp_server_max_conn_per_ip.setRange(1, 100)
@@ -733,38 +753,38 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         conn_row.addWidget(self.ftp_server_max_conn_per_ip)
         conn_row.addStretch()
         server_layout.addRow(t('connection_limit'), conn_row)
-        
+
         # v2.0 新增：FTP服务器测试按钮
         self.btn_test_ftp_server = QtWidgets.QPushButton(t('test_config'))
         self.btn_test_ftp_server.setProperty("class", "Secondary")
         self.btn_test_ftp_server.clicked.connect(self._test_ftp_server_config)
         server_layout.addRow("", self.btn_test_ftp_server)
-        
+
         self.ftp_server_collapsible.setContentLayout(server_layout)
         ftp_layout.addWidget(self.ftp_server_collapsible)
-        
+
         # ========== FTP 客户端配置 - 可折叠 ==========
         self.ftp_client_collapsible = CollapsibleBox(t('ftp_client_config'), self)
         client_layout = QtWidgets.QFormLayout()
         client_layout.setSpacing(8)
         client_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         self.ftp_client_host = QtWidgets.QLineEdit()
         self.ftp_client_host.setPlaceholderText("ftp.example.com")
         self.ftp_client_host.setToolTip(t('server_address_tooltip'))
         client_layout.addRow(t('server_label'), self.ftp_client_host)
-        
+
         self.ftp_client_port = QtWidgets.QSpinBox()
         self.ftp_client_port.setRange(1, 65535)
         self.ftp_client_port.setValue(21)
         self.ftp_client_port.setToolTip(t('client_port_tooltip'))
         client_layout.addRow(t('port_label'), self.ftp_client_port)
-        
+
         self.ftp_client_user = QtWidgets.QLineEdit()
         self.ftp_client_user.setPlaceholderText(t('username_placeholder'))
         self.ftp_client_user.setToolTip(t('client_username_tooltip'))
         client_layout.addRow(t('username_label'), self.ftp_client_user)
-        
+
         # v3.1.0: 密码输入框带可见性切换按钮
         client_pass_row = QtWidgets.QHBoxLayout()
         self.ftp_client_pass = QtWidgets.QLineEdit()
@@ -775,17 +795,20 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.btn_toggle_client_pass.setText("👁")
         self.btn_toggle_client_pass.setToolTip(t('show_password'))
         self.btn_toggle_client_pass.setCheckable(True)
-        self.btn_toggle_client_pass.setStyleSheet("QToolButton { border: none; font-size: 14px; padding: 2px; }")
+        self.btn_toggle_client_pass.setStyleSheet(
+            "QToolButton { border: none; font-size: 14px; padding: 2px; }"
+            "QToolButton:disabled { border: none; font-size: 14px; padding: 2px; color: #D1D5DB; }"
+        )
         self.btn_toggle_client_pass.toggled.connect(lambda checked: self._toggle_password_visibility(
             self.ftp_client_pass, self.btn_toggle_client_pass, checked))
         client_pass_row.addWidget(self.ftp_client_pass, 1)
         client_pass_row.addWidget(self.btn_toggle_client_pass)
         client_layout.addRow(t('password_label'), client_pass_row)
-        
+
         self.ftp_client_remote = QtWidgets.QLineEdit("/upload")
         self.ftp_client_remote.setToolTip(t('remote_path_tooltip'))
         client_layout.addRow(t('remote_path'), self.ftp_client_remote)
-        
+
         # v2.0 新增：超时和重试配置
         timeout_row = QtWidgets.QHBoxLayout()
         self.ftp_client_timeout = QtWidgets.QSpinBox()
@@ -796,7 +819,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         timeout_row.addWidget(self.ftp_client_timeout)
         timeout_row.addStretch()
         client_layout.addRow(t('timeout_label'), timeout_row)
-        
+
         retry_row = QtWidgets.QHBoxLayout()
         self.ftp_client_retry = QtWidgets.QSpinBox()
         self.ftp_client_retry.setRange(0, 10)
@@ -806,33 +829,33 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         retry_row.addWidget(self.ftp_client_retry)
         retry_row.addStretch()
         client_layout.addRow(t('ftp_retry_label'), retry_row)
-        
+
         # v2.0 新增：高级选项 - 被动模式
         self.cb_client_passive = QtWidgets.QCheckBox(t('use_passive_mode'))
         self.cb_client_passive.setChecked(True)
         self.cb_client_passive.setToolTip(t('passive_mode_tooltip'))
         client_layout.addRow("", self.cb_client_passive)
-        
+
         # v2.0 新增：TLS/SSL选项
         self.cb_client_tls = QtWidgets.QCheckBox(t('enable_tls'))
         self.cb_client_tls.setChecked(False)
         self.cb_client_tls.setToolTip(t('client_tls_tooltip'))
         client_layout.addRow("", self.cb_client_tls)
-        
+
         # v2.0 新增：FTP客户端测试按钮
         self.btn_test_ftp_client = QtWidgets.QPushButton(t('test_connection'))
         self.btn_test_ftp_client.setProperty("class", "Secondary")
         self.btn_test_ftp_client.clicked.connect(self._test_ftp_client_connection)
         client_layout.addRow("", self.btn_test_ftp_client)
-        
+
         self.ftp_client_collapsible.setContentLayout(client_layout)
         ftp_layout.addWidget(self.ftp_client_collapsible)
-        
+
         scroll_layout.addWidget(self.ftp_config_widget)
-        
+
         scroll_layout.addWidget(self._hline())
         # ========== v2.0 协议选择结束 ==========
-        
+
         # interval - v3.0.2: 解包返回值保存标签引用用于多语言
         self.spin_interval, self.lbl_interval = self._spin_row(scroll_layout, t("interval_label"), 10, 3600, 30)
         self.spin_disk, self.lbl_disk = self._spin_row(scroll_layout, t("disk_threshold_label"), 5, 50, 10)
@@ -845,7 +868,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.spin_disk.valueChanged.connect(lambda _: self._mark_config_modified())
         self.spin_retry.valueChanged.connect(lambda _: self._mark_config_modified())
         self.spin_disk_check.valueChanged.connect(lambda _: self._mark_config_modified())
-        
+
         # ========== 文件类型限制 - 可折叠 ==========
         self.filter_collapsible = CollapsibleBox(t('file_filter_title'), self)
         grid = QtWidgets.QGridLayout()
@@ -868,10 +891,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             grid.addWidget(cb, i//3, i%3)
         self.filter_collapsible.addLayout(grid)
         scroll_layout.addWidget(self.filter_collapsible)
-        
+
         # ========== 高级选项 - 可折叠 ==========
         self.adv_collapsible = CollapsibleBox(t('advanced_options_title'), self)
-        
+
         self.cb_auto_start_windows = QtWidgets.QCheckBox(t('auto_start_windows'))
         self.cb_auto_start_windows.setProperty('orig_text', t('auto_start_windows'))
         self.cb_auto_start_windows.setChecked(False)
@@ -879,23 +902,35 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.cb_auto_start_windows.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_auto_start_windows, checked))
         self._set_checkbox_mark(self.cb_auto_start_windows, self.cb_auto_start_windows.isChecked())
         self.adv_collapsible.addWidget(self.cb_auto_start_windows)
-        
+
         self.cb_auto_run_on_startup = QtWidgets.QCheckBox(t('auto_run_on_startup'))
         self.cb_auto_run_on_startup.setProperty('orig_text', t('auto_run_on_startup'))
         self.cb_auto_run_on_startup.setChecked(False)
         self.cb_auto_run_on_startup.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_auto_run_on_startup, checked))
+        self.cb_auto_run_on_startup.toggled.connect(lambda _: self._mark_config_modified())
         self._set_checkbox_mark(self.cb_auto_run_on_startup, self.cb_auto_run_on_startup.isChecked())
         self.adv_collapsible.addWidget(self.cb_auto_run_on_startup)
-        
+
+        # v3.4 新增：启动时自动开启FTP服务器
+        self.cb_auto_ftp_on_startup = QtWidgets.QCheckBox(t('auto_ftp_on_startup'))
+        self.cb_auto_ftp_on_startup.setProperty('orig_text', t('auto_ftp_on_startup'))
+        self.cb_auto_ftp_on_startup.setToolTip('勾选后，软件启动时将自动开启FTP服务器（需已在FTP服务器配置中设置共享目录）')
+        self.cb_auto_ftp_on_startup.setChecked(False)
+        self.cb_auto_ftp_on_startup.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_auto_ftp_on_startup, checked))
+        self.cb_auto_ftp_on_startup.toggled.connect(lambda _: self._mark_config_modified())
+        self._set_checkbox_mark(self.cb_auto_ftp_on_startup, self.cb_auto_ftp_on_startup.isChecked())
+        self.adv_collapsible.addWidget(self.cb_auto_ftp_on_startup)
+
         # v2.2.0 新增：托盘通知开关
         self.cb_show_notifications = QtWidgets.QCheckBox(t('show_notifications'))
         self.cb_show_notifications.setProperty('orig_text', t('show_notifications'))
         self.cb_show_notifications.setChecked(True)
         self.cb_show_notifications.toggled.connect(lambda checked: setattr(self, 'show_notifications', checked))
         self.cb_show_notifications.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_show_notifications, checked))
+        self.cb_show_notifications.toggled.connect(lambda _: self._mark_config_modified())
         self._set_checkbox_mark(self.cb_show_notifications, self.cb_show_notifications.isChecked())
         self.adv_collapsible.addWidget(self.cb_show_notifications)
-        
+
         # v2.3.0 新增：速率限制
         rate_row = QtWidgets.QHBoxLayout()
         self.cb_limit_rate = QtWidgets.QCheckBox(t('limit_upload_rate'))
@@ -905,7 +940,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.cb_limit_rate.toggled.connect(self._on_rate_limit_toggled)
         self.cb_limit_rate.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_limit_rate, checked))
         self._set_checkbox_mark(self.cb_limit_rate, self.cb_limit_rate.isChecked())
-        
+
         self.spin_max_rate = QtWidgets.QDoubleSpinBox()
         self.spin_max_rate.setRange(0.1, 1000.0)
         self.spin_max_rate.setValue(10.0)
@@ -913,16 +948,16 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.spin_max_rate.setSingleStep(0.5)
         self.spin_max_rate.setEnabled(False)
         self.spin_max_rate.setToolTip(t('max_rate_tooltip'))
-        self.spin_max_rate.valueChanged.connect(lambda: setattr(self, 'config_modified', True))
-        
+        self.spin_max_rate.valueChanged.connect(lambda: self._mark_config_modified())
+
         rate_row.addWidget(self.cb_limit_rate)
         rate_row.addWidget(self.spin_max_rate)
         rate_row.addStretch()
         self.adv_collapsible.addLayout(rate_row)
-        
+
         # 添加分隔线
         self.adv_collapsible.addWidget(self._hline())
-        
+
         # 去重功能
         self.cb_dedup_enable = QtWidgets.QCheckBox(t('enable_dedup'))
         self.cb_dedup_enable.setProperty('orig_text', t('enable_dedup'))
@@ -931,41 +966,43 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.cb_dedup_enable.toggled.connect(lambda checked: self._set_checkbox_mark(self.cb_dedup_enable, checked))
         self._set_checkbox_mark(self.cb_dedup_enable, self.cb_dedup_enable.isChecked())
         self.adv_collapsible.addWidget(self.cb_dedup_enable)
-        
+
         # 哈希算法选择
         hash_row = QtWidgets.QHBoxLayout()
         self.hash_lab = QtWidgets.QLabel(t('hash_algorithm') + ":")
         self.combo_hash = QtWidgets.QComboBox()
         self.combo_hash.addItems(["MD5", "SHA256"])
         self.combo_hash.setEnabled(False)
+        self.combo_hash.currentIndexChanged.connect(lambda _: self._mark_config_modified())
         hash_row.addWidget(self.hash_lab)
         hash_row.addWidget(self.combo_hash)
         self.adv_collapsible.addLayout(hash_row)
-        
+
         # 去重策略选择
         strategy_row = QtWidgets.QHBoxLayout()
         self.strategy_lab = QtWidgets.QLabel(t('duplicate_strategy') + ":")
         self.combo_strategy = QtWidgets.QComboBox()
         self.combo_strategy.addItems([t('strategy_skip'), t('strategy_rename'), t('strategy_overwrite'), t('strategy_ask')])
         self.combo_strategy.setEnabled(False)
+        self.combo_strategy.currentIndexChanged.connect(lambda _: self._mark_config_modified())
         strategy_row.addWidget(self.strategy_lab)
         strategy_row.addWidget(self.combo_strategy)
         self.adv_collapsible.addLayout(strategy_row)
-        
+
         # 说明文本
         self.dedup_hint = QtWidgets.QLabel(t('dedup_hint'))
         self.dedup_hint.setStyleSheet("color:#757575; font-size:9px; padding:4px;")
         self.dedup_hint.setWordWrap(True)
         self.adv_collapsible.addWidget(self.dedup_hint)
-        
+
         # 添加分隔线
         self.adv_collapsible.addWidget(self._hline())
-        
+
         # 网络监控选项
         self.network_sub_lab = QtWidgets.QLabel(t('network_monitor'))
         self.network_sub_lab.setStyleSheet("color:#666; font-size:10px; font-weight:700;")
         self.adv_collapsible.addWidget(self.network_sub_lab)
-        
+
         # 网络检测间隔 - 压缩布局
         network_check_row = QtWidgets.QHBoxLayout()
         self.network_check_lab = QtWidgets.QLabel(t('check_interval_label'))
@@ -977,7 +1014,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         network_check_row.addWidget(self.spin_network_check)
         network_check_row.addStretch()
         self.adv_collapsible.addLayout(network_check_row)
-        
+
         self.cb_network_auto_pause = QtWidgets.QCheckBox(t('auto_pause_on_disconnect'))
         self.cb_network_auto_pause.setProperty('orig_text', t('auto_pause_on_disconnect'))
         self.cb_network_auto_pause.setChecked(True)
@@ -985,7 +1022,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.cb_network_auto_pause.toggled.connect(lambda _: self._mark_config_modified())
         self._set_checkbox_mark(self.cb_network_auto_pause, self.cb_network_auto_pause.isChecked())
         self.adv_collapsible.addWidget(self.cb_network_auto_pause)
-        
+
         self.cb_network_auto_resume = QtWidgets.QCheckBox(t('auto_resume_on_reconnect'))
         self.cb_network_auto_resume.setProperty('orig_text', t('auto_resume_on_reconnect'))
         self.cb_network_auto_resume.setChecked(True)
@@ -993,22 +1030,22 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.cb_network_auto_resume.toggled.connect(lambda _: self._mark_config_modified())
         self._set_checkbox_mark(self.cb_network_auto_resume, self.cb_network_auto_resume.isChecked())
         self.adv_collapsible.addWidget(self.cb_network_auto_resume)
-        
+
         # 说明文本
         self.network_hint = QtWidgets.QLabel(t('network_hint'))
         self.network_hint.setStyleSheet("color:#757575; font-size:9px; padding:4px;")
         self.network_hint.setWordWrap(True)
         self.adv_collapsible.addWidget(self.network_hint)
-        
+
         scroll_layout.addWidget(self.adv_collapsible)
-        
+
         # 添加弹性空间，使内容紧凑排列
         scroll_layout.addStretch()
-        
+
         # 设置滚动区域
         scroll_area.setWidget(scroll_content)
         v.addWidget(scroll_area, 1)  # stretch=1 让滚动区域填满剩余空间
-        
+
         return card
 
     def _spin_row(self, layout: QtWidgets.QVBoxLayout, label: str, low: int, high: int, val: int):
@@ -1025,7 +1062,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
 
     def _control_card(self) -> QtWidgets.QFrame:
         card, v, self.title_control = self._card("🎮 操作控制", "card_control")
-        
+
         # primary start - 优化按钮尺寸
         self.btn_start = QtWidgets.QPushButton("▶ 开始上传")
         self.btn_start.setProperty("class", "Primary")
@@ -1069,7 +1106,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         act_disk_cleanup = menu.addAction("💿 磁盘清理")
         act_disk_cleanup.triggered.connect(self._show_disk_cleanup)
         menu.addSeparator()
-        
+
         # v3.0.2 新增：语言切换子菜单
         lang_menu = menu.addMenu("🌐 语言 / Language")
         self.act_lang_zh = lang_menu.addAction("简体中文")
@@ -1080,7 +1117,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.act_lang_en.triggered.connect(lambda: self._switch_language('en_US'))
         # 默认选中中文
         self.act_lang_zh.setChecked(True)
-        
+
         menu.addSeparator()
         act_login = menu.addAction("🔐 权限登录")
         act_login.triggered.connect(self._show_login)
@@ -1090,7 +1127,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         act_logout = menu.addAction("🚪 退出登录")
         act_logout.triggered.connect(self._logout)
         self.btn_more.setMenu(menu)
-        
+
         # 保存菜单项引用用于多语言更新
         self.menu_items = {
             'clear_logs': act_clear,
@@ -1100,33 +1137,47 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             'logout': act_logout,
             'lang_menu': lang_menu,
         }
-        
+
         row2.addWidget(self.btn_save)
         row2.addWidget(self.btn_more)
         v.addLayout(row2)
-        
+
+        # v3.4 新增：FTP服务器独立控制区
+        v.addWidget(self._hline())
+        ftp_ctrl_label = QtWidgets.QLabel("🖥️ FTP服务器独立控制")
+        ftp_ctrl_label.setStyleSheet("font-weight:700; font-size:9pt; color:#374151; margin-top:2px;")
+        v.addWidget(ftp_ctrl_label)
+        self.btn_ftp_server_toggle = QtWidgets.QPushButton("🖥️ 启动 FTP 服务器")
+        self.btn_ftp_server_toggle.setProperty("class", "Secondary")
+        self.btn_ftp_server_toggle.setMinimumHeight(30)
+        self.btn_ftp_server_toggle.setEnabled(False)  # 默认游客不可用，需登录
+        self.btn_ftp_server_toggle.clicked.connect(self._on_ftp_server_btn_clicked)
+        v.addWidget(self.btn_ftp_server_toggle)
+        self.lbl_ftp_server_ctrl = QtWidgets.QLabel("未运行")
+        self.lbl_ftp_server_ctrl.setStyleSheet("color:#9CA3AF; font-size:9pt; padding-left:4px;")
+        v.addWidget(self.lbl_ftp_server_ctrl)
+
         # v3.0.0 修复：设置固定高度，防止被其他卡片挤压
-        card.setFixedHeight(260)
-        
+        card.setFixedHeight(320)
+
         return card
 
     def _switch_language(self, lang: str):
         """切换语言并刷新 UI"""
         try:
-            from src.core.i18n import set_language, get_language, LANG_ZH_CN, LANG_EN_US
-            
+            from src.core.i18n import set_language, get_language, LANG_ZH_CN
+
             if lang == get_language():
                 return
-            
+
             set_language(lang)
-            
+
             # 更新菜单选中状态
-            self.act_lang_zh.setChecked(lang == LANG_ZH_CN)
-            self.act_lang_en.setChecked(lang == LANG_EN_US)
-            
+            self._sync_language_actions(lang)
+
             # 刷新所有 UI 文本
             self._refresh_ui_texts()
-            
+
             # 显示提示
             if lang == LANG_ZH_CN:
                 self._toast('语言已切换为简体中文', 'success')
@@ -1134,18 +1185,61 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             else:
                 self._toast('Language changed to English', 'success')
                 self._append_log('🌐 Language changed to English')
-            
-            # 保存语言设置到配置
-            self.config_modified = True
-            
+
+            self._mark_config_modified()
+
         except Exception as e:
             self._append_log(f'⚠ 语言切换失败: {e}')
+
+    def _sync_language_actions(self, lang: str):
+        """同步语言菜单勾选状态。"""
+        try:
+            from src.core.i18n import LANG_ZH_CN, LANG_EN_US
+
+            if hasattr(self, 'act_lang_zh'):
+                self.act_lang_zh.setChecked(lang == LANG_ZH_CN)
+            if hasattr(self, 'act_lang_en'):
+                self.act_lang_en.setChecked(lang == LANG_EN_US)
+        except Exception:
+            pass
+
+    def _apply_loaded_language(self, cfg: dict) -> str:
+        """应用配置文件中的语言设置并刷新当前 UI。"""
+        loaded_language = cfg.get('language', 'zh_CN')
+        if set_language(loaded_language):
+            self._sync_language_actions(loaded_language)
+            self._refresh_ui_texts()
+            return loaded_language
+        return get_language()
+
+    @staticmethod
+    def _resolve_protocol_from_config(cfg: dict) -> "tuple[str, bool, bool]":
+        """归一化旧/新协议配置，返回 (协议, FTP服务器启用, 是否迁移旧值)。"""
+        protocol_map = {'smb', 'ftp_client', 'both'}
+        protocol = cfg.get('upload_protocol', 'smb')
+        saved_protocol = cfg.get('current_protocol', protocol)
+
+        if saved_protocol == 'ftp_server' or protocol == 'ftp_server':
+            return 'smb', True, True
+
+        normalized = saved_protocol if saved_protocol in protocol_map else 'smb'
+        return normalized, bool(cfg.get('enable_ftp_server', False)), False
+
+    def _refresh_protocol_combo_texts(self):
+        """刷新协议下拉框的三项文本。FTP 服务器是独立开关，不在此列表中。"""
+        if not hasattr(self, 'combo_protocol'):
+            return
+        self.combo_protocol.setItemText(0, t('protocol_option_smb'))
+        if self.combo_protocol.count() > 1:
+            self.combo_protocol.setItemText(1, t('protocol_option_ftp_client'))
+        if self.combo_protocol.count() > 2:
+            self.combo_protocol.setItemText(2, t('protocol_option_both'))
 
     def _refresh_ui_texts(self):
         """刷新所有 UI 文本（用于语言切换）"""
         try:
             from src.core.i18n import t
-            
+
             # === 卡片标题 ===
             if hasattr(self, 'title_folder') and self.title_folder:
                 self.title_folder.setText(t('card_folder_settings'))
@@ -1157,7 +1251,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.title_status.setText(t('card_status'))
             if hasattr(self, 'title_log') and self.title_log:
                 self.title_log.setText(t('card_log'))
-            
+
             # === 按钮 ===
             if not self.is_running:
                 self.btn_start.setText(t('start_upload'))
@@ -1168,18 +1262,18 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.btn_stop.setText(t('stop_upload'))
             self.btn_save.setText(t('save_config'))
             self.btn_more.setText(t('more'))
-            
+
             # === 浏览按钮 ===
             self.btn_choose_src.setText(t('browse'))
             self.btn_choose_tgt.setText(t('browse'))
             self.btn_choose_bak.setText(t('browse'))
-            
+
             # === 复选框 ===
             # 备份
             checked = self.cb_enable_backup.isChecked()
             self.cb_enable_backup.setProperty('orig_text', t('enable_backup'))
             self._set_checkbox_mark(self.cb_enable_backup, checked)
-            
+
             # 高级选项
             if hasattr(self, 'cb_auto_start_windows'):
                 checked = self.cb_auto_start_windows.isChecked()
@@ -1212,7 +1306,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             if hasattr(self, 'cb_autoscroll'):
                 checked = self.cb_autoscroll.isChecked()
                 self.cb_autoscroll.setText("📜 " + t('autoscroll').strip())
-            
+
             # === 状态标签 ===
             if not self.is_running:
                 self.lbl_status.setText(t('status_stopped'))
@@ -1220,7 +1314,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.lbl_status.setText(t('status_paused'))
             else:
                 self.lbl_status.setText(t('status_running'))
-            
+
             # === 状态芯片 ===
             self._update_chip_label(self.lbl_uploaded, t('uploaded'))
             self._update_chip_label(self.lbl_failed, t('failed'))
@@ -1231,7 +1325,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self._update_chip_label(self.lbl_target_disk, t('target_disk'))
             self._update_chip_label(self.lbl_backup_disk, t('backup_disk'))
             self._update_chip_label(self.lbl_network, t('network_status'))
-            
+
             # === 菜单项 ===
             if hasattr(self, 'menu_items'):
                 self.menu_items['clear_logs'].setText(t('clear_logs'))
@@ -1240,7 +1334,8 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.menu_items['change_password'].setText(t('change_password'))
                 self.menu_items['logout'].setText(t('logout'))
                 self.menu_items['lang_menu'].setTitle("🌐 " + t('menu_language'))
-            
+                self._sync_disk_cleanup_menu_action()
+
             # === 角色标签 ===
             if hasattr(self, 'role_label'):
                 if self.current_role == 'guest':
@@ -1249,7 +1344,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     self.role_label.setText(t('role_user'))
                 else:
                     self.role_label.setText(t('role_admin'))
-            
+
             # === 等待提示文本 ===
             if hasattr(self, 'lbl_current_file') and not self.is_running:
                 self.lbl_current_file.setText(t('waiting'))
@@ -1257,19 +1352,19 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.pbar_file.setFormat(t('waiting'))
             if hasattr(self, 'lbl_progress') and not self.is_running:
                 self.lbl_progress.setText(t('waiting'))
-            
+
             # === FTP 测试按钮 ===
             if hasattr(self, 'btn_test_ftp_server'):
                 self.btn_test_ftp_server.setText(t('test_config'))
             if hasattr(self, 'btn_test_ftp_client'):
                 self.btn_test_ftp_client.setText(t('test_connection'))
-            
+
             # === 可折叠区块标题 ===
             if hasattr(self, 'ftp_server_collapsible'):
                 self.ftp_server_collapsible.setTitle(t('ftp_server_config'))
             if hasattr(self, 'ftp_client_collapsible'):
                 self.ftp_client_collapsible.setTitle(t('ftp_client_config'))
-            
+
             # === 路径标签 ===
             if hasattr(self, 'lbl_src'):
                 self.lbl_src.setText(t('source_folder_label') + ":")
@@ -1277,15 +1372,15 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.lbl_tgt.setText(t('target_folder_label') + ":")
             if hasattr(self, 'lbl_bak'):
                 self.lbl_bak.setText(t('backup_folder_label') + ":")
-            
+
             # === 备份提示 ===
             if hasattr(self, 'backup_hint'):
                 self.backup_hint.setText(t('backup_hint'))
-            
+
             # === 标题栏 ===
             if hasattr(self, 'header_title'):
                 self.header_title.setText(t('header_title'))
-            
+
             # === 协议芯片 ===
             if hasattr(self, 'lbl_protocol'):
                 self._update_chip_label(self.lbl_protocol, t('protocol_chip'))
@@ -1303,7 +1398,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     current_val = self.lbl_ftp_client.value_label.text()
                     if current_val in ['未连接', 'Not Connected']:
                         self.lbl_ftp_client.setValue(t('not_connected'))
-            
+
             # === 网络状态芯片值 ===
             if hasattr(self, 'lbl_network') and hasattr(self.lbl_network, 'value_label'):
                 current_val = self.lbl_network.value_label.text()
@@ -1313,28 +1408,20 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     self.lbl_network.setValue(t('network_connected'))
                 elif current_val in ['已断开', 'Disconnected']:
                     self.lbl_network.setValue(t('network_disconnected'))
-            
+
             # === 当前文件标签 ===
             if hasattr(self, 'current_file_label_widget'):
                 self.current_file_label_widget.setText(t('current_file_label'))
-            
+
             # === 协议相关标签 ===
             if hasattr(self, 'protocol_title_label'):
                 self.protocol_title_label.setText(t('upload_protocol_title'))
             if hasattr(self, 'protocol_type_label'):
                 self.protocol_type_label.setText(t('protocol_type_label'))
-            
+
             # === 协议下拉框选项 ===
-            if hasattr(self, 'combo_protocol'):
-                current_idx = self.combo_protocol.currentIndex()
-                self.combo_protocol.setItemText(0, t('protocol_option_smb'))
-                if self.combo_protocol.count() > 1:
-                    self.combo_protocol.setItemText(1, t('protocol_option_ftp_server'))
-                if self.combo_protocol.count() > 2:
-                    self.combo_protocol.setItemText(2, t('protocol_option_ftp_client'))
-                if self.combo_protocol.count() > 3:
-                    self.combo_protocol.setItemText(3, t('protocol_option_both'))
-            
+            self._refresh_protocol_combo_texts()
+
             # === FTP 复选框 ===
             if hasattr(self, 'cb_server_passive'):
                 self.cb_server_passive.setText(t('enable_passive'))
@@ -1344,7 +1431,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.cb_client_passive.setText(t('enable_passive'))
             if hasattr(self, 'cb_client_tls'):
                 self.cb_client_tls.setText(t('enable_tls'))
-            
+
             # === 数值设置行标签 ===
             if hasattr(self, 'lbl_interval'):
                 self.lbl_interval.setText(t('interval_label') + ":")
@@ -1354,13 +1441,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.lbl_retry.setText(t('retry_label') + ":")
             if hasattr(self, 'lbl_disk_check'):
                 self.lbl_disk_check.setText(t('disk_check_label') + ":")
-            
+
             # === 可折叠区块标题 ===
             if hasattr(self, 'filter_collapsible'):
                 self.filter_collapsible.setTitle(t('file_filter_title'))
             if hasattr(self, 'adv_collapsible'):
                 self.adv_collapsible.setTitle(t('advanced_options_title'))
-            
+
             # === 高级选项区域标签 ===
             if hasattr(self, 'hash_lab'):
                 self.hash_lab.setText(t('hash_algorithm') + ":")
@@ -1374,18 +1461,18 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.dedup_hint.setText(t('dedup_hint'))
             if hasattr(self, 'network_hint'):
                 self.network_hint.setText(t('network_hint'))
-            
+
             # === 策略下拉框选项 ===
             if hasattr(self, 'combo_strategy'):
                 self.combo_strategy.setItemText(0, t('strategy_skip'))
                 self.combo_strategy.setItemText(1, t('strategy_rename'))
                 self.combo_strategy.setItemText(2, t('strategy_overwrite'))
                 self.combo_strategy.setItemText(3, t('strategy_ask'))
-            
+
             # === 网络检查间隔后缀 ===
             if hasattr(self, 'spin_network_check'):
                 self.spin_network_check.setSuffix(" " + t('seconds'))
-            
+
         except Exception as e:
             self._append_log(f'⚠ UI刷新失败: {e}')
 
@@ -1409,23 +1496,24 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
     def _compute_control_states(self, role: str, is_running: bool, enable_backup: bool) -> dict:
         """
         统一计算所有控件的启用/禁用状态
-        
+
         规则：
-        - guest: 任何时候不能改配置，只能控制开始/暂停/停止
-        - user/admin: 未运行时可改配置；运行中完全不可改
+        - guest: 任何时候不能改配置，也不能控制上传
+        - user: 只能控制开始/暂停/停止，不能修改配置
+        - admin: 未运行时可改配置；运行中完全不可改
         - 备份路径: 仅当"已启用备份"时可编辑
         - 运行中: 所有配置类控件禁用，无论角色
-        
+
         Returns:
             dict: 控件名称 -> 是否启用的映射
         """
         is_user_or_admin = role in ['user', 'admin']
-        can_edit_config = is_user_or_admin and not is_running
-        
+        can_edit_config = role == 'admin' and not is_running
+
         # v2.2.0 超详细调试
         self._append_log(f"      [计算细节] role={role}, is_running={is_running}, enable_backup={enable_backup}")
         self._append_log(f"      [计算细节] is_user_or_admin={is_user_or_admin}, can_edit_config={can_edit_config}")
-        
+
         return {
             # 路径浏览按钮
             'btn_choose_src': can_edit_config,
@@ -1453,31 +1541,48 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             'btn_start': is_user_or_admin and not is_running,
             'btn_pause': is_user_or_admin and is_running,
             'btn_stop': is_user_or_admin and is_running,
+            # v3.4: FTP服务器独立控制（不依赖上传运行状态）
+            'btn_ftp_server_toggle': role == 'admin',
         }
 
     def _can_manage_disk_cleanup(self) -> bool:
         """当前角色是否允许执行磁盘清理相关操作。"""
-        return self.current_role in ['user', 'admin'] and not self.is_running
+        return self.current_role == 'admin'
 
     def _get_disk_cleanup_block_reason(self) -> str:
         """获取磁盘清理被禁止时的原因。"""
         if self.current_role == 'guest':
             return '请先登录后再使用磁盘清理功能'
-        if self.is_running:
-            return '上传运行中，不能执行磁盘清理'
+        if self.current_role == 'user':
+            return '普通用户无权使用磁盘清理功能，请切换管理员'
         return ''
+
+    def _sync_disk_cleanup_menu_action(self) -> None:
+        """同步磁盘清理菜单项权限和禁用态文案。"""
+        if not hasattr(self, 'menu_items') or 'disk_cleanup' not in self.menu_items:
+            return
+
+        action = self.menu_items['disk_cleanup']
+        enabled = self._can_manage_disk_cleanup()
+        reason = '' if enabled else self._get_disk_cleanup_block_reason()
+        text = t('disk_cleanup') if enabled else t('disk_cleanup').replace('💿 ', '').replace('💿', '').strip()
+
+        action.setEnabled(enabled)
+        action.setText(text)
+        action.setToolTip(reason)
+        action.setStatusTip(reason)
 
     def _update_ui_permissions(self):
         """根据当前角色更新UI控件的启用状态"""
         self._append_log(f"🔐 更新权限: 当前角色={self.current_role}, 运行状态={'运行中' if self.is_running else '已停止'}")
-        
+
         # v2.2.0 计算统一控件状态
         states = self._compute_control_states(self.current_role, self.is_running, self.enable_backup)
-        
+
         # v2.2.0 详细调试：打印所有按钮的计算状态
         self._append_log(f"   [计算状态] 源按钮={states['btn_choose_src']}, 目标按钮={states['btn_choose_tgt']}, 备份按钮={states['btn_choose_bak']}")
         self._append_log(f"   [计算状态] 源只读={states['src_edit_readonly']}, 目标只读={states['tgt_edit_readonly']}, 备份只读={states['bak_edit_readonly']}")
-        
+
         # 路径浏览按钮
         if hasattr(self, 'btn_choose_src'):
             self.btn_choose_src.setEnabled(states['btn_choose_src'])
@@ -1485,7 +1590,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.btn_choose_tgt.setEnabled(states['btn_choose_tgt'])
         if hasattr(self, 'btn_choose_bak'):
             self.btn_choose_bak.setEnabled(states['btn_choose_bak'])
-        
+
         # 路径输入框
         self.src_edit.setReadOnly(states['src_edit_readonly'])
         self.tgt_edit.setReadOnly(states['tgt_edit_readonly'])
@@ -1500,17 +1605,17 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.spin_disk.setEnabled(states['upload_settings'])
         self.spin_retry.setEnabled(states['upload_settings'])
         self.spin_disk_check.setEnabled(states['upload_settings'])
-        
+
         # 文件类型复选框
         for cb in self.cb_ext.values():
             cb.setEnabled(states['file_filters'])
-        
+
         # 开机自启和自动运行复选框
         self.cb_auto_start_windows.setEnabled(states['startup_settings'])
         self.cb_auto_run_on_startup.setEnabled(states['startup_settings'])
-        # v2.2.0 新增：通知开关（所有人可设置）
+        # 通知开关属于持久化配置，仅管理员可修改
         if hasattr(self, 'cb_show_notifications'):
-            self.cb_show_notifications.setEnabled(True)
+            self.cb_show_notifications.setEnabled(states['upload_settings'])
         # v2.3.0 新增：速率限制控件权限
         if hasattr(self, 'cb_limit_rate'):
             self.cb_limit_rate.setEnabled(states['cb_limit_rate'])
@@ -1519,30 +1624,34 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.spin_max_rate.setEnabled(True)
             else:
                 self.spin_max_rate.setEnabled(False)
-        
+
         # 保存配置按钮
         self.btn_save.setEnabled(states['btn_save'])
-        
+
         # 协议选择框
         if hasattr(self, 'combo_protocol'):
             self.combo_protocol.setEnabled(states['combo_protocol'])
         if hasattr(self, 'menu_items'):
-            self.menu_items['disk_cleanup'].setEnabled(self._can_manage_disk_cleanup())
+            self._sync_disk_cleanup_menu_action()
             # v3.3.0：guest 不允许修改密码（仅 admin 可以）
             self.menu_items['change_password'].setEnabled(self.current_role == 'admin')
-        
+
         # 上传控制按钮
         self.btn_start.setEnabled(states['btn_start'])
         self.btn_pause.setEnabled(states['btn_pause'])
         self.btn_stop.setEnabled(states['btn_stop'])
-        
+
+        # v3.4: FTP服务器独立控制按钮
+        if hasattr(self, 'btn_ftp_server_toggle'):
+            self.btn_ftp_server_toggle.setEnabled(states['btn_ftp_server_toggle'])
+
         # v2.2.0 详细调试：验证实际应用后的按钮状态
         actual_src = self.btn_choose_src.isEnabled() if hasattr(self, 'btn_choose_src') else None
         actual_tgt = self.btn_choose_tgt.isEnabled() if hasattr(self, 'btn_choose_tgt') else None
         actual_bak = self.btn_choose_bak.isEnabled() if hasattr(self, 'btn_choose_bak') else None
         self._append_log(f"   [应用后实际] 源按钮={actual_src}, 目标按钮={actual_tgt}, 备份按钮={actual_bak}")
         self._append_log(f"   [应用后实际] 源只读={self.src_edit.isReadOnly()}, 目标只读={self.tgt_edit.isReadOnly()}, 备份只读={self.bak_edit.isReadOnly()}")
-        
+
         # 检测异常：如果计算状态与实际状态不一致
         if actual_tgt is not None and actual_tgt != states['btn_choose_tgt']:
             self._append_log(f"   ⚠️ 警告：目标按钮状态不一致！计算={states['btn_choose_tgt']}, 实际={actual_tgt}")
@@ -1641,9 +1750,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         path = self.app_dir / 'config.json'
         self.last_config_save_error = ''
         try:
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(cfg, f, indent=2, ensure_ascii=False)
-            return True
+            if ConfigManager(path).save(cfg):
+                return True
+            self.last_config_save_error = '配置保存失败'
+            return False
         except Exception as e:
             self.last_config_save_error = str(e)
             return False
@@ -1654,7 +1764,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self._async_log_signal.emit(message)
         except Exception:
             pass
-    
+
     def _show_disk_cleanup(self):
         """显示磁盘清理对话框"""
         reason = self._get_disk_cleanup_block_reason()
@@ -1675,10 +1785,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         dialog.setWindowTitle("🔐 权限登录")
         dialog.setModal(True)
         dialog.resize(400, 200)
-        
+
         layout = QtWidgets.QVBoxLayout(dialog)
         layout.setSpacing(15)
-        
+
         # 角色选择
         role_layout = QtWidgets.QHBoxLayout()
         role_label = QtWidgets.QLabel(t('login_role_label'))
@@ -1688,7 +1798,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         role_layout.addWidget(role_label)
         role_layout.addWidget(role_combo)
         layout.addLayout(role_layout)
-        
+
         # 密码
         pwd_layout = QtWidgets.QHBoxLayout()
         pwd_label = QtWidgets.QLabel(t('password_label'))
@@ -1700,7 +1810,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         pwd_layout.addWidget(pwd_label)
         pwd_layout.addWidget(pwd_input)
         layout.addLayout(pwd_layout)
-        
+
         # 按钮
         btn_layout = QtWidgets.QHBoxLayout()
         btn_layout.addStretch(1)
@@ -1710,18 +1820,18 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         btn_ok = QtWidgets.QPushButton(t('login'))
         btn_ok.setProperty("class", "Primary")
         btn_ok.setDefault(True)  # 设置为默认按钮，支持回车触发
-        
+
         def do_login():
             role_text = role_combo.currentText()
             password = pwd_input.text().strip()
-            
+
             if not password:
                 self._toast(t('please_enter_password'), 'warning')
                 return
-            
+
             # 哈希密码
             pwd_hash = hashlib.sha256(password.encode('utf-8')).hexdigest()
-            
+
             # 验证密码
             if t('role_user_option') in role_text or "用户" in role_text:
                 if pwd_hash == self.user_password:
@@ -1749,12 +1859,12 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     dialog.accept()
                 else:
                     self._toast(t('wrong_password'), 'danger')
-        
+
         btn_ok.clicked.connect(do_login)
         btn_layout.addWidget(btn_cancel)
         btn_layout.addWidget(btn_ok)
         layout.addLayout(btn_layout)
-        
+
         dialog.exec() if hasattr(dialog, 'exec') else dialog.exec_()
 
     def _show_change_password(self):
@@ -1766,15 +1876,15 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         if self.current_role == 'user':
             self._toast('用户无权限修改密码，仅管理员可修改', 'warning')
             return
-        
+
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("🔑 修改密码")
         dialog.setModal(True)
         dialog.resize(400, 300)
-        
+
         layout = QtWidgets.QVBoxLayout(dialog)
         layout.setSpacing(15)
-        
+
         # 管理员可以选择修改哪个密码
         target_combo = None
         if self.current_role == 'admin':
@@ -1786,7 +1896,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             target_layout.addWidget(target_label)
             target_layout.addWidget(target_combo)
             layout.addLayout(target_layout)
-        
+
         # 原密码
         old_layout = QtWidgets.QHBoxLayout()
         old_label = QtWidgets.QLabel("原密码:")
@@ -1798,7 +1908,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         old_layout.addWidget(old_label)
         old_layout.addWidget(old_input)
         layout.addLayout(old_layout)
-        
+
         # 新密码
         new_layout = QtWidgets.QHBoxLayout()
         new_label = QtWidgets.QLabel("新密码:")
@@ -1810,7 +1920,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         new_layout.addWidget(new_label)
         new_layout.addWidget(new_input)
         layout.addLayout(new_layout)
-        
+
         # 确认密码
         confirm_layout = QtWidgets.QHBoxLayout()
         confirm_label = QtWidgets.QLabel("确认密码:")
@@ -1822,7 +1932,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         confirm_layout.addWidget(confirm_label)
         confirm_layout.addWidget(confirm_input)
         layout.addLayout(confirm_layout)
-        
+
         # 按钮
         btn_layout = QtWidgets.QHBoxLayout()
         btn_layout.addStretch(1)
@@ -1831,12 +1941,12 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         btn_cancel.clicked.connect(dialog.reject)
         btn_ok = QtWidgets.QPushButton("确认修改")
         btn_ok.setProperty("class", "Primary")
-        
+
         def do_change():
             old_pwd = old_input.text().strip()
             new_pwd = new_input.text().strip()
             confirm_pwd = confirm_input.text().strip()
-            
+
             if not old_pwd or not new_pwd or not confirm_pwd:
                 self._toast('请填写所有字段', 'warning')
                 return
@@ -1847,11 +1957,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             if password_error:
                 self._toast(password_error, 'warning')
                 return
-            
+
             # 哈希密码
             old_hash = hashlib.sha256(old_pwd.encode('utf-8')).hexdigest()
             new_hash = hashlib.sha256(new_pwd.encode('utf-8')).hexdigest()
-            
+
             # 管理员修改密码
             if self.current_role == 'admin' and target_combo:
                 target_text = target_combo.currentText()
@@ -1871,7 +1981,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     self.admin_password = new_hash
                     target_role = 'admin'
                     self._toast('管理员密码修改成功！', 'success')
-                
+
                 # 保存到配置文件
                 try:
                     path = self.app_dir / 'config.json'
@@ -1883,7 +1993,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     cfg['users'] = users
                     if not self._write_config_payload(cfg):
                         raise RuntimeError(self.last_config_save_error or '写入配置文件失败')
-                    
+
                     self._append_log(f"✓ 密码已保存: {target_role}")
                     self.default_password_roles = [
                         role_name for role_name in self.default_password_roles
@@ -1892,18 +2002,18 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 except Exception as e:
                     self._toast(f'保存密码失败: {e}', 'danger')
                     return
-            
+
             dialog.accept()
-        
+
         btn_ok.clicked.connect(do_change)
         btn_layout.addWidget(btn_cancel)
         btn_layout.addWidget(btn_ok)
         layout.addLayout(btn_layout)
-        
+
         dialog.exec() if hasattr(dialog, 'exec') else dialog.exec_()
 
     # ========== 开机自启动功能 ==========
-    
+
     def _on_dedup_toggled(self, checked: bool):
         """切换智能去重开关"""
         self.enable_deduplication = checked
@@ -1911,28 +2021,28 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.combo_hash.setEnabled(checked)
         self.combo_strategy.setEnabled(checked)
         self._mark_config_modified()
-        
+
         if checked:
             self._append_log("🔍 已启用智能去重")
         else:
             self._append_log("⚪ 已禁用智能去重")
-    
+
     def _on_rate_limit_toggled(self, checked: bool):
         """v2.3.0 切换速率限制开关"""
         self.limit_upload_rate = checked
         self.spin_max_rate.setEnabled(checked)
         self._mark_config_modified()
-        
+
         if checked:
             rate = self.spin_max_rate.value()
             self._append_log(f"⚡ 已启用速率限制: {rate} MB/s")
         else:
             self._append_log("⚪ 已禁用速率限制")
 
-    def _toggle_password_visibility(self, line_edit: QtWidgets.QLineEdit, 
+    def _toggle_password_visibility(self, line_edit: QtWidgets.QLineEdit,
                                      button: QtWidgets.QToolButton, show: bool):
         """v3.1.0 新增: 切换密码可见性
-        
+
         Args:
             line_edit: 密码输入框
             button: 切换按钮
@@ -2005,16 +2115,16 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             'max_cons': server_cfg.get('max_connections', 256),
             'max_cons_per_ip': server_cfg.get('max_connections_per_ip', 5),
         }
-    
+
     def _test_ftp_server_config(self):
         """测试FTP服务器配置"""
         self._append_log("🧪 开始测试FTP服务器配置...")
-        
+
         # 收集当前配置
         server_cfg = self._collect_ftp_server_config()
         self.ftp_server_config = copy.deepcopy(server_cfg)
         config = self._build_ftp_server_manager_config(server_cfg)
-        
+
         # 验证配置
         errors = []
         if not server_cfg['host']:
@@ -2027,32 +2137,32 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             errors.append("共享目录为空")
         elif not os.path.exists(server_cfg['shared_folder']):
             errors.append(f"共享目录不存在: {server_cfg['shared_folder']}")
-        
+
         if errors:
             error_msg = "\n".join(errors)
             self._append_log(f"❌ 配置验证失败:\n{error_msg}")
             QtWidgets.QMessageBox.critical(self, "配置错误", f"FTP服务器配置有误：\n\n{error_msg}")
             return
-        
+
         # 尝试启动测试服务器
         try:
             from src.protocols.ftp import FTPServerManager
-            
+
             self._append_log(f"🔧 正在测试FTP服务器 {config['host']}:{config['port']}...")
             test_server = FTPServerManager(config)
-            
+
             if test_server.start():
                 self._append_log("✓ FTP服务器测试成功！")
                 self._append_log(f"  地址: {config['host']}:{config['port']}")
                 self._append_log(f"  用户: {config['username']}")
                 self._append_log(f"  共享: {config['shared_folder']}")
-                
+
                 # 立即停止测试服务器
                 test_server.stop()
                 self._append_log("✓ 测试服务器已停止")
-                
+
                 QtWidgets.QMessageBox.information(
-                    self, "测试成功", 
+                    self, "测试成功",
                     f"FTP服务器配置有效！\n\n"
                     f"地址: {config['host']}:{config['port']}\n"
                     f"用户: {config['username']}\n"
@@ -2061,7 +2171,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             else:
                 self._append_log("❌ FTP服务器启动失败")
                 QtWidgets.QMessageBox.critical(
-                    self, "测试失败", 
+                    self, "测试失败",
                     f"FTP服务器无法启动！\n\n可能原因：\n"
                     f"1. 端口 {config['port']} 已被占用\n"
                     f"2. 没有管理员权限（端口<1024需要）\n"
@@ -2070,11 +2180,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         except Exception as e:
             self._append_log(f"❌ 测试异常: {e}")
             QtWidgets.QMessageBox.critical(self, "测试错误", f"测试过程中发生错误：\n\n{str(e)}")
-    
+
     def _test_ftp_client_connection(self):
         """测试FTP客户端连接"""
         self._append_log("🔌 开始测试FTP客户端连接...")
-        
+
         # 收集当前配置
         client_cfg = self._collect_ftp_client_config()
         self.ftp_client_config = copy.deepcopy(client_cfg)
@@ -2082,7 +2192,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             'name': 'test_client',
             **client_cfg
         }
-        
+
         # 验证配置
         errors = []
         if not client_cfg['host']:
@@ -2093,32 +2203,32 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             errors.append("密码为空")
         if not client_cfg['remote_path']:
             errors.append("远程路径为空")
-        
+
         if errors:
             error_msg = "\n".join(errors)
             self._append_log(f"❌ 配置验证失败:\n{error_msg}")
             QtWidgets.QMessageBox.critical(self, "配置错误", f"FTP客户端配置有误：\n\n{error_msg}")
             return
-        
+
         # 尝试连接
         try:
             from src.protocols.ftp import FTPClientUploader
-            
+
             self._append_log(f"🔗 正在连接FTP服务器 {config['host']}:{config['port']}...")
             test_client = FTPClientUploader(config)
-            
+
             if test_client.test_connection():
                 self._append_log("✓ FTP客户端连接测试成功！")
                 self._append_log(f"  服务器: {config['host']}:{config['port']}")
                 self._append_log(f"  用户: {config['username']}")
                 self._append_log(f"  远程路径: {config['remote_path']}")
-                
+
                 # 断开连接
                 test_client.disconnect()
                 self._append_log("✓ 已断开连接")
-                
+
                 QtWidgets.QMessageBox.information(
-                    self, "测试成功", 
+                    self, "测试成功",
                     f"FTP客户端连接成功！\n\n"
                     f"服务器: {config['host']}:{config['port']}\n"
                     f"用户: {config['username']}\n"
@@ -2127,7 +2237,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             else:
                 self._append_log("❌ FTP客户端连接失败")
                 QtWidgets.QMessageBox.critical(
-                    self, "测试失败", 
+                    self, "测试失败",
                     f"无法连接到FTP服务器！\n\n可能原因：\n"
                     f"1. 服务器地址或端口错误\n"
                     f"2. 用户名或密码错误\n"
@@ -2137,15 +2247,15 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         except Exception as e:
             self._append_log(f"❌ 测试异常: {e}")
             QtWidgets.QMessageBox.critical(self, "测试错误", f"测试过程中发生错误：\n\n{str(e)}")
-    
+
     def _on_protocol_changed(self, index: int):
         """协议选择变化 (v3.1.0 重构: 移除 ftp_server 枚举)"""
         protocols = ['smb', 'ftp_client', 'both']  # v3.1.0: ftp_server 已抽离为独立开关
         self.current_protocol = protocols[index]
-        
+
         # 更新说明文字
         self._update_protocol_description(index)
-        
+
         # v3.1.0: SMB模式禁用FTP服务器开关并取消勾选
         if index == 0:  # SMB
             # SMB模式下禁用FTP服务器开关
@@ -2174,19 +2284,19 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.ftp_server_collapsible.setEnabled(self.enable_ftp_server)
             if self.enable_ftp_server:
                 self.ftp_server_collapsible.set_expanded(True)
-        
+
         self._mark_config_modified()
         mode_names = ['SMB', 'FTP客户端', 'SMB+FTP客户端']
         self._append_log(f"📡 切换上传协议：{mode_names[index]}")
-        
+
         # v3.1.0: 显示模式切换toast
         toast_keys = ['toast_protocol_smb', 'toast_protocol_ftp_client', 'toast_protocol_both']
         self._toast(t(toast_keys[index]), 'info')
-        
+
         # 更新协议状态显示和模式标签
         self._update_protocol_status()
         self._update_mode_chip(index)
-    
+
     def _update_protocol_description(self, index: int):
         """更新协议说明 (v3.1.0 重构: 更短更直观)"""
         descriptions = [
@@ -2195,7 +2305,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             f"🔄 {t('protocol_desc_both_short')}"
         ]
         self.protocol_desc.setText(descriptions[index])
-    
+
     def _update_mode_chip(self, index: int):
         """v3.1.0 新增: 更新协议模式芯片显示"""
         mode_configs = [
@@ -2205,14 +2315,30 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         ]
         text, bg_color, text_color = mode_configs[index]
         if hasattr(self, 'lbl_current_mode'):
-            self.lbl_current_mode.setValue(text)
-            self.lbl_current_mode.setStyleSheet(
+            style = (
                 f"background:{bg_color}; color:{text_color}; padding:4px 8px; "
                 f"border-radius:4px; font-size:9pt; font-weight:600;"
             )
-    
+            if (
+                self._last_mode_chip_index == index
+                and getattr(self.lbl_current_mode, 'value_label', None) is not None
+                and self.lbl_current_mode.value_label.text() == text
+                and self.lbl_current_mode.property('_last_style_sheet') == style
+            ):
+                return
+            self._last_mode_chip_index = index
+            self._set_chip_value_if_changed(self.lbl_current_mode, text)
+            self._set_style_if_changed(self.lbl_current_mode, style)
+
     def _on_ftp_server_toggled(self, checked: bool):
         """v3.1.0 新增: FTP 服务器开关切换"""
+        if self.current_role != 'admin' and not getattr(self, '_config_loading', False):
+            self.cb_enable_ftp_server.blockSignals(True)
+            self.cb_enable_ftp_server.setChecked(False)
+            self.cb_enable_ftp_server.blockSignals(False)
+            self._toast('仅管理员可以修改 FTP 服务器设置', 'warning')
+            return
+
         # SMB模式下不允许启用FTP服务器
         if self.current_protocol == 'smb' and checked:
             self.cb_enable_ftp_server.blockSignals(True)
@@ -2220,34 +2346,34 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.cb_enable_ftp_server.blockSignals(False)
             self._toast(t('ftp_server_unavailable_smb'), 'warning')
             return
-        
+
         self.enable_ftp_server = checked
-        
+
         # 启用/禁用 FTP 服务器配置
         self.ftp_server_hint.setVisible(checked)
         self.ftp_server_collapsible.setEnabled(checked)  # setEnabled(False)会自动收起
-        
+
         # 启用时自动展开，方便用户配置
         if checked:
             self.ftp_server_collapsible.set_expanded(True)
-        
+
         self.config_modified = True
         status = '启用' if checked else '禁用'
         self._append_log(f"🖥️ FTP服务器已{status}")
-        
+
         # 更新协议状态显示
         self._update_protocol_status()
-    
+
     def _toggle_autostart(self, checked: bool):
         """切换开机自启动状态"""
-        if self.current_role not in ['user', 'admin']:
-            self._toast('需要登录后才能设置开机自启动', 'warning')
+        if self.current_role != 'admin':
+            self._toast('仅管理员可以设置开机自启动', 'warning')
             # 阻止勾选
             self.cb_auto_start_windows.blockSignals(True)
             self.cb_auto_start_windows.setChecked(not checked)
             self.cb_auto_start_windows.blockSignals(False)
             return
-        
+
         try:
             if checked:
                 self._add_to_startup()
@@ -2269,7 +2395,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 exe_path = sys.executable
             else:
                 exe_path = os.path.abspath(__file__)
-            
+
             # 打开注册表
             key = winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
@@ -2277,11 +2403,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 0,
                 winreg.KEY_SET_VALUE
             )
-            
+
             # 设置值
             winreg.SetValueEx(key, "ImageUploader", 0, winreg.REG_SZ, exe_path)
             winreg.CloseKey(key)
-            
+
             self._append_log("✓ 已添加到开机自启动")
             self._toast('已设置开机自启动', 'success')
         except Exception as e:
@@ -2296,14 +2422,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 0,
                 winreg.KEY_SET_VALUE
             )
-            
+
             try:
                 winreg.DeleteValue(key, "ImageUploader")
                 self._append_log("✓ 已从开机自启动移除")
                 self._toast('已取消开机自启动', 'success')
             except FileNotFoundError:
                 pass  # 键不存在，忽略
-            
+
             winreg.CloseKey(key)
         except Exception as e:
             raise Exception(f"移除启动项失败: {str(e)}")
@@ -2331,14 +2457,80 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         """自动开始上传（启动时调用）"""
         if not self.auto_run_on_startup:
             return
-        
+
         # 验证设置
-        if not self.src_edit.text() or not self.tgt_edit.text() or not self.bak_edit.text():
+        src = self.src_edit.text().strip()
+        tgt = self.tgt_edit.text().strip()
+        bak = self.bak_edit.text().strip()
+        if not src or not tgt or (self.enable_backup and not bak):
             self._append_log("⚠ 自动运行失败：文件夹路径未设置")
             return
-        
+
         self._append_log("🚀 自动运行已触发，1秒后开始上传...")
         self._on_start()
+
+    def _auto_start_ftp_server(self):
+        """v3.4 新增: 启动时自动开启 FTP 服务器"""
+        if not self.auto_ftp_on_startup:
+            return
+        # 如果 FTP 服务器已在运行（上传流程或按钒先行启动），跳过避免冲突
+        _chk_mgr = self.ftp_manager
+        _chk_srv = _chk_mgr.server if _chk_mgr else None
+        if _chk_srv and _chk_srv.get_status().get('running'):
+            self._append_log("🖥️ [自动启动] FTP 服务器已在运行，跳过重复启动")
+            return
+        server_cfg: dict = {}
+        share_folder = ''
+        _mgr_created = False  # 标记是否是本次新建的管理器实例
+        self._append_log("🖥️ [自动启动] 正在检查 FTP 服务器配置...")
+        try:
+            server_cfg = self._collect_ftp_server_config()
+            share_folder = server_cfg.get('shared_folder', '')
+            if not share_folder:
+                self._append_log("⚠️ [自动启动] FTP共享目录未配置，跳过自动启动")
+                self._append_log("   → 请在「上传设置 - FTP服务器配置」中设置共享目录")
+                return
+            if not os.path.exists(share_folder):
+                try:
+                    os.makedirs(share_folder, exist_ok=True)
+                    self._append_log(f"✓ [自动启动] 共享目录已自动创建: {share_folder}")
+                except Exception as mk_err:
+                    self._append_log(f"❌ [自动启动] 共享目录创建失败: {mk_err}")
+                    return
+            if not self.ftp_manager:
+                self.ftp_manager = FTPProtocolManager()  # type: ignore[misc]
+                _mgr_created = True
+            host = server_cfg.get('host', '0.0.0.0')
+            port = server_cfg.get('port', 2121)
+            self._append_log(f"🖥️ [自动启动] 启动 FTP 服务器 {host}:{port} ...")
+            self._append_log(f"   共享目录: {share_folder}")
+            server_config = self._build_ftp_server_manager_config(server_cfg)
+            success = self.ftp_manager.start_server(server_config)
+            if not success:
+                self._append_log("❌ [自动启动] FTP 服务器启动失败，请检查配置和端口占用")
+                if _mgr_created:
+                    self.ftp_manager = None
+                return
+            self._ftp_server_standalone = True
+            self._append_log(f"✓ [自动启动] FTP 服务器已启动: {host}:{port}")
+            self._update_protocol_status()
+            self._toast(f'FTP 服务器已自动启动: {host}:{port}', 'success')
+        except OSError as e:
+            error_msg = str(e)
+            port = server_cfg.get('port', 2121)
+            if ('already in use' in error_msg.lower()
+                    or '10048' in error_msg
+                    or 'address already in use' in error_msg.lower()):
+                self._append_log(f"❌ [自动启动] 端口 {port} 已被占用，FTP 服务器启动失败")
+                self._append_log("   → 请在 FTP服务器配置中更换端口号后重启软件")
+            else:
+                self._append_log(f"❌ [自动启动] 系统错误: {e}")
+            if _mgr_created:
+                self.ftp_manager = None
+        except Exception as e:
+            self._append_log(f"❌ [自动启动] FTP 服务器启动异常: {type(e).__name__}: {e}")
+            if _mgr_created:
+                self.ftp_manager = None
 
     def _status_card(self) -> QtWidgets.QFrame:
         card, v, self.title_status = self._card("📊 运行状态", "card_status")
@@ -2366,29 +2558,29 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.lbl_ftp_client = self._chip(t('ftp_client_chip'), t('not_connected'), "#FFF8E1", "#F57C00")
         # v3.1.0 新增：当前模式芯片（醒目显示）
         self.lbl_current_mode = self._chip(t('current_mode'), t('mode_smb'), "#E3F2FD", "#1565C0")
-        
+
         # 4列布局，在高分辨率下显示更好
-        for i, w in enumerate([self.lbl_uploaded, self.lbl_failed, self.lbl_skipped, 
+        for i, w in enumerate([self.lbl_uploaded, self.lbl_failed, self.lbl_skipped,
                                self.lbl_rate, self.lbl_queue, self.lbl_time,
                                self.lbl_target_disk, self.lbl_backup_disk, self.lbl_network,
                                self.lbl_protocol, self.lbl_ftp_server, self.lbl_ftp_client,
                                self.lbl_current_mode]):
             grid.addWidget(w, i//4, i%4)
         v.addLayout(grid)
-        
+
         # 分隔线
         v.addWidget(self._hline())
-        
+
         # 新增：当前文件信息
         self.current_file_label_widget = QtWidgets.QLabel(t('current_file_label'))
         self.current_file_label_widget.setStyleSheet("font-weight:700; font-size:10pt; color:#424242; margin-top:4px;")
         v.addWidget(self.current_file_label_widget)
-        
+
         self.lbl_current_file = QtWidgets.QLabel(t('waiting'))
         self.lbl_current_file.setStyleSheet("color:#616161; font-size:9pt; padding:4px 8px;")
         self.lbl_current_file.setWordWrap(True)
         v.addWidget(self.lbl_current_file)
-        
+
         # 当前文件进度条
         self.pbar_file = QtWidgets.QProgressBar()
         self.pbar_file.setRange(0, 100)
@@ -2404,16 +2596,16 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 background-color: #F5F5F5;
             }
             QProgressBar::chunk {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                                             stop:0 #4CAF50, stop:1 #81C784);
                 border-radius: 4px;
             }
         """)
         v.addWidget(self.pbar_file)
-        
+
         # 分隔线
         v.addWidget(self._hline())
-        
+
         # progress
         self.lbl_progress = QtWidgets.QLabel(t('waiting'))
         v.addWidget(self.lbl_progress)
@@ -2438,7 +2630,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         # toolbar
         toolbar = QtWidgets.QHBoxLayout()
         toolbar.addStretch(1)
-        
+
         # 右侧：自动滚动
         self.cb_autoscroll = QtWidgets.QCheckBox("📜 自动滚动")
         self.cb_autoscroll.setChecked(True)
@@ -2448,6 +2640,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.log = QtWidgets.QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMinimumHeight(300)  # 减小最小高度，使用可折叠组件后可减少滚动需求
+        self.log.setMaximumBlockCount(5000)
         v.addWidget(self.log)
         return card
 
@@ -2457,7 +2650,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         # 获取当前路径作为默认打开位置
         current = self.src_edit.text()
         start_dir = current if current and os.path.exists(current) else ""
-        
+
         self._append_log("📂 正在选择源文件夹...")
         d = QtWidgets.QFileDialog.getExistingDirectory(self, "选择源文件夹", start_dir)
         if d:
@@ -2471,7 +2664,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         # 获取当前路径作为默认打开位置
         current = self.tgt_edit.text()
         start_dir = current if current and os.path.exists(current) else ""
-        
+
         self._append_log("📂 正在选择目标文件夹...")
         d = QtWidgets.QFileDialog.getExistingDirectory(self, "选择目标文件夹", start_dir)
         if d:
@@ -2485,7 +2678,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         # 获取当前路径作为默认打开位置
         current = self.bak_edit.text()
         start_dir = current if current and os.path.exists(current) else ""
-        
+
         self._append_log("📂 正在选择备份文件夹...")
         d = QtWidgets.QFileDialog.getExistingDirectory(self, "选择备份文件夹", start_dir)
         if d:
@@ -2507,6 +2700,57 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         if not self._config_loading:
             self._append_log('⚠ 配置已修改，请点击"保存配置"按钮确认')
 
+    @staticmethod
+    def _normalized_path_key(path: str) -> str:
+        """Normalize paths for Windows-compatible equality and containment checks."""
+        if not path:
+            return ''
+        return os.path.normcase(os.path.abspath(os.path.realpath(path.strip())))
+
+    @classmethod
+    def _path_contains_or_equals(cls, first: str, second: str) -> bool:
+        """Return True when either path contains the other, or both are identical."""
+        first_key = cls._normalized_path_key(first)
+        second_key = cls._normalized_path_key(second)
+        if not first_key or not second_key:
+            return False
+        try:
+            common = os.path.commonpath([first_key, second_key])
+        except ValueError:
+            return False
+        return common == first_key or common == second_key
+
+    @staticmethod
+    def _dangerous_cleanup_path_reason(path: str) -> str:
+        """Return a reason when a cleanup folder is too broad or system-critical."""
+        if not path:
+            return "清理路径为空"
+        try:
+            normalized = os.path.normcase(os.path.abspath(os.path.realpath(path.strip())))
+        except Exception as exc:
+            return f"清理路径无法解析: {exc}"
+
+        drive, _tail = os.path.splitdrive(normalized)
+        root = os.path.normcase(os.path.abspath(drive + os.sep)) if drive else os.path.normcase(os.path.abspath(os.sep))
+        if normalized == root:
+            return "禁止将磁盘根目录作为自动清理路径"
+
+        protected_dirs = []
+        for env_name in ('SystemRoot', 'WINDIR', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramData', 'USERPROFILE'):
+            value = os.environ.get(env_name)
+            if value:
+                protected_dirs.append(value)
+
+        for protected in protected_dirs:
+            try:
+                protected_key = os.path.normcase(os.path.abspath(os.path.realpath(protected)))
+                if normalized == protected_key:
+                    return f"禁止将系统或用户关键目录作为自动清理路径: {protected}"
+            except Exception:
+                continue
+
+        return ""
+
     def _validate_paths(self) -> tuple:
         """验证文件夹路径是否存在
         返回: (是否全部有效, 错误消息列表)
@@ -2515,23 +2759,23 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         src = self.src_edit.text().strip()
         tgt = self.tgt_edit.text().strip()
         bak = self.bak_edit.text().strip()
-        
+
         self._append_log("🔍 正在验证文件夹路径...")
-        
+
         if not src:
             errors.append("源文件夹路径为空")
         elif not os.path.exists(src):
             errors.append(f"源文件夹不存在: {src}")
         else:
             self._append_log(f"✓ 源文件夹路径有效: {src}")
-        
+
         if not tgt:
             errors.append("目标文件夹路径为空")
         elif not os.path.exists(tgt):
             errors.append(f"目标文件夹不存在: {tgt}")
         else:
             self._append_log(f"✓ 目标文件夹路径有效: {tgt}")
-        
+
         # v2.1.1 修改：只有启用备份时才验证备份路径
         if self.enable_backup:
             if not bak:
@@ -2540,54 +2784,50 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 errors.append(f"备份文件夹不存在: {bak}")
             else:
                 self._append_log(f"✓ 备份文件夹路径有效: {bak}")
-        
-        # 额外校验：三个路径必须互不相同，避免用户误填相同路径导致循环或数据覆盖
+
+        # 额外校验：三个路径不能相同或互为父子目录，避免循环扫描或数据覆盖
         try:
-            def _norm(p: str) -> str:
-                return os.path.normcase(os.path.abspath(p)) if p else ''
-
-            n_src = _norm(src)
-            n_tgt = _norm(tgt)
-            n_bak = _norm(bak)
-
-            if n_src and n_tgt and n_src == n_tgt:
-                errors.append("源文件夹与目标文件夹路径相同，请选择不同的路径")
-            # v2.1.1 修改：只有启用备份时才检查备份路径相同性
+            path_pairs = [
+                (src, tgt, "源文件夹与目标文件夹不能相同或互为父子目录"),
+            ]
             if self.enable_backup:
-                if n_src and n_bak and n_src == n_bak:
-                    errors.append("源文件夹与备份文件夹路径相同，请选择不同的路径")
-                if n_tgt and n_bak and n_tgt == n_bak:
-                    errors.append("目标文件夹与备份文件夹路径相同，请选择不同的路径")
+                path_pairs.extend([
+                    (src, bak, "源文件夹与备份文件夹不能相同或互为父子目录"),
+                    (tgt, bak, "目标文件夹与备份文件夹不能相同或互为父子目录"),
+                ])
+            for left, right, message in path_pairs:
+                if self._path_contains_or_equals(left, right):
+                    errors.append(message)
         except Exception:
             # 如果路径规范化出错，不影响已有的存在性检查，继续返回其他错误信息
             pass
-        
+
         if errors:
             self._append_log(f"❌ 路径验证失败，发现 {len(errors)} 个错误")
         else:
             self._append_log("✓ 所有路径验证通过")
-        
+
         return len(errors) == 0, errors
-    
+
     def _validate_ftp_config(self) -> tuple:
         """
         验证FTP配置的有效性
-        
+
         Returns:
             tuple: (是否有效, 错误消息列表)
         """
         errors = []
-        
+
         # 如果不使用FTP，跳过验证
         if self.current_protocol == 'smb':
             return True, []
-        
+
         self._append_log("🔍 正在验证FTP配置...")
         server_cfg = self._collect_ftp_server_config()
         client_cfg = self._collect_ftp_client_config()
         self.ftp_server_config = copy.deepcopy(server_cfg)
         self.ftp_client_config = copy.deepcopy(client_cfg)
-        
+
         # 验证FTP服务器配置 (v3.1.0 重构：由独立开关控制)
         if self.enable_ftp_server:
             # 主机地址验证
@@ -2599,28 +2839,28 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 import re
                 if not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host):
                     errors.append(f"FTP服务器主机地址格式无效: {host}")
-            
+
             # 端口验证
             port = server_cfg.get('port', 0)
             if not isinstance(port, int) or port < 1 or port > 65535:
                 errors.append(f"FTP服务器端口无效: {port}（范围：1-65535）")
             elif port < 1024 and port != 21:
                 self._append_log(f"⚠️  FTP服务器使用特权端口 {port}，可能需要管理员权限")
-            
+
             # 用户名验证
             username = server_cfg.get('username', '').strip()
             if not username:
                 errors.append("FTP服务器用户名为空")
             elif len(username) < 3:
                 errors.append("FTP服务器用户名至少需要3个字符")
-            
+
             # 密码验证
             password = server_cfg.get('password', '').strip()
             if not password:
                 errors.append("FTP服务器密码为空")
             elif len(password) < 6:
                 errors.append("FTP服务器密码至少需要6个字符")
-            
+
             # 共享目录验证
             share_folder = server_cfg.get('shared_folder', '').strip()
             if not share_folder:
@@ -2631,7 +2871,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 errors.append(f"FTP服务器共享路径不是目录: {share_folder}")
             else:
                 self._append_log(f"✓ FTP服务器共享目录有效: {share_folder}")
-        
+
         # 验证FTP客户端配置
         if self.current_protocol in ['ftp_client', 'both']:
             # 主机地址验证
@@ -2645,49 +2885,49 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 is_domain = re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$', host)
                 if not is_ip and not is_domain:
                     errors.append(f"FTP客户端主机地址格式无效: {host}")
-            
+
             # 端口验证
             port = client_cfg.get('port', 0)
             if not isinstance(port, int) or port < 1 or port > 65535:
                 errors.append(f"FTP客户端端口无效: {port}（范围：1-65535）")
-            
+
             # 用户名验证
             username = client_cfg.get('username', '').strip()
             if not username:
                 errors.append("FTP客户端用户名为空")
-            
+
             # 密码验证
             password = client_cfg.get('password', '').strip()
             if not password:
                 errors.append("FTP客户端密码为空")
-            
+
             # 远程路径验证
             remote_path = client_cfg.get('remote_path', '').strip()
             if not remote_path:
                 errors.append("FTP客户端远程路径为空")
             elif not remote_path.startswith('/'):
                 errors.append(f"FTP客户端远程路径应以 / 开头: {remote_path}")
-        
+
         if errors:
             self._append_log(f"❌ FTP配置验证失败，发现 {len(errors)} 个错误")
         else:
             self._append_log("✓ FTP配置验证通过")
-        
+
         return len(errors) == 0, errors
 
     def _save_config(self) -> bool:
         """保存配置到文件"""
         self.last_config_save_error = ''
 
-        # v2.2.0 权限检查：仅登录用户可保存配置
-        if self.current_role == 'guest':
-            self.last_config_save_error = '请先登录后再保存配置'
-            self._append_log("❌ 未登录用户无权保存配置")
-            self._toast('请先登录后再保存配置', 'warning')
+        # 仅管理员可保存持久化配置
+        if self.current_role != 'admin':
+            self.last_config_save_error = '仅管理员可以保存配置'
+            self._append_log("❌ 当前角色无权保存配置")
+            self._toast('仅管理员可以保存配置', 'warning')
             return False
-        
+
         self._append_log("💾 正在保存配置...")
-        
+
         # v2.2.0 新增：保存前验证路径
         is_valid, errors = self._validate_paths()
         if not is_valid:
@@ -2696,7 +2936,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self._append_log(f"❌ 路径验证失败，无法保存配置:\n{error_msg}")
             self._toast('路径验证失败，请检查配置', 'danger')
             return False
-        
+
         # v2.2.0 新增：验证FTP配置（如果使用FTP协议）
         if self.current_protocol != 'smb':
             is_valid, errors = self._validate_ftp_config()
@@ -2706,7 +2946,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self._append_log(f"❌ FTP配置验证失败，无法保存配置:\n{error_msg}")
                 self._toast('FTP配置验证失败，请检查配置', 'danger')
                 return False
-        
+
         # 保留现有用户密码
         path = self.app_dir / 'config.json'
         users = {}
@@ -2732,10 +2972,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self._append_log(f"❌ FTP密码加密失败，无法保存配置: {e}")
             self._toast(f'保存失败: {e}', 'danger')
             return False
-        
+
         # 策略映射
         strategy_map = {'跳过': 'skip', '重命名': 'rename', '覆盖': 'overwrite', '询问': 'ask'}
-        
+
         cfg = {
             'source_folder': self.src_edit.text(),
             'target_folder': self.tgt_edit.text(),
@@ -2753,6 +2993,8 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             'filter_raw': self.cb_ext['.raw'].isChecked(),
             'auto_start_windows': self.cb_auto_start_windows.isChecked(),
             'auto_run_on_startup': self.cb_auto_run_on_startup.isChecked(),
+            'auto_ftp_on_startup': self.cb_auto_ftp_on_startup.isChecked() if hasattr(self, 'cb_auto_ftp_on_startup') else False,
+            'language': get_language(),
             # v2.2.0 新增：托盘通知开关
             'show_notifications': self.cb_show_notifications.isChecked() if hasattr(self, 'cb_show_notifications') else True,
             # v2.3.0 新增：速率限制
@@ -2814,7 +3056,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             # 保存成功后清除修改标记并更新保存的配置
             self.config_modified = False
             self.saved_config = copy.deepcopy(cfg)
-            
+
             self._append_log("✓ 配置已成功保存到文件")
             self._toast('配置已保存', 'success')
             self._update_auto_cleanup_schedule()
@@ -2843,6 +3085,19 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 folders.append(cleaned)
 
         enabled = bool(cleanup_config.get('enable_auto_delete', False))
+        if enabled:
+            invalid_cleanup_paths = []
+            for folder in folders:
+                reason = self._dangerous_cleanup_path_reason(folder)
+                if reason:
+                    invalid_cleanup_paths.append(f"{folder}: {reason}")
+            if invalid_cleanup_paths:
+                error_msg = "\n".join(invalid_cleanup_paths)
+                self.last_config_save_error = error_msg
+                self._append_log(f"❌ 自动清理路径验证失败:\n{error_msg}")
+                self._toast('自动清理路径存在风险，请重新选择', 'danger')
+                return False
+
         threshold = int(cleanup_config.get('auto_delete_threshold', self.auto_delete_threshold))
         target = int(cleanup_config.get('auto_delete_target_percent', self.auto_delete_target_percent))
         interval = int(cleanup_config.get('auto_delete_check_interval', self.auto_delete_check_interval))
@@ -2902,7 +3157,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         """从配置文件加载设置"""
         self._config_loading = True
         self._append_log("📖 正在加载配置文件...")
-        
+
         path = self.app_dir / 'config.json'
         if not path.exists():
             self._append_log("⚠ 配置文件不存在，已生成默认配置")
@@ -2910,18 +3165,19 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             cfg = ConfigManager(path).load()
 
             self._append_log("✓ 配置文件加载成功")
+            self._apply_loaded_language(cfg)
             self._load_user_passwords(cfg)
 
             self.src_edit.setText(cfg.get('source_folder', ''))
             self.tgt_edit.setText(cfg.get('target_folder', ''))
             self.bak_edit.setText(cfg.get('backup_folder', ''))
-            
+
             # v2.1.1 新增：加载备份启用状态
             self.enable_backup = cfg.get('enable_backup', True)
             self.cb_enable_backup.blockSignals(True)
             self.cb_enable_backup.setChecked(self.enable_backup)
             self.cb_enable_backup.blockSignals(False)
-            
+
             self.spin_interval.setValue(int(cfg.get('upload_interval', 30)))
             self.spin_disk.setValue(int(cfg.get('disk_threshold_percent', 10)))
             self.spin_retry.setValue(int(cfg.get('retry_count', 3)))
@@ -2932,17 +3188,23 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.cb_ext['.bmp'].setChecked(cfg.get('filter_bmp', True))
             self.cb_ext['.gif'].setChecked(cfg.get('filter_gif', True))
             self.cb_ext['.raw'].setChecked(cfg.get('filter_raw', True))
-            
+
             # 加载高级选项
             self.auto_start_windows = cfg.get('auto_start_windows', False)
             self.auto_run_on_startup = cfg.get('auto_run_on_startup', False)
+            self.auto_ftp_on_startup = cfg.get('auto_ftp_on_startup', False)
+            if hasattr(self, 'cb_auto_ftp_on_startup'):
+                self.cb_auto_ftp_on_startup.blockSignals(True)
+                self.cb_auto_ftp_on_startup.setChecked(self.auto_ftp_on_startup)
+                self.cb_auto_ftp_on_startup.blockSignals(False)
+                self._set_checkbox_mark(self.cb_auto_ftp_on_startup, self.auto_ftp_on_startup)
             # 从注册表检查实际的开机自启状态
             actual_startup = self._check_startup_status()
             self.cb_auto_start_windows.blockSignals(True)
             self.cb_auto_start_windows.setChecked(actual_startup)
             self.cb_auto_start_windows.blockSignals(False)
             self.cb_auto_run_on_startup.setChecked(self.auto_run_on_startup)
-            
+
             # v2.2.0 新增：加载托盘通知开关
             self.show_notifications = cfg.get('show_notifications', True)
             if hasattr(self, 'cb_show_notifications'):
@@ -2950,7 +3212,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.cb_show_notifications.setChecked(self.show_notifications)
                 self.cb_show_notifications.blockSignals(False)
                 self._set_checkbox_mark(self.cb_show_notifications, self.show_notifications)
-            
+
             # v2.3.0 新增：加载速率限制配置
             self.limit_upload_rate = cfg.get('limit_upload_rate', False)
             self.max_upload_rate_mbps = cfg.get('max_upload_rate_mbps', 10.0)
@@ -2961,37 +3223,37 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self._set_checkbox_mark(self.cb_limit_rate, self.limit_upload_rate)
                 self.spin_max_rate.setValue(self.max_upload_rate_mbps)
                 self.spin_max_rate.setEnabled(self.limit_upload_rate)
-            
+
             # v1.9 新增：加载去重配置
             self.enable_deduplication = cfg.get('enable_deduplication', False)
             self.hash_algorithm = cfg.get('hash_algorithm', 'md5')
             self.duplicate_strategy = cfg.get('duplicate_strategy', 'ask')
-            
+
             self.cb_dedup_enable.blockSignals(True)
             self.cb_dedup_enable.setChecked(self.enable_deduplication)
             self.cb_dedup_enable.blockSignals(False)
-            
+
             # 映射策略文本
             strategy_text_map = {'skip': '跳过', 'rename': '重命名', 'overwrite': '覆盖', 'ask': '询问'}
             hash_text = self.hash_algorithm.upper()
             strategy_text = strategy_text_map.get(self.duplicate_strategy, '询问')
-            
+
             self.combo_hash.setCurrentText(hash_text)
             self.combo_strategy.setCurrentText(strategy_text)
-            
+
             # 根据去重开关状态启用/禁用子选项
             self.combo_hash.setEnabled(self.enable_deduplication)
             self.combo_strategy.setEnabled(self.enable_deduplication)
-            
+
             # v1.9 新增：加载网络监控配置
             self.network_check_interval = cfg.get('network_check_interval', 10)
             self.network_auto_pause = cfg.get('network_auto_pause', True)
             self.network_auto_resume = cfg.get('network_auto_resume', True)
-            
+
             self.spin_network_check.setValue(self.network_check_interval)
             self.cb_network_auto_pause.setChecked(self.network_auto_pause)
             self.cb_network_auto_resume.setChecked(self.network_auto_resume)
-            
+
             # v1.9 新增：加载自动删除配置
             self.enable_auto_delete = cfg.get('enable_auto_delete', False)
             self.auto_delete_folder = cfg.get('auto_delete_folder', '')
@@ -3010,14 +3272,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.auto_delete_use_trash = cfg.get('auto_delete_use_trash', True)
             if self.auto_delete_target_percent >= self.auto_delete_threshold:
                 self.auto_delete_target_percent = max(0, self.auto_delete_threshold - 10)
-            
+
             # 这些控件在磁盘清理对话框中，主窗口可能没有（用 getattr 避免 Pylance 误报）
             _cb_auto = getattr(self, 'cb_enable_auto_delete', None)
             if _cb_auto is not None:
                 _cb_auto.blockSignals(True)
                 _cb_auto.setChecked(self.enable_auto_delete)
                 _cb_auto.blockSignals(False)
-            
+
             _edit_folder = getattr(self, 'auto_del_folder_edit', None)
             if _edit_folder is not None:
                 _edit_folder.setText(self.auto_delete_folder)
@@ -3041,32 +3303,22 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             if _spin_interval is not None:
                 _spin_interval.setValue(self.auto_delete_check_interval)
                 _spin_interval.setEnabled(self.enable_auto_delete)
-            
+
             # v2.0 新增：加载协议配置 (v3.1.0 重构)
-            protocol = cfg.get('upload_protocol', 'smb')
-            saved_protocol = cfg.get('current_protocol', protocol)
-            
-            # v3.1.0: 迁移旧配置 - 如果协议是 ftp_server，转换为 enable_ftp_server=True
-            if saved_protocol == 'ftp_server' or protocol == 'ftp_server':
-                self.enable_ftp_server = True
-                saved_protocol = 'smb'  # 降级为 SMB 协议
-                protocol = 'smb'
-                self._append_log("⚠️ 配置迁移: ftp_server 已转换为独立开关")
-            else:
-                self.enable_ftp_server = cfg.get('enable_ftp_server', False)
-            
-            # v3.1.0: 新的协议映射（不包含 ftp_server）
             protocol_map = {
                 'smb': 0,
                 'ftp_client': 1,
                 'both': 2
             }
-            self.combo_protocol.setCurrentIndex(protocol_map.get(protocol, 0))
-            
-            # 设置当前协议
-            self.current_protocol = saved_protocol if saved_protocol in protocol_map else 'smb'
+            self.current_protocol, self.enable_ftp_server, migrated_ftp_server = self._resolve_protocol_from_config(cfg)
+            if migrated_ftp_server:
+                self._append_log("⚠️ 配置迁移: ftp_server 已转换为独立开关")
+
+            self.combo_protocol.blockSignals(True)
+            self.combo_protocol.setCurrentIndex(protocol_map[self.current_protocol])
+            self.combo_protocol.blockSignals(False)
             self._append_log(f"✓ 已加载上次协议模式: {self.current_protocol}")
-            
+
             # v3.1.0: 加载 FTP 服务器开关状态
             # SMB 模式下强制禁用 FTP 服务器
             if self.current_protocol == 'smb':
@@ -3083,10 +3335,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self._on_ftp_server_toggled(self.enable_ftp_server)  # 触发 UI 更新
                 if self.enable_ftp_server:
                     self._append_log(f"✓ FTP服务器已启用")
-            
+
             # 更新协议状态显示
             self._update_protocol_status()
-            
+
             # 加载 FTP 服务器配置
             ftp_server = cfg.get('ftp_server', {})
             self.ftp_server_host.setText(ftp_server.get('host', '0.0.0.0'))
@@ -3101,7 +3353,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.cb_server_tls.setChecked(ftp_server.get('enable_tls', False))
             self.ftp_server_max_conn.setValue(ftp_server.get('max_connections', 256))
             self.ftp_server_max_conn_per_ip.setValue(ftp_server.get('max_connections_per_ip', 5))
-            
+
             # 加载 FTP 客户端配置
             ftp_client = cfg.get('ftp_client', {})
             self.ftp_client_host.setText(ftp_client.get('host', ''))
@@ -3117,11 +3369,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
 
             self.ftp_server_config = copy.deepcopy(ftp_server)
             self.ftp_client_config = copy.deepcopy(ftp_client)
-            
+
             # 保存已加载的配置（用于回退）
             self.saved_config = copy.deepcopy(cfg)
             self.config_modified = False
-            
+
             self._append_log(f"✓ 已加载配置: 源={cfg.get('source_folder', '未设置')}")
             self._append_log(f"✓ 已加载配置: 目标={cfg.get('target_folder', '未设置')}")
             self._append_log(f"✓ 已加载配置: 备份={cfg.get('backup_folder', '未设置')}")
@@ -3136,13 +3388,18 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         """开始上传"""
         self._append_log("=" * 50)
         self._append_log("🚀 准备开始上传任务...")
-        
+
+        if self.current_role not in ['user', 'admin']:
+            self._append_log("❌ 未登录用户无权启动上传")
+            self._toast('请先登录后再开始上传', 'warning')
+            return
+
         # 1. 验证路径是否存在
         is_valid, errors = self._validate_paths()
         if not is_valid:
             error_msg = "\n".join(errors)
             self._append_log(f"❌ 路径验证失败:\n{error_msg}")
-            
+
             # 弹窗显示错误
             msg_box = QtWidgets.QMessageBox(self)
             msg_box.setIcon(QtWidgets.QMessageBox.Icon.Critical)
@@ -3151,17 +3408,17 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             msg_box.setDetailedText(error_msg)
             msg_box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
             msg_box.exec() if hasattr(msg_box, 'exec') else msg_box.exec_()
-            
+
             self._toast('路径验证失败，无法开始上传', 'danger')
             return
-        
+
         # v2.0 新增：验证FTP配置（如果使用FTP协议）
         if self.current_protocol != 'smb':
             is_valid, errors = self._validate_ftp_config()
             if not is_valid:
                 error_msg = "\n".join(errors)
                 self._append_log(f"❌ FTP配置验证失败:\n{error_msg}")
-                
+
                 # 弹窗显示错误
                 msg_box = QtWidgets.QMessageBox(self)
                 msg_box.setIcon(QtWidgets.QMessageBox.Icon.Critical)
@@ -3170,14 +3427,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 msg_box.setDetailedText(error_msg)
                 msg_box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
                 msg_box.exec() if hasattr(msg_box, 'exec') else msg_box.exec_()
-                
+
                 self._toast('FTP配置验证失败', 'danger')
                 return
-        
+
         # 2. 检查配置是否被修改但未保存
         if self.config_modified:
             self._append_log("⚠ 检测到配置已修改但未保存")
-            
+
             # v2.2.0 权限检查：未登录用户无权保存配置，直接恢复已保存配置
             if self.current_role == 'guest':
                 self._append_log("⚠ 未登录用户无权保存配置，自动恢复已保存的配置")
@@ -3187,7 +3444,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     self.bak_edit.setText(self.saved_config.get('backup_folder', ''))
                     self.config_modified = False
                     self._append_log("✓ 配置已恢复到已保存状态")
-                    
+
                     # 重新验证路径
                     is_valid, errors = self._validate_paths()
                     if not is_valid:
@@ -3207,14 +3464,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 msg_box.setText("检测到路径配置已修改但未保存！")
                 msg_box.setInformativeText('是否保存当前配置并使用新路径上传？\n\n选择"是"：保存配置并使用新路径\n选择"否"：放弃修改，使用已保存的路径')
                 msg_box.setStandardButtons(
-                    QtWidgets.QMessageBox.StandardButton.Yes | 
+                    QtWidgets.QMessageBox.StandardButton.Yes |
                     QtWidgets.QMessageBox.StandardButton.No |
                     QtWidgets.QMessageBox.StandardButton.Cancel
                 )
                 msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
-                
+
                 result = msg_box.exec() if hasattr(msg_box, 'exec') else msg_box.exec_()
-                
+
                 if result == QtWidgets.QMessageBox.StandardButton.Yes:
                     # 保存配置
                     self._append_log("✓ 用户选择保存配置")
@@ -3230,7 +3487,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                         self.bak_edit.setText(self.saved_config.get('backup_folder', ''))
                         self.config_modified = False
                         self._append_log("✓ 配置已恢复")
-                        
+
                         # 重新验证路径
                         is_valid, errors = self._validate_paths()
                         if not is_valid:
@@ -3242,22 +3499,22 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     # 取消
                     self._append_log("✗ 用户取消开始上传")
                     return
-        
+
         self._append_log("✓ 配置验证通过，开始启动上传任务...")
-        
+
         self.is_running = True
         self.is_paused = False
         self.start_time = time.time()
         self._update_status_pill()
-        
+
         # v2.2.0 重构：使用统一权限系统更新所有控件状态
         self._update_ui_permissions()
-        
+
         self._append_log(f"📋 上传配置:")
         self._append_log(f"  源文件夹: {self.src_edit.text()}")
         self._append_log(f"  目标文件夹: {self.tgt_edit.text()}")
         filters = [ext for ext, cb in self.cb_ext.items() if cb.isChecked()]
-        
+
         # v2.1.1 修改：根据备份启用状态显示不同信息
         if self.enable_backup:
             self._append_log(f"  备份文件夹: {self.bak_edit.text()}")
@@ -3267,26 +3524,47 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self._append_log(f"  重试次数: {self.spin_retry.value()}次")
         self._append_log(f"  文件类型: {', '.join(filters)}")
         self._append_log(f"  上传协议: {self.current_protocol}")
-        
+
         # v2.0 新增：启动FTP服务器（v3.1.0 重构：由独立开关控制）
         if self.enable_ftp_server:
+            # v3.4: 若已通过独立按钮启动FTP服务器，则跳过重复启动
+            _already_running = bool(
+                self._ftp_server_standalone and
+                self.ftp_manager and
+                self.ftp_manager.server and
+                self.ftp_manager.server.get_status().get('running')
+            )
+            if _already_running:
+                self._append_log("🖥️ FTP服务器已在独立模式运行，跳过重复启动")
+            else:
+                self._ftp_server_standalone = False  # 标记为非独立模式（随上传启动）
             try:
-                if not self.ftp_manager:
-                    self.ftp_manager = FTPProtocolManager()  # type: ignore[misc]
-                
-                self._append_log("🔧 正在启动FTP服务器...")
-                server_cfg = self._collect_ftp_server_config()
-                self.ftp_server_config = copy.deepcopy(server_cfg)
-                share_folder = server_cfg.get('shared_folder', '')
-                if not share_folder or not os.path.exists(share_folder):
-                    raise ValueError(f"FTP共享文件夹无效: {share_folder}")
-                server_config = self._build_ftp_server_manager_config(server_cfg)
-                
-                success = self.ftp_manager.start_server(server_config)
-                if not success:
-                    raise RuntimeError("FTP服务器启动失败")
-                
-                server_status = self.ftp_manager.get_status()
+                if _already_running:
+                    pass  # 已运行，跳过
+                else:
+                    if not self.ftp_manager:
+                        self.ftp_manager = FTPProtocolManager()  # type: ignore[misc]
+
+                    self._append_log("🔧 正在启动FTP服务器...")
+                    server_cfg = self._collect_ftp_server_config()
+                    self.ftp_server_config = copy.deepcopy(server_cfg)
+                    share_folder = server_cfg.get('shared_folder', '')
+                    if not share_folder or not share_folder.strip():
+                        raise ValueError(f"FTP共享文件夹无效: {share_folder}")
+                    if not os.path.exists(share_folder):
+                        try:
+                            os.makedirs(share_folder, exist_ok=True)
+                            self._append_log(f"✓ FTP共享文件夹已自动创建: {share_folder}")
+                        except Exception as mk_err:
+                            raise ValueError(f"FTP共享文件夹创建失败: {mk_err}")
+                    server_config = self._build_ftp_server_manager_config(server_cfg)
+
+                    success = self.ftp_manager.start_server(server_config)
+                    if not success:
+                        raise RuntimeError("FTP服务器启动失败")
+
+                _mgr = self.ftp_manager
+                server_status = _mgr.get_status() if _mgr else {}
                 if server_status.get('server'):
                     srv = server_status['server']
                     self._append_log(f"✓ FTP服务器已启动:")
@@ -3294,13 +3572,19 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     self._append_log(f"  共享: {srv['shared_folder']}")
                 else:
                     self._append_log(f"✓ FTP服务器已启动")
-                
+
                 # v2.0 新增：更新FTP状态显示
                 self._update_protocol_status()
             except ValueError as e:
                 # v2.0 增强：配置错误详细日志
                 self._append_log(f"❌ [FTP-CONFIG] 配置错误: {e}")
                 self._toast(f'FTP配置错误: {e}', 'danger')
+                if not _already_running and self.ftp_manager and not self._ftp_server_standalone:
+                    try:
+                        self.ftp_manager.stop_all()
+                    except Exception:
+                        pass
+                    self.ftp_manager = None
                 # v2.2.0 修复：使用统一权限系统恢复UI
                 self.is_running = False
                 self._update_status_pill()
@@ -3315,6 +3599,12 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 else:
                     self._append_log(f"❌ [FTP-OS] 系统错误: {e}")
                 self._toast(f'FTP服务器启动失败: {e}', 'danger')
+                if not _already_running and self.ftp_manager and not self._ftp_server_standalone:
+                    try:
+                        self.ftp_manager.stop_all()
+                    except Exception:
+                        pass
+                    self.ftp_manager = None
                 # v2.2.0 修复：使用统一权限系统恢复UI
                 self.is_running = False
                 self._update_status_pill()
@@ -3325,25 +3615,31 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 error_type = type(e).__name__
                 self._append_log(f"❌ [FTP-{error_type}] FTP服务器启动失败: {e}")
                 self._toast(f'FTP服务器启动失败: {e}', 'danger')
+                if not _already_running and self.ftp_manager and not self._ftp_server_standalone:
+                    try:
+                        self.ftp_manager.stop_all()
+                    except Exception:
+                        pass
+                    self.ftp_manager = None
                 # v2.2.0 修复：使用统一权限系统恢复UI
                 self.is_running = False
                 self._update_status_pill()
                 self._update_ui_permissions()
                 return
-        
+
         # 获取去重策略映射
         strategy_map = {'跳过': 'skip', '重命名': 'rename', '覆盖': 'overwrite', '询问': 'ask'}
         duplicate_strategy = strategy_map.get(self.combo_strategy.currentText(), 'ask')
-        
+
         # v2.0 新增：更新FTP客户端配置
         if self.current_protocol in ['ftp_client', 'both']:
             self.ftp_client_config = self._collect_ftp_client_config()
             self._append_log(f"📡 FTP客户端配置: {self.ftp_client_config['host']}:{self.ftp_client_config['port']}")
             self._append_log(f"  超时时间: {self.ftp_client_config['timeout']}秒, 重试次数: {self.ftp_client_config['retry_count']}次")
-        
+
         self.worker = UploadWorker(
             self.src_edit.text(), self.tgt_edit.text(), self.bak_edit.text(),
-            self.spin_interval.value(), 'periodic', self.spin_disk.value(), self.spin_retry.value(), 
+            self.spin_interval.value(), 'periodic', self.spin_disk.value(), self.spin_retry.value(),
             filters, self.app_dir,
             self.cb_dedup_enable.isChecked(),
             self.combo_hash.currentText().lower(),
@@ -3388,13 +3684,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.worker_thread.start()
         self._toast('开始上传', 'success')
         self._append_log("✓ 上传任务已启动")
-        
+
         # v2.2.0 新增：显示通知
         self._show_notification(
             "上传已开始",
             f"正在上传文件到: {self.tgt_edit.text()}"
         )
-        
+
         # v2.2.0 调试：打印开始上传后的按钮状态
         self._append_log(f"   [开始上传后快照] 源按钮={self.btn_choose_src.isEnabled()}, 目标按钮={self.btn_choose_tgt.isEnabled()}, 备份按钮={self.btn_choose_bak.isEnabled()}")
         self._append_log(f"   [开始上传后快照] 开始按钮={self.btn_start.isEnabled()}, 暂停按钮={self.btn_pause.isEnabled()}, 停止按钮={self.btn_stop.isEnabled()}")
@@ -3429,29 +3725,33 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
     def _on_stop(self):
         """停止上传"""
         self._append_log("🛑 正在停止上传任务...")
-        
+
         # v2.2.0 关键修复：立即设置运行状态为False
         self.is_running = False
         self.is_paused = False
-        
+
         # v2.0 新增：停止FTP服务器（如果启动了）
         if self.ftp_manager:
-            try:
-                self._append_log("🔧 正在停止FTP服务...")
-                self.ftp_manager.stop_all()
-                self.ftp_manager = None
-                self._append_log("✓ FTP服务已停止")
-                
-                # v2.0 新增：更新FTP状态显示
-                self._update_protocol_status()
-            except Exception as e:
-                self._append_log(f"⚠️ 停止FTP服务时出错: {e}")
-        
+            # v3.4: 若FTP服务器是独立模式启动的，停止上传时保留它继续运行
+            if self._ftp_server_standalone:
+                self._append_log("🖥️ FTP服务器处于独立运行模式，停止上传不影响FTP服务器")
+            else:
+                try:
+                    self._append_log("🔧 正在停止FTP服务...")
+                    self.ftp_manager.stop_all()
+                    self.ftp_manager = None
+                    self._append_log("✓ FTP服务已停止")
+
+                    # v2.0 新增：更新FTP状态显示
+                    self._update_protocol_status()
+                except Exception as e:
+                    self._append_log(f"⚠️ 停止FTP服务时出错: {e}")
+
         if not self.worker:
             # 没有Worker，直接恢复UI
             self._restore_ui_after_stop()
             return
-        
+
         self.worker.stop()
         # 立即恢复UI（不等待线程完全退出，提升响应速度）
         self._restore_ui_after_stop()
@@ -3471,25 +3771,25 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             finally:
                 self.worker = None
                 self.worker_thread = None
-        
+
         try:
             QtCore.QTimer.singleShot(0, _cleanup_worker_async)
         except Exception:
             # 如果计时器不可用，直接在当前线程做一次尽力清理（可能会阻塞片刻）
             _cleanup_worker_async()
-    
+
     def _restore_ui_after_stop(self):
         """恢复停止后的UI状态"""
         # v2.2.0 调试：打印调用时的参数状态
         self._append_log(f"   [停止后权限] 当前角色={self.current_role}, 运行状态={self.is_running}, 备份启用={self.enable_backup}")
-        
+
         # v2.2.0 重构：统一使用权限计算函数
         states = self._compute_control_states(self.current_role, self.is_running, self.enable_backup)
-        
+
         # v2.2.0 调试：打印停止后的计算状态
         self._append_log(f"   [停止后计算] 源按钮={states['btn_choose_src']}, 目标按钮={states['btn_choose_tgt']}, 备份按钮={states['btn_choose_bak']}")
         self._append_log(f"   [停止后计算] 源只读={states['src_edit_readonly']}, 目标只读={states['tgt_edit_readonly']}")
-        
+
         # 应用状态
         self.src_edit.setReadOnly(states['src_edit_readonly'])
         self.tgt_edit.setReadOnly(states['tgt_edit_readonly'])
@@ -3507,7 +3807,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.btn_pause.setEnabled(states['btn_pause'])
         self.btn_pause.setText("⏸ 暂停上传")
         self.btn_stop.setEnabled(states['btn_stop'])
-        
+
         # 重置进度显示
         self.pbar.setValue(0)
         self.pbar_file.setValue(0)
@@ -3515,25 +3815,25 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.lbl_current_file.setText("等待开始...")
         self.lbl_progress.setText("已停止")
         self._update_status_pill()
-        
+
         # 统一再走一遍权限更新逻辑，确保一致（会重复应用但保证同步）
         try:
             self._update_ui_permissions()
         except Exception:
             pass
-        
+
         # v2.2.0 调试：验证停止后的实际状态
         actual_tgt = self.btn_choose_tgt.isEnabled() if hasattr(self, 'btn_choose_tgt') else None
         actual_src = self.btn_choose_src.isEnabled() if hasattr(self, 'btn_choose_src') else None
         self._append_log(f"   [停止后实际] 源按钮={actual_src}, 目标按钮={actual_tgt}")
-        
+
         if actual_tgt is not None and actual_tgt != states['btn_choose_tgt']:
             self._append_log(f"   ⚠️ 警告：停止后目标按钮状态不一致！计算={states['btn_choose_tgt']}, 实际={actual_tgt}")
-        
+
         self._toast('已停止', 'danger')
         self._append_log("✓ 上传任务已停止")
         self._append_log("=" * 50)
-        
+
         # v2.2.0 系统托盘通知
         self._show_notification(
             "上传已停止",
@@ -3545,11 +3845,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.uploaded = uploaded
         self.failed = failed
         self.skipped = skipped
-        
+
         self.lbl_uploaded.setValue(str(uploaded))
         self.lbl_failed.setValue(str(failed))
         self.lbl_skipped.setValue(str(skipped))
-        
+
         # v2.0 增强：速率显示添加协议图标
         protocol_icons = {
             'smb': '📁',
@@ -3576,30 +3876,44 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         prefix = f"总进度 {self.pbar.value()}%"
         suffix = f"  剩余 {remaining_count} 个文件  预计 {eta}" if total>0 else ""
         self.lbl_progress.setText(prefix + suffix)
-    
+
     def _on_file_progress(self, filename: str, progress: int):
         """更新当前文件的进度"""
+        progress = max(0, min(100, int(progress)))
+
         # 截断过长的文件名
         display_name = filename
         if len(filename) > 50:
             display_name = filename[:25] + "..." + filename[-22:]
-        
-        self.lbl_current_file.setText(f"{display_name}")
-        self.pbar_file.setValue(progress)
-        
+
+        state = (filename, progress)
+        if (
+            self._last_file_progress == state
+            and self.lbl_current_file.text() == display_name
+            and self.pbar_file.value() == progress
+        ):
+            return
+        self._last_file_progress = state
+
+        self._set_text_if_changed(self.lbl_current_file, f"{display_name}")
+        if self.pbar_file.value() != progress:
+            self.pbar_file.setValue(progress)
+
         # 小幅度刷新速率显示：当有进度时给出“上传中...”提示，避免长时间保持旧速率
         try:
             if 0 < progress < 100:
-                self.lbl_rate.setValue("上传中...")
+                self._set_chip_value_if_changed(self.lbl_rate, "上传中...")
         except Exception:
             pass
-        
+
         if progress == 0:
-            self.pbar_file.setFormat("准备上传...")
+            fmt = "准备上传..."
         elif progress == 100:
-            self.pbar_file.setFormat("✓ 完成")
+            fmt = "✓ 完成"
         else:
-            self.pbar_file.setFormat(f"{progress}%")
+            fmt = f"{progress}%"
+        if self.pbar_file.format() != fmt:
+            self.pbar_file.setFormat(fmt)
 
     def _on_ask_duplicate(self, payload: dict):
         """在主线程弹窗询问重复文件处理策略。payload 结构:
@@ -3727,7 +4041,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                         payload['event'].set()
                     except Exception:
                         pass
-    
+
     def _on_network_status(self, status: str):
         """更新网络状态显示"""
         if status == 'good':
@@ -3768,13 +4082,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         pass
         # v3.3.0：Worker 结束后恢复定时清理
         self._update_auto_cleanup_schedule()
-    
+
     def _on_upload_error(self, filename: str, error_message: str):
         """v2.2.0 处理上传错误通知"""
         # 限制错误通知频率（每个文件只通知一次最新错误）
         if not hasattr(self, '_error_notified_files'):
             self._error_notified_files = set()
-        
+
         if filename not in self._error_notified_files:
             self._error_notified_files.add(filename)
             # 截断过长的错误信息
@@ -3784,11 +4098,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 f"{filename}: {short_error}",
                 icon_type=get_qt_enum(QtWidgets.QSystemTrayIcon, 'Warning', 2)
             )
-        
+
         # 定期清理已通知文件集合（避免内存泄漏）
         if len(self._error_notified_files) > 100:
             self._error_notified_files.clear()
-    
+
     def _on_disk_warning(self, target_percent: float, backup_percent: float, threshold: int):
         """v2.2.0 处理磁盘空间警告通知"""
         self._show_notification(
@@ -3801,7 +4115,35 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
     def _log_message(self, message: str):
         self._append_log(message)
 
-    def _append_log(self, line: str): 
+    @staticmethod
+    def _set_text_if_changed(widget: Any, text: str) -> None:
+        try:
+            if widget.text() == text:
+                return
+        except Exception:
+            pass
+        widget.setText(text)
+
+    @staticmethod
+    def _set_chip_value_if_changed(chip: Any, text: str) -> None:
+        try:
+            if hasattr(chip, 'value_label') and chip.value_label.text() == text:
+                return
+        except Exception:
+            pass
+        chip.setValue(text)
+
+    @staticmethod
+    def _set_style_if_changed(widget: Any, style: str) -> None:
+        try:
+            if widget.property('_last_style_sheet') == style:
+                return
+            widget.setProperty('_last_style_sheet', style)
+        except Exception:
+            pass
+        widget.setStyleSheet(style)
+
+    def _append_log(self, line: str):
         # If autoscroll is disabled, preserve the current scrollbar position.
         try:
             vsb = self.log.verticalScrollBar()
@@ -3813,10 +4155,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         # 添加时间戳
         timestamp = datetime.datetime.now().strftime('%H:%M:%S')
         log_line = f"[{timestamp}] {line}"
-        
+
         # Append the new line to UI
         self.log.appendPlainText(log_line)
-        
+
         # Write to log file
         self._write_log_to_file(line)
 
@@ -3831,29 +4173,29 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             if vsb is not None and prev is not None:
                 # keep the view where it was before appending
                 vsb.setValue(prev)
-    
+
     def _write_log_to_file(self, line: str):
         """将日志写入文件（异步，不阻塞主线程）"""
         if self.log_file_path is None:
             return
-        
+
         # 保存当前日志文件路径（避免在线程中访问 self）
         current_log_path = self.log_file_path
         app_dir = self.app_dir
-        
+
         def write_log():
             try:
                 # 检查日期是否变更
                 today = datetime.datetime.now().strftime('%Y-%m-%d')
                 expected_filename = f'upload_{today}.txt'
-                
+
                 log_path = current_log_path
                 if log_path.name != expected_filename:
                     # 创建新的日志文件
                     log_dir = app_dir / "logs"
                     log_dir.mkdir(parents=True, exist_ok=True)
                     log_path = log_dir / expected_filename
-                
+
                 # 写入日志（带时间戳）
                 timestamp = datetime.datetime.now().strftime('%H:%M:%S')
                 with open(log_path, 'a', encoding='utf-8') as f:
@@ -3861,7 +4203,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             except Exception as e:
                 # 静默失败，不影响程序运行
                 print(f"写入日志文件失败: {e}")
-        
+
         # 提交到线程池异步执行
         try:
             self._log_executor.submit(write_log)
@@ -3871,15 +4213,23 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
 
     def _update_status_pill(self):
         if self.is_paused:
-            self.lbl_status.setText("🟡 已暂停")
-            self.lbl_status.setStyleSheet("background:#FEF9C3; color:#A16207; padding:4px 10px; font-weight:700; border-radius:12px;")
+            state = 'paused'
+            text = "🟡 已暂停"
+            style = "background:#FEF9C3; color:#A16207; padding:4px 10px; font-weight:700; border-radius:12px;"
         elif self.is_running:
-            self.lbl_status.setText("🟢 运行中")
-            self.lbl_status.setStyleSheet("background:#DCFCE7; color:#166534; padding:4px 10px; font-weight:700; border-radius:12px;")
+            state = 'running'
+            text = "🟢 运行中"
+            style = "background:#DCFCE7; color:#166534; padding:4px 10px; font-weight:700; border-radius:12px;"
         else:
-            self.lbl_status.setText("🔴 已停止")
-            self.lbl_status.setStyleSheet("background:#FEE2E2; color:#B91C1C; padding:4px 10px; font-weight:700; border-radius:12px;")
-    
+            state = 'stopped'
+            text = "🔴 已停止"
+            style = "background:#FEE2E2; color:#B91C1C; padding:4px 10px; font-weight:700; border-radius:12px;"
+        if self._last_status_pill_state == state:
+            return
+        self._last_status_pill_state = state
+        self._set_text_if_changed(self.lbl_status, text)
+        self._set_style_if_changed(self.lbl_status, style)
+
     def _update_protocol_status(self):
         """更新协议和FTP状态显示 (v3.1.0 重构)"""
         # 更新协议模式芯片
@@ -3889,12 +4239,12 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             'both': 'SMB+FTP'
         }
         protocol_text = protocol_names.get(self.current_protocol, 'SMB')
-        self.lbl_protocol.setValue(protocol_text)
-        
+        self._set_chip_value_if_changed(self.lbl_protocol, protocol_text)
+
         # v3.1.0: 更新当前模式芯片（醒目显示）
         protocol_index = {'smb': 0, 'ftp_client': 1, 'both': 2}.get(self.current_protocol, 0)
         self._update_mode_chip(protocol_index)
-        
+
         # 更新FTP服务器状态（由独立开关控制，不依赖协议）
         if self.enable_ftp_server:
             if self.ftp_manager and self.ftp_manager.server:
@@ -3905,41 +4255,47 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                         connections = server_info.get('connections', 0)
                         # 显示连接数，如果有连接则用绿色高亮
                         if connections > 0:
-                            self.lbl_ftp_server.setValue(f"🟢 运行中 ({connections}个连接)")
+                            self._set_chip_value_if_changed(self.lbl_ftp_server, f"🟢 运行中 ({connections}个连接)")
                         else:
-                            self.lbl_ftp_server.setValue("🟢 运行中 (0)")
-                        self.lbl_ftp_server.setStyleSheet(
+                            self._set_chip_value_if_changed(self.lbl_ftp_server, "🟢 运行中 (0)")
+                        self._set_style_if_changed(
+                            self.lbl_ftp_server,
                             "background:#DCFCE7; color:#166534; padding:4px 8px; border-radius:4px; font-size:9pt; font-weight:500;"
                         )
                     else:
-                        self.lbl_ftp_server.setValue("🔴 已停止")
-                        self.lbl_ftp_server.setStyleSheet(
+                        self._set_chip_value_if_changed(self.lbl_ftp_server, "🔴 已停止")
+                        self._set_style_if_changed(
+                            self.lbl_ftp_server,
                             "background:#FEE2E2; color:#B91C1C; padding:4px 8px; border-radius:4px; font-size:9pt;"
                         )
                 except AttributeError:
                     # 预期异常：服务器对象可能已销毁
-                    self.lbl_ftp_server.setValue("⚪ 未启动")
-                    self.lbl_ftp_server.setStyleSheet(
+                    self._set_chip_value_if_changed(self.lbl_ftp_server, "⚪ 未启动")
+                    self._set_style_if_changed(
+                        self.lbl_ftp_server,
                         "background:#F5F5F5; color:#757575; padding:4px 8px; border-radius:4px; font-size:9pt;"
                     )
                 except Exception as e:
                     # 意外异常：记录日志并显示状态异常
                     logger.error(f"FTP服务器状态获取异常: {type(e).__name__}: {e}")
-                    self.lbl_ftp_server.setValue("⚠️ 状态异常")
-                    self.lbl_ftp_server.setStyleSheet(
+                    self._set_chip_value_if_changed(self.lbl_ftp_server, "⚠️ 状态异常")
+                    self._set_style_if_changed(
+                        self.lbl_ftp_server,
                         "background:#FEE2E2; color:#B91C1C; padding:4px 8px; border-radius:4px; font-size:9pt;"
                     )
             else:
-                self.lbl_ftp_server.setValue("⚪ 未启动")
-                self.lbl_ftp_server.setStyleSheet(
+                self._set_chip_value_if_changed(self.lbl_ftp_server, "⚪ 未启动")
+                self._set_style_if_changed(
+                    self.lbl_ftp_server,
                     "background:#F5F5F5; color:#757575; padding:4px 8px; border-radius:4px; font-size:9pt;"
                 )
         else:
-            self.lbl_ftp_server.setValue("⚫ --")
-            self.lbl_ftp_server.setStyleSheet(
+            self._set_chip_value_if_changed(self.lbl_ftp_server, "⚫ --")
+            self._set_style_if_changed(
+                self.lbl_ftp_server,
                 "background:#F5F5F5; color:#9E9E9E; padding:4px 8px; border-radius:4px; font-size:9pt;"
             )
-        
+
         # 更新FTP客户端状态（含图标指示器）
         if self.current_protocol in ['ftp_client', 'both']:
             if self.worker and hasattr(self.worker, 'ftp_client') and self.worker.ftp_client:
@@ -3947,38 +4303,174 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     client_status = self.worker.ftp_client.get_status()
                     if client_status.get('connected'):
                         host = client_status.get('host', '')
-                        self.lbl_ftp_client.setValue(f"🟢 已连接 ({host})")
-                        self.lbl_ftp_client.setStyleSheet(
+                        self._set_chip_value_if_changed(self.lbl_ftp_client, f"🟢 已连接 ({host})")
+                        self._set_style_if_changed(
+                            self.lbl_ftp_client,
                             "background:#DCFCE7; color:#166534; padding:4px 8px; border-radius:4px; font-size:9pt; font-weight:500;"
                         )
                     else:
-                        self.lbl_ftp_client.setValue("🟡 未连接")
-                        self.lbl_ftp_client.setStyleSheet(
+                        self._set_chip_value_if_changed(self.lbl_ftp_client, "🟡 未连接")
+                        self._set_style_if_changed(
+                            self.lbl_ftp_client,
                             "background:#FEF9C3; color:#A16207; padding:4px 8px; border-radius:4px; font-size:9pt;"
                         )
                 except AttributeError:
                     # 预期异常：客户端对象可能已销毁
-                    self.lbl_ftp_client.setValue("⚪ 未连接")
-                    self.lbl_ftp_client.setStyleSheet(
+                    self._set_chip_value_if_changed(self.lbl_ftp_client, "⚪ 未连接")
+                    self._set_style_if_changed(
+                        self.lbl_ftp_client,
                         "background:#F5F5F5; color:#757575; padding:4px 8px; border-radius:4px; font-size:9pt;"
                     )
                 except Exception as e:
                     # 意外异常：记录日志并显示状态异常
                     logger.error(f"FTP客户端状态获取异常: {type(e).__name__}: {e}")
-                    self.lbl_ftp_client.setValue("⚠️ 状态异常")
-                    self.lbl_ftp_client.setStyleSheet(
+                    self._set_chip_value_if_changed(self.lbl_ftp_client, "⚠️ 状态异常")
+                    self._set_style_if_changed(
+                        self.lbl_ftp_client,
                         "background:#FEE2E2; color:#B91C1C; padding:4px 8px; border-radius:4px; font-size:9pt;"
                     )
             else:
-                self.lbl_ftp_client.setValue("⚪ 未连接")
-                self.lbl_ftp_client.setStyleSheet(
+                self._set_chip_value_if_changed(self.lbl_ftp_client, "⚪ 未连接")
+                self._set_style_if_changed(
+                    self.lbl_ftp_client,
                     "background:#F5F5F5; color:#757575; padding:4px 8px; border-radius:4px; font-size:9pt;"
                 )
         else:
-            self.lbl_ftp_client.setValue("⚫ --")
-            self.lbl_ftp_client.setStyleSheet(
+            self._set_chip_value_if_changed(self.lbl_ftp_client, "⚫ --")
+            self._set_style_if_changed(
+                self.lbl_ftp_client,
                 "background:#F5F5F5; color:#9E9E9E; padding:4px 8px; border-radius:4px; font-size:9pt;"
             )
+
+        # v3.4 更新独立FTP服务器控制按钮状态
+        self._update_ftp_server_btn()
+
+    def _update_ftp_server_btn(self):
+        """v3.4 新增: 更新操作控制面板中的FTP服务器独立控制按钮"""
+        if not hasattr(self, 'btn_ftp_server_toggle'):
+            return
+
+        _mgr = self.ftp_manager
+        _srv = _mgr.server if _mgr else None
+        server_running = bool(_srv and _srv.get_status().get('running'))
+
+        if server_running:
+            try:
+                srv_status = _srv.get_status() if _srv else {}
+                host = srv_status.get('host', '0.0.0.0')
+                port = srv_status.get('port', 2121)
+                conns = srv_status.get('connections', 0)
+                addr_text = f"{host}:{port}  ({conns} 个连接)"
+            except Exception:
+                addr_text = "运行中"
+            state = (True, addr_text)
+            if self._last_ftp_server_btn_state != state:
+                self._last_ftp_server_btn_state = state
+                self._set_text_if_changed(self.btn_ftp_server_toggle, "⏹ 停止 FTP 服务器")
+                self.btn_ftp_server_toggle.setProperty("class", "Danger")
+                self.btn_ftp_server_toggle.style().unpolish(self.btn_ftp_server_toggle)
+                self.btn_ftp_server_toggle.style().polish(self.btn_ftp_server_toggle)
+                self._set_text_if_changed(self.lbl_ftp_server_ctrl, f"🟢 运行中: {addr_text}")
+                self._set_style_if_changed(
+                    self.lbl_ftp_server_ctrl,
+                    "color:#16A34A; font-size:9pt; padding-left:4px; font-weight:600;"
+                )
+        else:
+            state = (False, '')
+            if self._last_ftp_server_btn_state != state:
+                self._last_ftp_server_btn_state = state
+                self._set_text_if_changed(self.btn_ftp_server_toggle, "🖥️ 启动 FTP 服务器")
+                self.btn_ftp_server_toggle.setProperty("class", "Secondary")
+                self.btn_ftp_server_toggle.style().unpolish(self.btn_ftp_server_toggle)
+                self.btn_ftp_server_toggle.style().polish(self.btn_ftp_server_toggle)
+                self._set_text_if_changed(self.lbl_ftp_server_ctrl, "未运行")
+                self._set_style_if_changed(
+                    self.lbl_ftp_server_ctrl,
+                    "color:#9CA3AF; font-size:9pt; padding-left:4px;"
+                )
+
+    def _on_ftp_server_btn_clicked(self):
+        """v3.4 新增: 独立启动/停止 FTP 服务器（不依赖上传流程）"""
+        if self.current_role != 'admin':
+            self._toast('仅管理员可以控制 FTP 服务器', 'warning')
+            return
+
+        _mgr2 = self.ftp_manager
+        _srv2 = _mgr2.server if _mgr2 else None
+        server_running = bool(_srv2 and _srv2.get_status().get('running'))
+
+        if server_running:
+            # 停止 FTP 服务器
+            try:
+                self._append_log("🔧 正在停止 FTP 服务器（独立模式）...")
+                if _mgr2:
+                    _mgr2.stop_all()
+                self.ftp_manager = None
+                self._ftp_server_standalone = False
+                self._append_log("✓ FTP 服务器已停止")
+                self._toast('FTP 服务器已停止', 'info')
+            except Exception as e:
+                self._append_log(f"⚠️ 停止 FTP 服务器失败: {e}")
+                self._toast(f'停止失败: {e}', 'danger')
+        else:
+            # 启动 FTP 服务器
+            _mgr_created = False  # 标记是否本次新建管理器实例
+            try:
+                server_cfg = self._collect_ftp_server_config()
+                share_folder = server_cfg.get('shared_folder', '')
+                if not share_folder:
+                    raise ValueError("FTP共享文件夹未配置，请在「上传设置 - FTP服务器配置」中设置共享目录")
+                if not os.path.exists(share_folder):
+                    try:
+                        os.makedirs(share_folder, exist_ok=True)
+                        self._append_log(f"✓ FTP共享文件夹已自动创建: {share_folder}")
+                    except Exception as mk_err:
+                        raise ValueError(f"FTP共享文件夹创建失败: {mk_err}")
+
+                if not self.ftp_manager:
+                    self.ftp_manager = FTPProtocolManager()  # type: ignore[misc]
+                    _mgr_created = True
+
+                self._append_log("🔧 正在启动 FTP 服务器（独立模式）...")
+                self._append_log(f"   地址: {server_cfg.get('host', '0.0.0.0')}:{server_cfg.get('port', 2121)}")
+                self._append_log(f"   共享目录: {share_folder}")
+                server_config = self._build_ftp_server_manager_config(server_cfg)
+                success = self.ftp_manager.start_server(server_config)
+                if not success:
+                    raise RuntimeError("FTP服务器启动失败，请检查配置和端口占用")
+
+                self._ftp_server_standalone = True
+                srv_status = self.ftp_manager.get_status().get('server', {})
+                host = srv_status.get('host', server_cfg['host'])
+                port = srv_status.get('port', server_cfg['port'])
+                self._append_log(f"✓ FTP 服务器已启动 (独立模式): {host}:{port}")
+                self._append_log(f"  共享目录: {share_folder}")
+                self._toast(f'FTP 服务器已启动: {host}:{port}', 'success')
+            except ValueError as e:
+                self._append_log(f"❌ FTP配置错误: {e}")
+                self._toast(str(e), 'warning')
+                if _mgr_created:
+                    self.ftp_manager = None
+            except OSError as e:
+                error_msg = str(e)
+                if ('already in use' in error_msg.lower()
+                        or '10048' in error_msg
+                        or 'address already in use' in error_msg.lower()):
+                    port = server_cfg.get('port', 2121)
+                    self._append_log(f"❌ 端口 {port} 已被占用，请更换端口")
+                    self._toast(f'端口 {port} 已被占用', 'danger')
+                else:
+                    self._append_log(f"❌ 系统错误: {e}")
+                    self._toast(f'启动失败: {e}', 'danger')
+                if _mgr_created:
+                    self.ftp_manager = None
+            except Exception as e:
+                self._append_log(f"❌ FTP服务器启动失败: {type(e).__name__}: {e}")
+                self._toast(f'启动失败: {e}', 'danger')
+                if _mgr_created:
+                    self.ftp_manager = None
+
+        self._update_protocol_status()
 
     def _toast(self, msg: str, kind: str = 'info'):
         t = Toast(self.window(), msg, kind)
@@ -3992,7 +4484,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             m, s = divmod(rem, 60)
             t = f"{h:02d}:{m:02d}:{s:02d}"
             self.lbl_time.setValue(t)
-        
+
         # 归档队列大小刷新（近似值即可）
         try:
             if self.worker is not None and hasattr(self.worker, 'archive_queue'):
@@ -4000,14 +4492,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.lbl_queue.setValue(str(qsize))
         except Exception:
             pass
-        
+
         # 磁盘空间更新（根据配置的间隔）
         self.disk_check_counter += 1
         # 每0.5秒tick一次，所以需要 interval * 2 次tick
         if self.disk_check_counter >= self.disk_check_interval * 2:
             self.disk_check_counter = 0
             self._update_disk_space()
-        
+
         # v2.0 新增：更新协议和FTP状态
         self._update_protocol_status()
 
@@ -4015,7 +4507,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         """更新磁盘剩余空间显示（异步，不阻塞主线程）"""
         target_path = self.tgt_edit.text()
         backup_path = self.bak_edit.text()
-        
+
         def _is_network_path(p: str) -> bool:
             try:
                 if not p:
@@ -4040,7 +4532,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     return False
             except Exception:
                 return False
-        
+
         def update_disk_async():
             try:
                 # 更新目标磁盘
@@ -4058,7 +4550,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                                 self._disk_update_signal.emit("target", -1.0)
                         except Exception:
                             self._disk_update_signal.emit("target", -1.0)
-                
+
                 # 更新归档磁盘
                 if self.enable_backup and backup_path:
                     if _is_network_path(backup_path) and getattr(self, 'network_status', 'unknown') != 'good':
@@ -4077,7 +4569,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     self._disk_update_signal.emit("backup", -1.0)
             except Exception as e:
                 self._emit_async_log(f"磁盘空间检查失败: {e}")
-        
+
         # 提交到线程池异步执行
         try:
             self._disk_executor.submit(update_disk_async)
@@ -4238,6 +4730,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 log("⚠️ 自动清理阈值配置无效（目标阈值必须小于触发阈值），已跳过")
                 return
             for folder in folders:
+                dangerous_reason = MainWindow._dangerous_cleanup_path_reason(folder)
+                if dangerous_reason:
+                    log(f"⚠️ 自动清理路径已跳过: {folder}（{dangerous_reason}）")
+                    continue
                 if not os.path.isdir(folder):
                     log(f"⚠️ 自动清理路径不可用: {folder}")
                     continue
@@ -4312,8 +4808,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                             os.remove(path)
                         deleted_count += 1
                         deleted_size += size
-                    except Exception:
+                    except Exception as exc:
                         failed_count += 1
+                        if failed_count <= 10:
+                            log(f"⚠️ 自动清理删除失败: {path}（{exc}）")
 
                 size_mb = deleted_size / (1024 * 1024)
                 final_used_percent = ((used_bytes - deleted_size) / total) * 100 if total > 0 else 0.0
@@ -4322,10 +4820,16 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     f"✅ 自动清理完成（{mode_text}）：删除 {deleted_count} 个文件，释放 {size_mb:.2f} MB，"
                     f"失败 {failed_count} 个，预计使用率降至 {final_used_percent:.1f}%（路径：{folder}）"
                 )
+                if deleted_size < bytes_to_free:
+                    missing_mb = (bytes_to_free - deleted_size) / (1024 * 1024)
+                    log(
+                        f"⚠️ 自动清理未达到目标阈值，还需释放约 {missing_mb:.2f} MB；"
+                        f"请检查文件占用、权限或扩大清理目录（路径：{folder}）"
+                    )
         finally:
             with self._auto_cleanup_lock:
                 self._auto_cleanup_running = False
-    
+
     def _on_disk_update(self, disk_type: str, free_percent: float):
         """处理磁盘更新信号（在主线程中执行）"""
         if disk_type == "target":
@@ -4351,14 +4855,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     self.lbl_backup_disk.setStyleSheet("QFrame{background:#FFF9C3; border-radius:8px;} QLabel{color:#F57F17;}")
                 else:
                     self.lbl_backup_disk.setStyleSheet("QFrame{background:#F1F8E9; border-radius:8px;} QLabel{color:#33691E;}")
-    
+
     # ========== v2.2.0 新增：系统托盘功能 ==========
-    
+
     def _init_tray_icon(self):
         """初始化系统托盘图标和菜单"""
         # 创建托盘图标
         self.tray_icon = QtWidgets.QSystemTrayIcon(self)
-        
+
         # 设置托盘图标（使用应用图标或默认图标）
         icon = self.windowIcon()
         if icon.isNull():
@@ -4373,58 +4877,58 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             painter.drawText(pixmap.rect(), get_qt_enum(QtCore.Qt, 'AlignCenter', 0x0084), "图")
             painter.end()
             icon = QtGui.QIcon(pixmap)
-        
+
         self.tray_icon.setIcon(icon)
         self.tray_icon.setToolTip(APP_TITLE)
-        
+
         # 创建托盘菜单
         tray_menu = QtWidgets.QMenu()
-        
+
         # 显示/隐藏主窗口
         show_action = tray_menu.addAction("📱 显示主窗口")
         show_action.triggered.connect(self._show_window)
-        
+
         tray_menu.addSeparator()
-        
+
         # 上传控制
         self.tray_start_action = tray_menu.addAction("▶️ 开始上传")
         self.tray_start_action.triggered.connect(self._on_start)
-        
+
         self.tray_pause_action = tray_menu.addAction("⏸️ 暂停上传")
         self.tray_pause_action.triggered.connect(self._on_pause_resume)
         self.tray_pause_action.setEnabled(False)
-        
+
         self.tray_stop_action = tray_menu.addAction("⏹️ 停止上传")
         self.tray_stop_action.triggered.connect(self._on_stop)
         self.tray_stop_action.setEnabled(False)
-        
+
         tray_menu.addSeparator()
-        
+
         # 统计信息
         stats_action = tray_menu.addAction("📊 查看统计")
         stats_action.triggered.connect(self._show_stats)
-        
+
         tray_menu.addSeparator()
-        
+
         # 退出程序
         quit_action = tray_menu.addAction("❌ 退出程序")
         quit_action.triggered.connect(self._quit_application)
-        
+
         self.tray_icon.setContextMenu(tray_menu)
-        
+
         # 双击托盘图标显示主窗口
         self.tray_icon.activated.connect(self._on_tray_activated)
-        
+
         # 显示托盘图标
         self.tray_icon.show()
-        
+
         self._append_log("✓ 系统托盘已初始化")
-    
+
     def _on_tray_activated(self, reason):
         """托盘图标激活事件"""
         if reason == get_qt_enum(QtWidgets.QSystemTrayIcon, 'DoubleClick', 2):
             self._show_window()
-    
+
     def _show_window(self):
         """显示主窗口"""
         self.show()
@@ -4439,7 +4943,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.setWindowState(new_state)  # type: ignore[arg-type]
         self.activateWindow()
         self.raise_()
-    
+
     def _show_stats(self):
         """显示统计信息对话框"""
         stats_text = f"""
@@ -4459,13 +4963,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             minutes = int((elapsed % 3600) // 60)
             seconds = int(elapsed % 60)
             stats_text += f"运行时间: {hours:02d}:{minutes:02d}:{seconds:02d}\n"
-        
+
         msg_box = QtWidgets.QMessageBox(self)
         msg_box.setWindowTitle("统计信息")
         msg_box.setText(stats_text)
         msg_box.setIcon(MessageBoxIcon.Information)
         msg_box.exec()
-    
+
     def _get_network_status_text(self):
         """获取网络状态文本"""
         status_map = {
@@ -4475,7 +4979,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             'unknown': '⚪ 未知'
         }
         return status_map.get(self.network_status, '⚪ 未知')
-    
+
     def _quit_application(self):
         """退出应用程序"""
         reply = QtWidgets.QMessageBox.question(
@@ -4485,22 +4989,22 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             MessageBoxButton.Yes | MessageBoxButton.No,
             MessageBoxButton.No
         )
-        
+
         if reply == MessageBoxButton.Yes:
             if self.tray_icon:
                 self.tray_icon.hide()
             QtWidgets.QApplication.quit()
-    
+
     def _show_notification(self, title: str, message: str, icon_type: Optional[Any] = None):
         """显示系统通知
-        
+
         Note: PySide6 6.x 的 showMessage API 有两种签名，我们使用 type: ignore[call-overload] 来忽略类型检查
         """
         if self.show_notifications and self.tray_icon and self.tray_icon.isVisible():
             if icon_type is None:
                 icon_type = TrayIconType.Information
             self.tray_icon.showMessage(title, message, icon_type, 3000)  # type: ignore[call-overload]
-    
+
     def changeEvent(self, event):
         """窗口状态改变事件"""
         if event.type() == EventType.WindowStateChange:
@@ -4515,7 +5019,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     )
                 return
         super().changeEvent(event)
-    
+
     def closeEvent(self, event):
         """窗口关闭事件，清理资源"""
         # 如果启用托盘且不是真正退出，则隐藏到托盘
@@ -4528,12 +5032,26 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     "程序仍在后台运行\n右键托盘图标可选择退出"
                 )
             return
-        
+
         # 真正退出时清理资源
         # 停止上传任务
         if self.worker:
-            self.worker.stop()
-        
+            self.worker.stop(wait=True, timeout=3.0)
+
+        if self.ftp_manager:
+            try:
+                self._append_log("🔧 正在停止 FTP 服务...")
+                self.ftp_manager.stop_all()
+            except Exception as e:
+                self._append_log(f"⚠️ 停止 FTP 服务时出错: {e}")
+            finally:
+                self.ftp_manager = None
+                self._ftp_server_standalone = False
+                try:
+                    self._update_protocol_status()
+                except Exception:
+                    pass
+
         # 关闭日志线程池
         try:
             self._log_executor.shutdown(wait=False)
@@ -4547,66 +5065,66 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self._cleanup_executor.shutdown(wait=False)
         except Exception:
             pass
-        
+
         # 接受关闭事件
         event.accept()
-    
+
     def _setup_single_instance_server(self):
         """设置单例唤醒服务器
-        
+
         监听来自新实例的唤醒请求，收到后将窗口置顶激活
         """
         self.local_server = QLocalServer(self)
         server_name = "ImageUploadTool_SingleInstance_Server"
-        
+
         # 先移除可能残留的服务器（程序异常退出时可能遗留）
         QLocalServer.removeServer(server_name)
-        
+
         # 启动服务器
         if not self.local_server.listen(server_name):
             # 服务器启动失败，记录日志但不影响程序运行
             self._log_message(f"警告: 单例服务器启动失败 - {self.local_server.errorString()}")
             return
-        
+
         # 连接新连接信号
         self.local_server.newConnection.connect(self._handle_wakeup_request)
         self._log_message("单例服务器已启动，可接收唤醒请求")
-    
+
     def _handle_wakeup_request(self):
         """处理来自新实例的唤醒请求"""
         # 获取新连接
         client_socket = self.local_server.nextPendingConnection()
         if not client_socket:
             return
-        
+
         # 等待数据到达
         if client_socket.waitForReadyRead(1000):  # 等待最多1秒
             data = client_socket.readAll()
             # 使用 Qt 的方法转换为 Python 字符串
             message = bytes(data).decode('utf-8', errors='ignore')  # type: ignore[arg-type]
-            
+
             if message == "WAKEUP":
                 # 收到唤醒请求，激活窗口
                 self._activate_window()
                 self._log_message("收到唤醒请求，已激活窗口")
-        
+
         # 关闭连接
         client_socket.disconnectFromServer()
-    
+
     def _activate_window(self):
         """激活并置顶窗口"""
         # 如果窗口被隐藏，先显示
         if self.isHidden():
             self.show()
-        
+
         # 如果窗口被最小化，恢复正常状态
         if self.isMinimized():
             self.showNormal()
-        
+
         # 激活窗口（置顶并获得焦点）
         self.activateWindow()
         self.raise_()  # 确保窗口在最前面
-        
+
         # 在 Windows 上，可能需要额外的操作来确保窗口真正置顶
         # 设置窗口标志强制置顶，然后立即恢复
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint)
