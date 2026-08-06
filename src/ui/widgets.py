@@ -62,19 +62,10 @@ if TYPE_CHECKING:
     from PySide6.QtCore import Signal, Slot
     QtEnum = Qt
 else:
-    try:
-        from PySide6 import QtWidgets, QtCore, QtGui
-        from PySide6.QtCore import Qt
-        QtEnum = Qt
-    except ImportError:
-        from PyQt5 import QtWidgets, QtCore, QtGui
-        from PyQt5.QtCore import Qt
-        QtEnum = QtCore.Qt
-
-    # 兼容 PySide / PyQt 的信号定义
-    Signal = getattr(QtCore, "Signal", None)
-    if Signal is None:
-        Signal = getattr(QtCore, "pyqtSignal")
+    from PySide6 import QtWidgets, QtCore, QtGui
+    from PySide6.QtCore import Qt
+    QtEnum = Qt
+    Signal = QtCore.Signal
 
 from src.core.i18n import t
 
@@ -82,6 +73,20 @@ from src.core.i18n import t
 def tr(key: str, **kwargs: Any) -> str:
     """便捷翻译并格式化"""
     return t(key, key).format(**kwargs)
+
+
+def calculate_dialog_responsive_metrics(available_width: int, available_height: int) -> Dict[str, int]:
+    """Return screen-clamped sizing values for large utility dialogs."""
+    width = max(int(available_width or 0), 800)
+    height = max(int(available_height or 0), 600)
+    max_width = max(760, int(width * 0.94))
+    max_height = max(560, int(height * 0.9))
+    return {
+        "min_width": min(1100, max(760, int(width * 0.88)), max_width),
+        "min_height": min(650, max(540, int(height * 0.82)), max_height),
+        "initial_width": min(1300, max(800, int(width * 0.94))),
+        "initial_height": min(750, max(580, int(height * 0.9))),
+    }
 
 # 类型检查时的协议定义
 if TYPE_CHECKING:
@@ -224,13 +229,19 @@ class CollapsibleBox(QtWidgets.QWidget):  # type: ignore[misc]
     """
     def __init__(self, title: str = "", parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
+        self._enabled_button_style = "QToolButton { border: none; font-weight: 700; }"
+        self._disabled_button_style = (
+            "QToolButton { border: none; font-weight: 700; color: #9CA3AF; "
+            "background: #F3F4F6; padding: 4px 6px; }"
+        )
         self.toggle_button = QtWidgets.QToolButton()
-        self.toggle_button.setStyleSheet("QToolButton { border: none; font-weight: 700; }")
+        self.toggle_button.setStyleSheet(self._enabled_button_style)
         self.toggle_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.toggle_button.setArrowType(QtCore.Qt.ArrowType.RightArrow)
         self.toggle_button.setText(title)
         self.toggle_button.setCheckable(True)
         self.toggle_button.setChecked(False)
+        self._enabled_cursor = self.toggle_button.cursor()
         
         self.content_area = QtWidgets.QWidget()
         self.content_area.setVisible(False)
@@ -247,6 +258,13 @@ class CollapsibleBox(QtWidgets.QWidget):  # type: ignore[misc]
     
     def _on_toggle(self, checked: bool) -> None:
         """处理展开/折叠切换"""
+        if checked and not self.isEnabled():
+            self.toggle_button.blockSignals(True)
+            self.toggle_button.setChecked(False)
+            self.toggle_button.blockSignals(False)
+            self.toggle_button.setArrowType(QtCore.Qt.ArrowType.RightArrow)
+            self.content_area.setVisible(False)
+            return
         self.toggle_button.setArrowType(
             QtCore.Qt.ArrowType.DownArrow if checked else QtCore.Qt.ArrowType.RightArrow
         )
@@ -260,6 +278,8 @@ class CollapsibleBox(QtWidgets.QWidget):  # type: ignore[misc]
         Args:
             expanded: True 展开, False 折叠
         """
+        if expanded and not self.isEnabled():
+            expanded = False
         self.toggle_button.blockSignals(True)
         self.toggle_button.setChecked(expanded)
         self.toggle_button.blockSignals(False)
@@ -283,9 +303,18 @@ class CollapsibleBox(QtWidgets.QWidget):  # type: ignore[misc]
         """
         super().setEnabled(enabled)
         self.toggle_button.setEnabled(enabled)
+        if enabled:
+            self.toggle_button.setStyleSheet(self._enabled_button_style)
+            self.toggle_button.setCursor(self._enabled_cursor)
+        else:
+            self.toggle_button.setStyleSheet(self._disabled_button_style)
+            self.toggle_button.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
+            self.toggle_button.setToolTip("当前不可配置")
         if not enabled:
             # 禁用时强制收起
             self.set_expanded(False)
+        else:
+            self.toggle_button.setToolTip("")
     
     def setContentLayout(self, layout: QtWidgets.QLayout) -> None:
         """设置内容布局
@@ -668,16 +697,15 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
     def _can_manage_cleanup(self) -> bool:
         """当前窗口是否允许执行扫描、删除和保存清理配置。"""
         role = getattr(self.parent_window, "current_role", "guest")
-        is_running = bool(getattr(self.parent_window, "is_running", False))
-        return role in ("user", "admin") and not is_running
+        return role == "admin"
 
     def _get_cleanup_block_reason(self) -> str:
         """返回当前不可操作时的阻止原因。"""
         role = getattr(self.parent_window, "current_role", "guest")
         if role == "guest":
             return "请先登录后再使用磁盘清理功能。"
-        if bool(getattr(self.parent_window, "is_running", False)):
-            return "上传运行中，不能执行磁盘清理。"
+        if role == "user":
+            return "普通用户无权限使用磁盘清理，请切换管理员登录。"
         return ""
 
     def _ensure_cleanup_permission(self, action: str) -> bool:
@@ -896,9 +924,16 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         # 应用统一样式表
         self._apply_unified_stylesheet()
         
-        # 设置可调整大小的窗口
-        self.setMinimumSize(1100, 650)
-        self.resize(1300, 750)
+        # 设置可调整大小的窗口，小屏现场电脑不超过可用屏幕。
+        screen = QtWidgets.QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            metrics = calculate_dialog_responsive_metrics(available.width(), available.height())
+        else:
+            metrics = calculate_dialog_responsive_metrics(1366, 768)
+        self.responsive_metrics = metrics
+        self.setMinimumSize(metrics["min_width"], metrics["min_height"])
+        self.resize(metrics["initial_width"], metrics["initial_height"])
         
         # 主布局
         main_layout = QtWidgets.QVBoxLayout(self)
@@ -1750,14 +1785,14 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         config_grid.addWidget(self.spin_check_interval, 1, 1)
         
         # 保留天数
-        keep_days_label = QtWidgets.QLabel("保留天数")
+        keep_days_label = QtWidgets.QLabel("保留天数（不生效）")
         self.spin_keep_days = QtWidgets.QSpinBox()
         self.spin_keep_days.setRange(0, 365)
         auto_keep_days = self.parent_window.auto_delete_keep_days if self.parent_window and hasattr(self.parent_window, 'auto_delete_keep_days') else 0
         self.spin_keep_days.setValue(auto_keep_days)
         self.spin_keep_days.setSuffix(" 天")
-        self.spin_keep_days.setToolTip("0 = 不限制，仅清理修改时间超过指定天数的文件")
-        self.spin_keep_days.setEnabled(auto_enabled)
+        self.spin_keep_days.setToolTip("兼容旧配置：达到自动清理阈值后不受保留天数限制")
+        self.spin_keep_days.setEnabled(False)
         config_grid.addWidget(keep_days_label, 1, 2)
         config_grid.addWidget(self.spin_keep_days, 1, 3)
         
@@ -1983,7 +2018,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.spin_target.setEnabled(checked)
         self.spin_check_interval.setEnabled(checked)
         if hasattr(self, 'spin_keep_days'):
-            self.spin_keep_days.setEnabled(checked)
+            self.spin_keep_days.setEnabled(False)
         if hasattr(self, 'edit_formats'):
             self.edit_formats.setEnabled(checked)
         if hasattr(self, 'cb_auto_use_trash'):

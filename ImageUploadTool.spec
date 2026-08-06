@@ -28,7 +28,6 @@ a = Analysis(
         'PySide6.QtNetwork',
         'src.core',
         'src.core.utils',
-        'src.core.permissions',
         'src.core.resume_manager',
         'src.core.i18n',
         'src.config',
