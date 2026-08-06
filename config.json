@@ -5,7 +5,7 @@
   "enable_backup": false,
   "upload_interval": 33,
   "monitor_mode": "periodic",
-  "disk_threshold_percent": 15,
+  "disk_threshold_percent": 5,
   "retry_count": 3,
   "disk_check_interval": 7,
   "filter_jpg": true,
@@ -26,7 +26,9 @@
   "network_auto_resume": false,
   "enable_auto_delete": true,
   "auto_delete_folder": "E:/Python/文件上传/build",
-  "auto_delete_folders": [],
+  "auto_delete_folders": [
+    "E:/Python/文件上传/build"
+  ],
   "auto_delete_threshold": 80,
   "auto_delete_target_percent": 40,
   "auto_delete_keep_days": 10,
@@ -41,8 +43,8 @@
     "host": "0.0.0.0",
     "port": 2121,
     "username": "upload_user",
-    "password": "upload_pass",
-    "password_encrypted": "",
+    "password": "",
+    "password_encrypted": "dpapi:AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAAjrSsx/MPME+vVuWEVxLXNgAAAAACAAAAAAAQZgAAAAEAACAAAABpDl58z/9jDcGMpUrJiSOSlT6HkYJlrpenUhAryjS90wAAAAAOgAAAAAIAACAAAAB8XmZw1hrqNB3qs5YByAa5VN35XGbTrIXu7/iU0UBDZhAAAAAKv/j9AUVuH42GIv0DTDDsQAAAAGigLyjmBKU+ort/WVsLid/j1tIjLKq5/3gy92UxgGiP6Ew3pIMY2qvO9aKpP1e+X4qK9Xo0hZEpZH62PumPy/Y=",
     "shared_folder": "",
     "enable_passive": true,
     "passive_ports_start": 60000,
@@ -63,5 +65,7 @@
     "passive_mode": true,
     "enable_tls": false
   },
-  "users": {}
+  "users": {},
+  "auto_delete_formats": [],
+  "auto_delete_use_trash": true
 }
