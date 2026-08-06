@@ -26,13 +26,17 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 # 创建logger
 logger = logging.getLogger(__name__)
 
+
+def _normalize_windows_path_for_check(path: str) -> str:
+    """Normalize Windows filesystem paths before passing them to shell/API checks."""
+    if os.name == 'nt' and isinstance(path, str):
+        return path.replace('/', '\\')
+    return path
+
+
 # 导入 Qt 库
-try:
-    from PySide6 import QtCore
-    Signal = QtCore.Signal
-except ImportError:
-    from PyQt5 import QtCore  # type: ignore[import-not-found]
-    Signal = QtCore.pyqtSignal
+from PySide6 import QtCore
+Signal = QtCore.Signal
 
 # 导入 FTP 客户端
 try:
@@ -77,7 +81,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
     ask_user_duplicate = Signal(object)  # payload dict
     upload_error = Signal(str, str)      # filename, error_message
     disk_warning = Signal(float, float, int)  # target_percent, backup_percent, threshold
-    disk_cleanup_needed = Signal(bool)   # emergency_mode — 请求主窗口执行自动清理
+    disk_cleanup_needed = Signal()       # 请求主窗口执行统一自动清理
 
     def __init__(
         self,
@@ -467,7 +471,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                     return ''
                 buf_len = wintypes.DWORD(1024)
                 buf = ctypes.create_unicode_buffer(1024)
-                rc = WNetGetConnectionW(drive + '\\', buf, ctypes.byref(buf_len))
+                rc = WNetGetConnectionW(drive, buf, ctypes.byref(buf_len))
                 if rc == 0:
                     unc_prefix = buf.value
                     rel = p[len(drive):].lstrip('\\/')
@@ -507,7 +511,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 create_flag = 0
                 if os.name == 'nt' and hasattr(subprocess, 'CREATE_NO_WINDOW'):
                     create_flag = subprocess.CREATE_NO_WINDOW
-                safe_path = p.replace('"', '""')
+                safe_path = _normalize_windows_path_for_check(p).replace('"', '""')
                 cmd = f'if exist "{safe_path}" (exit 0) else (exit 1)'
                 completed = subprocess.run(
                     ['cmd', '/c', cmd],
@@ -526,6 +530,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         try:
             if not path:
                 return bool(default)
+            path = _normalize_windows_path_for_check(path)
             
             # UNC 路径：先 ping 主机，ping 通则直接返回 True；ping 不通再做路径存在性检查兜底
             if is_unc(path):
@@ -1260,8 +1265,6 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         used_target = 100.0 - tf_ok
         used_backup = 100.0 - bf_ok if backup_check else 0.0
 
-        emergency_mode = (tf_ok < 5.0) or (backup_check and bf_ok < 5.0)
-
         should_cleanup = self.enable_auto_delete and (
             used_target >= self.auto_delete_threshold
             or (backup_check and used_backup >= self.auto_delete_threshold)
@@ -1271,7 +1274,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
 
         if should_cleanup:
             # 通知主窗口执行清理（由主窗口统一引擎处理）
-            self.disk_cleanup_needed.emit(emergency_mode)
+            self.disk_cleanup_needed.emit()
 
         if tf_ok < self.disk_threshold_percent or (backup_check and bf_ok < self.disk_threshold_percent):
             now = time.time()

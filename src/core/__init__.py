@@ -14,7 +14,6 @@ from .utils import (
     protect_secret,
     unprotect_secret,
 )
-from .permissions import PermissionManager
 from .resume_manager import ResumeManager, ResumableFileUploader
 from .i18n import I18n, t, set_language, get_language, add_language_listener, LANG_ZH_CN, LANG_EN_US
 
@@ -25,7 +24,6 @@ __all__ = [
     'get_app_title',
     'protect_secret',
     'unprotect_secret',
-    'PermissionManager',
     # v3.0.2 断点续传
     'ResumeManager',
     'ResumableFileUploader',

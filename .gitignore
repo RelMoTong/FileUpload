@@ -48,7 +48,9 @@ desktop.ini
 dist/
 dist-*/
 dist-V*/
+dist_hotfix*/
 build/
+build_hotfix*/
 *.exe
 
 # Backup files
@@ -58,6 +60,10 @@ dist_backup*/
 # Test data
 tools/测试数据/
 tests/ftp_test_data/
+
+# Cache
+.pytest_cache/
+resume_data/
 
 # Config (contains local paths, should not be shared)
 config.json

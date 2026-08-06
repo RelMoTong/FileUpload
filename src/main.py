@@ -38,7 +38,7 @@ def check_dependencies() -> Tuple[bool, List[str], List[str]]:
     
     # 必需依赖
     required_packages = [
-        ('PySide6', 'pip install PySide6'),  # 或 PyQt5
+        ('PySide6', 'pip install PySide6'),
     ]
     
     # 可选依赖
@@ -46,14 +46,11 @@ def check_dependencies() -> Tuple[bool, List[str], List[str]]:
         ('pyftpdlib', 'pip install pyftpdlib'),  # FTP 服务器功能
     ]
     
-    # 检查必需依赖（PySide6 或 PyQt5 任一即可）
+    # 检查必需依赖
     try:
         import PySide6  # noqa: F401
     except ImportError:
-        try:
-            import PyQt5  # type: ignore[import-not-found] # noqa: F401
-        except ImportError:
-            missing_required.append('PySide6 (or PyQt5): pip install PySide6')
+        missing_required.append('PySide6: pip install PySide6')
     
     # 检查可选依赖
     for pkg_name, install_cmd in optional_packages:
@@ -128,19 +125,13 @@ def main():
         show_dependency_warning([], missing_optional)
     
     # 延迟导入 Qt，避免缺依赖时直接 ImportError
-    global QtCore, QtWidgets, QLocalServer, QLocalSocket, QT_LIB  # type: ignore
+    global QtCore, QtWidgets, QLocalServer, QLocalSocket  # type: ignore
     try:
         from PySide6 import QtCore, QtWidgets  # type: ignore
         from PySide6.QtNetwork import QLocalServer, QLocalSocket  # type: ignore
-        QT_LIB = 'PySide6'
     except ImportError:
-        try:
-            from PyQt5 import QtCore, QtWidgets  # type: ignore[import-not-found]
-            from PyQt5.QtNetwork import QLocalServer, QLocalSocket  # type: ignore[import-not-found]
-            QT_LIB = 'PyQt5'
-        except ImportError:
-            show_dependency_warning(["PySide6 (or PyQt5): pip install PySide6"], [])
-            return 1
+        show_dependency_warning(["PySide6: pip install PySide6"], [])
+        return 1
 
     # 导入主窗口（依赖 Qt）
     from src.ui import MainWindow  # type: ignore
@@ -179,10 +170,7 @@ def main():
     window.show()
     
     # 启动应用程序事件循环
-    try:
-        return app.exec()  # PySide6 / PyQt6
-    except AttributeError:
-        return app.exec_()  # PyQt5
+    return app.exec()
 
 
 if __name__ == '__main__':

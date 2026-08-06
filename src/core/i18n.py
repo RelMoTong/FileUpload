@@ -196,6 +196,14 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '🔌 测试连接',
         LANG_EN_US: '🔌 Test Connection',
     },
+    'start_ftp_server': {
+        LANG_ZH_CN: '▶ 启动FTP服务器',
+        LANG_EN_US: '▶ Start FTP Server',
+    },
+    'stop_ftp_server': {
+        LANG_ZH_CN: '■ 停止FTP服务器',
+        LANG_EN_US: '■ Stop FTP Server',
+    },
     
     # ========== 文件类型限制 ==========
     'file_type_filter': {
@@ -1193,16 +1201,16 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_EN_US: 'Stop cleanup when usage drops to this target',
     },
     'disk_cleanup_auto_keep_tip': {
-        LANG_ZH_CN: '只删除超过此天数的文件',
-        LANG_EN_US: 'Only delete files older than these days',
+        LANG_ZH_CN: '兼容旧配置：达到自动清理阈值后不受保留天数限制',
+        LANG_EN_US: 'Legacy compatibility only: retention days are ignored after the cleanup threshold is reached',
     },
     'disk_cleanup_auto_interval_tip': {
         LANG_ZH_CN: '自动检查的时间间隔',
         LANG_EN_US: 'Interval between automatic checks',
     },
     'disk_cleanup_auto_hint': {
-        LANG_ZH_CN: '💡 启用后，程序会定期检查磁盘空间。当达到触发阈值时，按最旧优先删除，直到降到目标阈值。',
-        LANG_EN_US: '?? When enabled, the app checks disk space and deletes oldest files until it reaches the target threshold.',
+        LANG_ZH_CN: '💡 达到触发阈值后，将忽略保留天数，在全部监测目录中按文件修改时间全局最旧优先清理，直到降到目标阈值。',
+        LANG_EN_US: 'When the trigger threshold is reached, retention days are ignored and the oldest files by modification time are cleaned globally across all monitored folders until the target is reached.',
     },
     'disk_cleanup_auto_save': {
         LANG_ZH_CN: '💾 保存自动清理配置',

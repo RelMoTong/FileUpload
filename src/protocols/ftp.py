@@ -12,6 +12,7 @@ import os
 import threading
 import logging
 import time
+import datetime
 from pathlib import Path
 from ftplib import FTP, FTP_TLS, error_perm
 from pyftpdlib.authorizers import DummyAuthorizer
@@ -68,12 +69,32 @@ class FTPServerManager:
         self.server_thread: Optional[threading.Thread] = None
         self.is_running = False
         self._stop_event = threading.Event()
+        self.event_callback: Optional[Callable[[dict], None]] = config.get('event_callback')
         
         # 确保共享目录存在
         shared_folder = Path(config.get('shared_folder', 'D:/FTP_Share'))
         shared_folder.mkdir(parents=True, exist_ok=True)
         
         logger.info(f"FTP 服务器管理器初始化: {config.get('host')}:{config.get('port')}")
+
+    def _emit_event(self, event: str, **payload):
+        """发送 FTP 服务器事件，供 UI 或日志层记录。"""
+        event_data = {
+            'event': event,
+            'timestamp': datetime.datetime.now().isoformat(timespec='seconds'),
+            'client_ip': payload.pop('client_ip', ''),
+            'username': payload.pop('username', ''),
+            'path': payload.pop('path', ''),
+            'size': payload.pop('size', ''),
+            'message': payload.pop('message', ''),
+        }
+        event_data.update(payload)
+        callback = self.event_callback
+        if callback:
+            try:
+                callback(event_data)
+            except Exception as e:
+                logger.debug(f"FTP事件回调失败: {type(e).__name__}: {e}")
     
     def start(self) -> bool:
         """
@@ -104,13 +125,78 @@ class FTPServerManager:
             
             logger.info(f"已添加 FTP 用户: {username}")
             
-            # 创建处理器
+            manager = self
+
+            def _file_size(file_path: str) -> int:
+                try:
+                    return os.path.getsize(file_path)
+                except OSError:
+                    return 0
+
+            class EventHandlerMixin:
+                def on_connect(self):
+                    manager._emit_event(
+                        'connect',
+                        client_ip=getattr(self, 'remote_ip', ''),
+                        message='客户端已连接'
+                    )
+
+                def on_disconnect(self):
+                    manager._emit_event(
+                        'disconnect',
+                        client_ip=getattr(self, 'remote_ip', ''),
+                        username=getattr(self, 'username', ''),
+                        message='客户端已断开'
+                    )
+
+                def on_login(self, username):
+                    manager._emit_event(
+                        'login_ok',
+                        client_ip=getattr(self, 'remote_ip', ''),
+                        username=username,
+                        message='登录成功'
+                    )
+
+                def on_login_failed(self, username, password):
+                    manager._emit_event(
+                        'login_failed',
+                        client_ip=getattr(self, 'remote_ip', ''),
+                        username=username,
+                        message='登录失败'
+                    )
+
+                def on_file_received(self, file):
+                    manager._emit_event(
+                        'upload_ok',
+                        client_ip=getattr(self, 'remote_ip', ''),
+                        username=getattr(self, 'username', ''),
+                        path=str(file),
+                        size=_file_size(str(file)),
+                        message='文件上传成功'
+                    )
+
+                def on_incomplete_file_received(self, file):
+                    manager._emit_event(
+                        'upload_incomplete',
+                        client_ip=getattr(self, 'remote_ip', ''),
+                        username=getattr(self, 'username', ''),
+                        path=str(file),
+                        size=_file_size(str(file)),
+                        message='文件上传未完成'
+                    )
+
+            class EventFTPHandler(EventHandlerMixin, FTPHandler):
+                pass
+
             if self.config.get('enable_tls', False):
                 # FTPS 处理器
                 if TLS_FTPHandler is None:
                     logger.error("当前 pyftpdlib 版本不支持 FTPS，请升级或禁用 TLS")
+                    self._emit_event('error', message='当前 pyftpdlib 版本不支持 FTPS，请升级或禁用 TLS')
                     return False
-                handler = TLS_FTPHandler
+                class EventTLSFTPHandler(EventHandlerMixin, TLS_FTPHandler):  # type: ignore[misc, valid-type]
+                    pass
+                handler = EventTLSFTPHandler
                 handler.certfile = self.config.get('cert_file', 'cert.pem')
                 handler.keyfile = self.config.get('key_file', 'key.pem')
                 handler.tls_control_required = True
@@ -118,7 +204,7 @@ class FTPServerManager:
                 logger.info("使用 FTPS (TLS/SSL) 加密")
             else:
                 # 普通 FTP 处理器
-                handler = FTPHandler
+                handler = EventFTPHandler
                 logger.info("使用普通 FTP 协议（无加密）")
             
             handler.authorizer = authorizer
@@ -180,19 +266,29 @@ class FTPServerManager:
             
             self.is_running = True
             logger.info("✓ FTP 服务器已启动")
+            self._emit_event(
+                'server_started',
+                message='FTP 服务器已启动',
+                path=shared_folder,
+                address=f"{host}:{port}"
+            )
             return True
             
         except PermissionError as e:
             logger.error(f"权限错误：{e}。端口 < 1024 需要管理员权限")
+            self._emit_event('error', message=f"权限错误：{e}。端口 < 1024 需要管理员权限")
             return False
         except OSError as e:
             if "Address already in use" in str(e) or "10048" in str(e):
                 logger.error(f"端口被占用：{self.config.get('port')}。请更换端口或关闭占用端口的程序")
+                self._emit_event('error', message=f"端口被占用：{self.config.get('port')}")
             else:
                 logger.error(f"启动 FTP 服务器失败：{e}")
+                self._emit_event('error', message=f"启动 FTP 服务器失败：{e}")
             return False
         except Exception as e:
             logger.error(f"启动 FTP 服务器失败：{e}")
+            self._emit_event('error', message=f"启动 FTP 服务器失败：{e}")
             import traceback
             traceback.print_exc()
             return False
@@ -230,6 +326,7 @@ class FTPServerManager:
                 
             self.is_running = False
             logger.info("✓ FTP 服务器已停止")
+            self._emit_event('server_stopped', message='FTP 服务器已停止')
             return True
             
         except Exception as e:
@@ -790,46 +887,6 @@ class FTPProtocolManager:
             
             return result
     
-    def add_client(self, name: str, config: dict) -> bool:
-        """
-        添加 FTP 客户端
-        
-        Args:
-            name: 客户端名称
-            config: 客户端配置
-        
-        Returns:
-            bool: 添加是否成功
-        """
-        with self._lock:
-            try:
-                if name in self.clients:
-                    logger.warning(f"客户端已存在：{name}")
-                    return False
-                
-                # 确保配置中有名称
-                config['name'] = name
-                
-                client = FTPClientUploader(config)
-                
-                if client.connect():
-                    self.clients[name] = client
-                    
-                    # 更新模式
-                    if self.mode == 'server':
-                        self.mode = 'both'
-                    elif self.mode == 'none':
-                        self.mode = 'client'
-                    
-                    logger.info(f"FTP 客户端已添加：{name}，当前模式：{self.mode}")
-                    return True
-                else:
-                    return False
-                    
-            except Exception as e:
-                logger.error(f"添加 FTP 客户端失败：{e}")
-                return False
-    
     def remove_client(self, name: str) -> bool:
         """
         移除 FTP 客户端
@@ -859,70 +916,6 @@ class FTPProtocolManager:
             logger.info(f"FTP 客户端已移除：{name}，当前模式：{self.mode}")
             return True
     
-    def get_client(self, name: str) -> Optional[FTPClientUploader]:
-        """
-        获取指定的客户端
-        
-        Args:
-            name: 客户端名称
-        
-        Returns:
-            FTPClientUploader: 客户端对象，如果不存在返回 None
-        """
-        return self.clients.get(name)
-    
-    def upload_file(
-        self,
-        client_name: str,
-        local_path: Path,
-        remote_path: Optional[str] = None,
-        progress_callback: Optional[Callable[[int, int], None]] = None
-    ) -> bool:
-        """
-        通过指定客户端上传文件
-        
-        Args:
-            client_name: 客户端名称
-            local_path: 本地文件路径
-            remote_path: 远程文件路径
-            progress_callback: 进度回调
-        
-        Returns:
-            bool: 上传是否成功
-        """
-        client = self.get_client(client_name)
-        if not client:
-            logger.error(f"客户端不存在：{client_name}")
-            return False
-        
-        return client.upload_file(local_path, remote_path, progress_callback)
-    
-    def upload_folder(
-        self,
-        client_name: str,
-        local_folder: Path,
-        remote_base: Optional[str] = None,
-        progress_callback: Optional[Callable[[int, int, str], None]] = None
-    ) -> Tuple[int, int]:
-        """
-        通过指定客户端上传文件夹
-        
-        Args:
-            client_name: 客户端名称
-            local_folder: 本地文件夹路径
-            remote_base: 远程基础路径
-            progress_callback: 进度回调
-        
-        Returns:
-            tuple: (成功数, 失败数)
-        """
-        client = self.get_client(client_name)
-        if not client:
-            logger.error(f"客户端不存在：{client_name}")
-            return (0, 0)
-        
-        return client.upload_folder(local_folder, remote_base, progress_callback)
-    
     def get_status(self) -> dict:
         """
         获取整体状态
@@ -933,8 +926,6 @@ class FTPProtocolManager:
         return {
             'mode': self.mode,
             'server': self.server.get_status() if self.server else None,
-            'clients': {name: client.get_status() for name, client in self.clients.items()},
-            'client_count': len(self.clients)
         }
     
     def stop_all(self):
@@ -988,81 +979,3 @@ def create_ftp_client(config: dict) -> FTPClientUploader:
         FTPClientUploader: 客户端上传器实例
     """
     return FTPClientUploader(config)
-
-
-# 示例用法（用于测试）
-if __name__ == "__main__":
-    # 配置日志
-    logging.basicConfig(
-        level=logging.INFO,
-        format='[%(levelname)s] %(message)s'
-    )
-    
-    print("=" * 60)
-    print("FTP 协议模块测试")
-    print("=" * 60)
-    print()
-    
-    # 测试 1: FTP 服务器
-    print("测试 1: FTP 服务器")
-    print("-" * 60)
-    
-    server_config = {
-        'host': '0.0.0.0',
-        'port': 2121,
-        'username': 'test_user',
-        'password': 'test_pass',
-        'shared_folder': 'test_ftp_share',
-        'enable_tls': False,
-        'passive_ports': (60000, 65535),
-        'max_cons': 256,
-        'max_cons_per_ip': 5,
-    }
-    
-    server = FTPServerManager(server_config)
-    if server.start():
-        print("✓ FTP 服务器启动成功")
-        print(f"状态：{server.get_status()}")
-        
-        # 测试 2: FTP 客户端
-        print()
-        print("测试 2: FTP 客户端")
-        print("-" * 60)
-        
-        client_config = {
-            'name': '测试客户端',
-            'host': '127.0.0.1',
-            'port': 2121,
-            'username': 'test_user',
-            'password': 'test_pass',
-            'remote_path': '/upload',
-            'enable_tls': False,
-            'passive_mode': True,
-            'timeout': 30,
-            'retry_count': 3,
-        }
-        
-        client = FTPClientUploader(client_config)
-        if client.connect():
-            print("✓ FTP 客户端连接成功")
-            print(f"状态：{client.get_status()}")
-            
-            # 创建测试文件
-            test_file = Path("test_upload.txt")
-            test_file.write_text("这是一个测试文件", encoding='utf-8')
-            
-            # 上传文件
-            if client.upload_file(test_file):
-                print("✓ 文件上传成功")
-            
-            # 清理
-            test_file.unlink()
-            client.disconnect()
-        
-        # 停止服务器
-        server.stop()
-    
-    print()
-    print("=" * 60)
-    print("测试完成")
-    print("=" * 60)
