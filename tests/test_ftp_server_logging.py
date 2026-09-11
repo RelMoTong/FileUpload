@@ -1,29 +1,16 @@
 # -*- coding: utf-8 -*-
 """FTP 服务器独立日志测试。"""
 
-import os
 import sys
 from pathlib import Path
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.ui.main_window import MainWindow
-
-
-class InlineExecutor:
-    def submit(self, func):
-        func()
-
-
-class FakeWindow:
-    def __init__(self, app_dir):
-        self.app_dir = app_dir
-        self._log_executor = InlineExecutor()
+from src.models import FTPEvent
+from src.repositories import FTPEventLogRepository
 
 
 def test_ftp_server_event_writes_dedicated_log(tmp_path):
-    window = FakeWindow(tmp_path)
     event = {
         "timestamp": "2026-06-11T12:00:00",
         "event": "upload_ok",
@@ -34,7 +21,8 @@ def test_ftp_server_event_writes_dedicated_log(tmp_path):
         "message": "文件上传成功",
     }
 
-    MainWindow._write_ftp_server_log(window, event)
+    repository = FTPEventLogRepository(tmp_path)
+    repository.write(FTPEvent.from_mapping(event))
 
     log_files = list((tmp_path / "logs").glob("ftp_server_*.txt"))
     assert len(log_files) == 1

@@ -4,6 +4,7 @@
   "backup_folder": "D:/工作/2024年8月/常州汇川/常州汇川资料/T24013  常州汇川装配8线测量选垫设备",
   "enable_backup": false,
   "upload_interval": 33,
+  "file_upload_delay_seconds": 1.5,
   "monitor_mode": "periodic",
   "disk_threshold_percent": 5,
   "retry_count": 3,
@@ -38,7 +39,6 @@
   "enable_ftp_server": false,
   "language": "zh_CN",
   "enable_resume": true,
-  "resume_min_size_mb": 10,
   "ftp_server": {
     "host": "0.0.0.0",
     "port": 2121,

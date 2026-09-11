@@ -194,11 +194,18 @@ class FTPServerManager:
                     logger.error("当前 pyftpdlib 版本不支持 FTPS，请升级或禁用 TLS")
                     self._emit_event('error', message='当前 pyftpdlib 版本不支持 FTPS，请升级或禁用 TLS')
                     return False
+                cert_file = str(self.config.get('cert_file', '')).strip()
+                key_file = str(self.config.get('key_file', '')).strip()
+                if not os.path.isfile(cert_file) or not os.path.isfile(key_file):
+                    message = 'FTPS 证书或私钥文件不存在，已拒绝启动'
+                    logger.error(message)
+                    self._emit_event('error', message=message)
+                    return False
                 class EventTLSFTPHandler(EventHandlerMixin, TLS_FTPHandler):  # type: ignore[misc, valid-type]
                     pass
                 handler = EventTLSFTPHandler
-                handler.certfile = self.config.get('cert_file', 'cert.pem')
-                handler.keyfile = self.config.get('key_file', 'key.pem')
+                setattr(handler, 'certfile', cert_file)
+                setattr(handler, 'keyfile', key_file)
                 handler.tls_control_required = True
                 handler.tls_data_required = True
                 logger.info("使用 FTPS (TLS/SSL) 加密")
@@ -418,40 +425,71 @@ class FTPClientUploader:
         self.ftp: Optional[Union[FTP, FTP_TLS]] = None
         self.connected = False
         self._lock = threading.Lock()
+        self._cancel_event = threading.Event()
         
         logger.info(f"FTP 客户端初始化: {config.get('name', 'Unknown')} -> {config.get('host')}")
     
-    def connect(self) -> bool:
+    def connect(
+        self,
+        cancel_event: Optional[threading.Event] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> bool:
         """
         连接到 FTP 服务器
         
         Returns:
             bool: 连接是否成功
         """
+        self._cancel_event.clear()
+
+        def cancelled() -> bool:
+            return self._cancel_event.is_set() or bool(
+                cancel_event is not None and cancel_event.is_set()
+            )
+
+        def wait_for_retry(seconds: float) -> bool:
+            deadline = time.monotonic() + max(0.0, seconds)
+            while not cancelled():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return True
+                self._cancel_event.wait(min(0.1, remaining))
+            return False
+
         with self._lock:
             if self.connected:
                 logger.warning("已连接到 FTP 服务器")
                 return True
-            
-            retry_count = self.config.get('retry_count', 3)
+
+            retry_count = max(1, int(self.config.get('retry_count', 3)))
             
             for attempt in range(retry_count):
+                if cancelled():
+                    logger.info("FTP 连接已取消")
+                    return False
+                if progress_callback:
+                    try:
+                        progress_callback(attempt + 1, retry_count)
+                    except Exception:
+                        pass
+                candidate: Optional[Union[FTP, FTP_TLS]] = None
                 try:
                     logger.info(f"连接 FTP 服务器 (尝试 {attempt + 1}/{retry_count})...")
                     
                     # 创建 FTP 对象
                     if self.config.get('enable_tls', False):
                         # FTPS 连接
-                        self.ftp = FTP_TLS()
+                        candidate = FTP_TLS()
                         logger.info("使用 FTPS (TLS/SSL) 连接")
                     else:
                         # 普通 FTP 连接
-                        self.ftp = FTP()
+                        candidate = FTP()
                         logger.info("使用普通 FTP 连接")
+                    self.ftp = candidate
                     
                     # 连接
                     host = str(self.config.get('host', ''))
-                    self.ftp.connect(
+                    candidate.connect(
                         host=host,
                         port=self.config.get('port', 21),
                         timeout=self.config.get('timeout', 30)
@@ -460,25 +498,31 @@ class FTPClientUploader:
                     # 登录
                     username = str(self.config.get('username', ''))
                     password = str(self.config.get('password', ''))
-                    self.ftp.login(
+                    candidate.login(
                         user=username,
                         passwd=password
                     )
                     
                     # FTPS 启用数据连接加密
-                    if self.config.get('enable_tls', False) and isinstance(self.ftp, FTP_TLS):
-                        self.ftp.prot_p()
+                    if self.config.get('enable_tls', False) and isinstance(candidate, FTP_TLS):
+                        candidate.prot_p()
                     
                     # 设置被动/主动模式
                     if self.config.get('passive_mode', True):
-                        self.ftp.set_pasv(True)
+                        candidate.set_pasv(True)
                         logger.info("使用被动模式")
                     else:
-                        self.ftp.set_pasv(False)
+                        candidate.set_pasv(False)
                         logger.info("使用主动模式")
                     
                     # 设置编码
-                    self.ftp.encoding = 'utf-8'
+                    candidate.encoding = 'utf-8'
+
+                    if cancelled():
+                        candidate.close()
+                        self.ftp = None
+                        logger.info("FTP 连接在完成前已取消")
+                        return False
                     
                     self.connected = True
                     logger.info(f"✓ 已连接到 FTP 服务器：{self.config.get('host')}")
@@ -487,18 +531,26 @@ class FTPClientUploader:
                 except Exception as e:
                     logger.error(f"连接失败 (尝试 {attempt + 1}/{retry_count})：{e}")
                     
-                    if self.ftp:
+                    if candidate:
                         try:
-                            self.ftp.close()
+                            candidate.close()
                         except (OSError, IOError, error_perm):
                             # 连接已关闭或无效，预期情况
                             pass
                         except Exception as e:
                             # 意外的关闭错误
                             logger.debug(f"FTP关闭异常: {type(e).__name__}: {e}")
-                        wait_time = (attempt + 1) * 5  # 5秒, 10秒, 15秒
+                    if self.ftp is candidate:
+                        self.ftp = None
+                    if cancelled():
+                        logger.info("FTP 连接已取消")
+                        return False
+                    if attempt < retry_count - 1:
+                        wait_time = (attempt + 1) * 5  # 5秒, 10秒
                         logger.info(f"等待 {wait_time} 秒后重试...")
-                        time.sleep(wait_time)
+                        if not wait_for_retry(wait_time):
+                            logger.info("FTP 重试等待已取消")
+                            return False
                     else:
                         logger.error("连接 FTP 服务器失败，已达最大重试次数")
             
@@ -512,37 +564,33 @@ class FTPClientUploader:
         Returns:
             bool: 断开是否成功
         """
-        with self._lock:
-            if not self.connected:
+        self._cancel_event.set()
+        ftp = self.ftp
+        self.ftp = None
+        was_active = self.connected or ftp is not None
+        self.connected = False
+        if ftp is None:
+            if not was_active:
                 logger.warning("未连接到 FTP 服务器")
-                return False
-            
+            return was_active
+        try:
+            # close() 不进行网络往返，可从其他线程打断 connect/login/传输。
+            ftp.close()
+            logger.info("✓ 已断开 FTP 连接")
+            return True
+        except Exception as e:
+            logger.debug(f"FTP强制关闭异常: {type(e).__name__}: {e}")
+            return False
+
+    def cancel(self) -> None:
+        """非阻塞请求取消连接、重试等待或当前 FTP 操作。"""
+        self._cancel_event.set()
+        ftp = self.ftp
+        if ftp is not None:
             try:
-                if self.ftp:
-                    self.ftp.quit()
-                    self.ftp = None
-                
-                self.connected = False
-                logger.info("✓ 已断开 FTP 连接")
-                return True
-                
-            except Exception as e:
-                logger.error(f"断开 FTP 连接失败：{e}")
-                
-                # 强制关闭
-                try:
-                    if self.ftp:
-                        self.ftp.close()
-                        self.ftp = None
-                except (OSError, IOError, error_perm):
-                    # 连接已关闭，预期情况
-                    pass
-                except Exception as e:
-                    # 意外的关闭错误
-                    logger.debug(f"FTP强制关闭异常: {type(e).__name__}: {e}")
-                
-                self.connected = False
-                return False
+                ftp.close()
+            except Exception:
+                pass
     
     def upload_file(
         self,
@@ -749,7 +797,11 @@ class FTPClientUploader:
         except Exception as e:
             logger.warning(f"确保远程目录存在时出错：{e}")
     
-    def test_connection(self) -> bool:
+    def test_connection(
+        self,
+        cancel_event: Optional[threading.Event] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> bool:
         """
         测试连接
         
@@ -757,7 +809,10 @@ class FTPClientUploader:
             bool: 连接测试是否成功
         """
         try:
-            if self.connect():
+            if self.connect(cancel_event, progress_callback):
+                if cancel_event is not None and cancel_event.is_set():
+                    self.disconnect()
+                    return False
                 # 测试列出目录
                 if self.ftp:
                     self.ftp.nlst()

@@ -8,23 +8,29 @@
 
 ## v3.0.0 更新亮点
 
-### 🏗️ 模块化架构重构
+### 🏗️ MVC 架构
 
-从单文件架构（5234行）重构为清晰的模块化结构：
+程序采用 MVC 主结构，并以 Service/Repository 承担 Model 侧业务与持久化：
 
 ```
 src/
-├── main.py                 # 程序入口 (110行)
-├── config.py               # 配置管理 (160行)
-├── core/                   # 核心功能
-├── protocols/              # 协议模块
-├── ui/                     # 用户界面
-└── workers/                # 后台工作
+├── main.py                 # 唯一组合根和程序入口
+├── models/                 # 状态、请求、结果和配置模型
+├── controllers/            # 用户事件与业务流程协调
+├── services/               # Model 侧业务服务和后台任务生命周期
+├── repositories/           # 配置、日志和系统设置持久化
+├── ui/                     # View、对话框和展示面板
+├── workers/                # 上传后台任务实现
+├── protocols/              # FTP/FTPS 底层实现
+├── core/                   # 通用工具、国际化和断点续传
+└── config.py               # 旧配置格式兼容层
 ```
+
+依赖方向、启动/退出顺序和维护约束详见 [MVC 架构说明](docs/MVC_ARCHITECTURE.md)。
 
 ### ✨ 改进内容
 
-- **代码可维护性提升**: 8个独立模块，职责清晰
+- **代码可维护性提升**: MVC 分层与静态边界测试共同约束职责
 - **更好的可测试性**: 每个模块可独立测试
 - **类型安全**: 完整的类型注解，Pylance零错误
 - **统一入口**: 开发环境统一通过 `python -m src.main` 启动
@@ -79,7 +85,7 @@ src/
 
 ### 从源代码运行
 
-**环境要求**: Python 3.8+, PySide6 或 PyQt5
+**环境要求**: Python 3.8+, PySide6
 
 1. 安装依赖：
    ```powershell
@@ -94,6 +100,11 @@ src/
 3. 或使用快捷脚本：
    ```powershell
    scripts\启动程序.bat
+   ```
+
+4. 运行自动化测试：
+   ```powershell
+   pytest -q -p no:cacheprovider
    ```
 
 ## 配置参数说明
@@ -317,7 +328,7 @@ A: 不会，日志采用独立线程异步写入，不会阻塞主界面
 
 ### 基础信息
 - **开发语言**: Python 3.8+
-- **GUI框架**: PySide6（兼容 PyQt5）
+- **GUI框架**: PySide6
 - **支持系统**: Windows（已适配打包版）
 - **文件大小**: 支持任意大小文件
 
@@ -345,7 +356,7 @@ A: 不会，日志采用独立线程异步写入，不会阻塞主界面
 **一键启动（推荐）**
 - Windows: 双击 `启动程序.bat`
   - 脚本会自动检测并安装 PySide6 依赖
-  - 如果 PySide6 安装失败，会自动尝试 PyQt5 作为后备
+  - 如果 PySide6 安装失败，请按 `requirements.txt` 安装后重试
 
 **手动运行**
 1. 安装依赖：`pip install -r requirements.txt`

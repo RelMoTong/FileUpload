@@ -3,7 +3,7 @@
 断点续传管理模块
 
 v3.0.2 新增功能：
-- 大文件上传中断后可恢复
+- 文件上传中断后可恢复
 - 记录上传进度到本地文件
 - 支持 SMB 和 FTP 协议
 - 自动清理过期的续传记录
@@ -26,14 +26,11 @@ class ResumeManager:
     """断点续传管理器
     
     功能：
-    - 记录大文件上传进度
+    - 记录文件上传进度
     - 支持上传中断后恢复
     - 自动清理过期记录
     - 支持多协议（SMB/FTP）
     """
-    
-    # 最小续传文件大小（10MB 以上才启用续传）
-    MIN_RESUME_SIZE = 10 * 1024 * 1024
     
     # 续传记录过期时间（7天）
     RECORD_EXPIRE_DAYS = 7
@@ -78,21 +75,6 @@ class ResumeManager:
     def _get_record_path(self, file_id: str) -> Path:
         """获取续传记录文件路径"""
         return self.resume_dir / f"{file_id}.resume"
-    
-    def should_resume(self, file_path: str) -> bool:
-        """判断文件是否应该启用断点续传
-        
-        Args:
-            file_path: 源文件路径
-            
-        Returns:
-            是否启用断点续传
-        """
-        try:
-            file_size = os.path.getsize(file_path)
-            return file_size >= self.MIN_RESUME_SIZE
-        except Exception:
-            return False
     
     def get_resume_info(self, file_path: str, target_path: str) -> Optional[Dict[str, Any]]:
         """获取续传信息
@@ -422,11 +404,6 @@ class ResumableFileUploader:
             file_size = os.path.getsize(source_path)
             filename = os.path.basename(source_path)
             
-            # 检查是否需要断点续传
-            if not self.resume_manager.should_resume(source_path):
-                # 小文件直接复制
-                return self._simple_copy(source_path, target_path, rate_limit_bytes)
-            
             # 获取续传信息
             resume_info = self.resume_manager.get_resume_info(source_path, target_path)
             
@@ -487,14 +464,20 @@ class ResumableFileUploader:
                 self.resume_manager.complete_upload(source_path, success=False)
                 return False, "上传被用户中断"
             
-            # 上传完成，重命名临时文件
-            if os.path.exists(target_path):
-                os.remove(target_path)
-            os.rename(temp_file, target_path)
-            
-            # 复制文件属性
+            # 提交前验证临时文件完整性。失败时保留旧目标、临时文件和续传记录。
+            actual_temp_size = os.path.getsize(temp_file)
+            if actual_temp_size != file_size:
+                raise OSError(
+                    f"临时文件长度不完整: 预期 {file_size} 字节，"
+                    f"实际 {actual_temp_size} 字节"
+                )
+
+            # 先把属性写到临时文件，避免目标替换成功后因 copystat 失败被误报。
             import shutil
-            shutil.copystat(source_path, target_path)
+            shutil.copystat(source_path, temp_file)
+
+            # 临时文件与目标位于同一目录；os.replace 会原子替换已有目标。
+            os.replace(temp_file, target_path)
             
             # 标记完成
             self.resume_manager.complete_upload(source_path, success=True)

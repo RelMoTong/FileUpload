@@ -1,16 +1,58 @@
 # -*- coding: utf-8 -*-
 """FTP 基础回归测试。"""
 
+import datetime
+import ipaddress
+import ssl
 import time
 import sys
-from ftplib import FTP, error_perm
+from ftplib import FTP, FTP_TLS, error_perm
 from pathlib import Path
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.protocols.ftp import FTPServerManager
+
+
+def _write_self_signed_cert(folder: Path) -> tuple[Path, Path]:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")]
+    )
+    now = datetime.datetime.now(datetime.timezone.utc)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=1))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(
+            x509.SubjectAlternativeName(
+                [x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]
+            ),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    cert_file = folder / "server-cert.pem"
+    key_file = folder / "server-key.pem"
+    cert_file.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    key_file.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+    )
+    return cert_file, key_file
 
 
 @pytest.fixture
@@ -96,3 +138,41 @@ def test_ftp_incomplete_upload_event(ftp_server):
         event["event"] == "upload_incomplete" and event["path"].endswith("incomplete.bin")
         for event in events
     )
+
+
+def test_ftps_server_completes_control_and_data_tls_handshake(
+    tmp_path: Path, free_tcp_port: int,
+) -> None:
+    share_dir = tmp_path / "ftps_share"
+    share_dir.mkdir()
+    cert_file, key_file = _write_self_signed_cert(tmp_path)
+    server = FTPServerManager(
+        {
+            "host": "127.0.0.1",
+            "port": free_tcp_port,
+            "username": "test_user",
+            "password": "test_pass",
+            "shared_folder": str(share_dir),
+            "enable_tls": True,
+            "cert_file": str(cert_file),
+            "key_file": str(key_file),
+        }
+    )
+    assert server.start()
+    time.sleep(0.3)
+
+    client = FTP_TLS(context=ssl._create_unverified_context())
+    try:
+        client.connect("127.0.0.1", free_tcp_port, timeout=10)
+        client.login("test_user", "test_pass")
+        client.prot_p()
+        payload = tmp_path / "secure-upload.bin"
+        payload.write_bytes(b"encrypted-transfer")
+        with payload.open("rb") as stream:
+            client.storbinary(f"STOR {payload.name}", stream)
+        client.quit()
+    finally:
+        client.close()
+        server.stop()
+
+    assert (share_dir / "secure-upload.bin").read_bytes() == b"encrypted-transfer"

@@ -19,5 +19,5 @@
     - ftp.py: FTP 协议实现
 """
 
-__version__ = "3.4.2"
+__version__ = "3.5.1"
 __author__ = "RelMoTong"

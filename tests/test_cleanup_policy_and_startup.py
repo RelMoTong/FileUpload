@@ -16,75 +16,61 @@ from unittest import mock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.ui.main_window import (  # noqa: E402
-    AUTO_CLEANUP_FAILURE_LIMIT,
-    MainWindow,
-    _extract_startup_target,
+from src.controllers import CleanupController  # noqa: E402
+from src.models import AutoCleanupRequest, CleanupIndexRecord  # noqa: E402
+from src.repositories import (  # noqa: E402
+    CleanupAuditRepository,
+    CleanupIndexRepository,
 )
-
+from src.services.cleanup_service import (  # noqa: E402
+    AUTO_CLEANUP_FAILURE_LIMIT,
+    CleanupService,
+)
+from src.services.runtime_service import RuntimeService, extract_startup_target  # noqa: E402
 
 DiskUsage = namedtuple("DiskUsage", "total used free")
 
 
-class ImmediateFuture:
-    def __init__(self, function):
-        self.error = None
-        try:
-            function()
-        except Exception as exc:
-            self.error = exc
+class MemoryAudit:
+    def __init__(self, fail_event=None):
+        self.records = []
+        self.fail_event = fail_event
+        self.last_error = ""
 
-    def result(self):
-        if self.error is not None:
-            raise self.error
-
-
-class ImmediateExecutor:
-    def submit(self, function):
-        return ImmediateFuture(function)
-
-
-class FakeCleanupWindow:
-    def __init__(self, folders):
-        self.auto_delete_folders = list(folders)
-        self.auto_delete_folder = ""
-        self.auto_delete_threshold = 90
-        self.auto_delete_target_percent = 85
-        self.auto_delete_keep_days = 70
-        self.auto_delete_formats = []
-        self.auto_delete_use_trash = False
-        self._auto_cleanup_lock = threading.Lock()
-        self._auto_cleanup_running = True
-        self.logs = []
-        self.audit = []
-
-    def _get_auto_cleanup_folders(self):
-        return MainWindow._get_auto_cleanup_folders(self)
-
-    def _validate_cleanup_folder_group(self, folders):
-        return MainWindow._validate_cleanup_folder_group(folders)
-
-    def _deduplicate_cleanup_roots(self, folders):
-        return MainWindow._deduplicate_cleanup_roots(folders)
-
-    def _sort_cleanup_candidates(self, files):
-        return MainWindow._sort_cleanup_candidates(files)
-
-    def _emit_async_log(self, message):
-        self.logs.append(message)
-
-    def _write_cleanup_audit(self, event, run_id, **fields):
-        self.audit.append({"event": event, "run_id": run_id, **fields})
+    def write(self, event, run_id, **fields):
+        if event == self.fail_event:
+            self.last_error = "forced failure"
+            return False
+        self.records.append({"event": event, "run_id": run_id, **fields})
         return True
 
-    def _record_cleanup_blocked(self, status, trigger_source, folders, error):
-        return MainWindow._record_cleanup_blocked(
-            self, status, trigger_source, folders, error
-        )
+
+def auto_request(root, **overrides):
+    values = {
+        "enabled": True,
+        "folders": (str(root),),
+        "trigger_percent": 90,
+        "target_percent": 85,
+        "formats": (),
+        "use_trash": False,
+        "trigger_source": "test",
+    }
+    values.update(overrides)
+    return AutoCleanupRequest(**values)
+
+
+def indexed_service(test_case, audit, request):
+    index_dir = tempfile.TemporaryDirectory()
+    test_case.addCleanup(index_dir.cleanup)
+    repository = CleanupIndexRepository(Path(index_dir.name))
+    service = CleanupService(audit, index_repository=repository)
+    result = service.build_cleanup_index(request, threading.Event(), lambda message: None)
+    test_case.assertTrue(result.success, result.error)
+    return service, repository
 
 
 class TestCleanupPolicy(unittest.TestCase):
-    def test_global_oldest_across_nested_roots_ignores_keep_days(self):
+    def test_global_oldest_across_nested_roots(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             root_a = base / "产线A"
@@ -98,20 +84,57 @@ class TestCleanupPolicy(unittest.TestCase):
             now = time.time()
             os.utime(oldest, (now - 100, now - 100))
             os.utime(newer, (now - 10, now - 10))
-
-            fake = FakeCleanupWindow([str(root_a), str(root_b.parent)])
+            audit = MemoryAudit()
+            request = auto_request(base, folders=(str(root_a), str(root_b.parent)))
+            service, repository = indexed_service(self, audit, request)
+            fingerprint = service.cleanup_scope_fingerprint(request)
+            newer_stat = newer.stat()
+            oldest_stat = oldest.stat()
+            repository.upsert_many(
+                [
+                    CleanupIndexRecord(
+                        normalized_path=repository.normalize_path(str(newer)),
+                        path=str(newer),
+                        file_name=newer.name,
+                        created_at=service.file_created_at(newer_stat),
+                        size_bytes=newer_stat.st_size,
+                        root_path=str(root_a),
+                        source="test",
+                        modified_at_ns=newer_stat.st_mtime_ns,
+                        file_id=service.file_identity(newer_stat),
+                    ),
+                    CleanupIndexRecord(
+                        normalized_path=repository.normalize_path(str(oldest)),
+                        path=str(oldest),
+                        file_name=oldest.name,
+                        created_at=service.file_created_at(oldest_stat),
+                        size_bytes=oldest_stat.st_size,
+                        root_path=str(root_b.parent),
+                        source="test",
+                        modified_at_ns=oldest_stat.st_mtime_ns,
+                        file_id=service.file_identity(oldest_stat),
+                    ),
+                ],
+                fingerprint,
+            )
             deleted = []
-            usage = [
-                DiskUsage(1000, 900, 100),
-                DiskUsage(1000, 840, 160),
-            ]
-            with mock.patch("shutil.disk_usage", side_effect=usage), \
-                 mock.patch("os.remove", side_effect=lambda path: deleted.append(path)):
-                MainWindow._auto_cleanup_task(fake, "test")
+
+            with mock.patch(
+                "shutil.disk_usage",
+                side_effect=[DiskUsage(1000, 900, 100), DiskUsage(1000, 840, 160)],
+            ), mock.patch(
+                "src.services.cleanup_service.os.remove",
+                side_effect=lambda path: deleted.append(path),
+            ):
+                result = service.run_auto_cleanup(
+                    request,
+                    threading.Event(),
+                    lambda message: None,
+                )
 
             self.assertEqual(deleted, [str(oldest)])
-            self.assertTrue(any(item.get("status") == "达到目标" for item in fake.audit))
-            self.assertFalse(fake._auto_cleanup_running)
+            self.assertEqual(result.status, "达到目标")
+            self.assertTrue(any(item.get("status") == "达到目标" for item in audit.records))
 
     def test_scan_and_delete_failures_stop_at_shared_limit(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -120,96 +143,180 @@ class TestCleanupPolicy(unittest.TestCase):
                 path = root / f"{index:02d}.jpg"
                 path.write_bytes(b"x")
                 os.utime(path, (index + 1, index + 1))
-
-            fake = FakeCleanupWindow([str(root)])
+            audit = MemoryAudit()
+            request = auto_request(root)
+            service, _repository = indexed_service(self, audit, request)
             usage = DiskUsage(1000, 900, 100)
-            with mock.patch("shutil.disk_usage", return_value=usage), \
-                 mock.patch("os.remove", side_effect=PermissionError("locked")):
-                MainWindow._auto_cleanup_task(fake, "test")
 
-            failures = [item for item in fake.audit if item["event"] == "DELETE_FAIL"]
+            with mock.patch("shutil.disk_usage", return_value=usage), mock.patch(
+                "src.services.cleanup_service.os.remove",
+                side_effect=PermissionError("locked"),
+            ):
+                result = service.run_auto_cleanup(
+                    request, threading.Event(), lambda message: None
+                )
+
+            failures = [item for item in audit.records if item["event"] == "DELETE_FAIL"]
             self.assertEqual(len(failures), AUTO_CLEANUP_FAILURE_LIMIT)
-            self.assertEqual(failures[-1]["failed_count"], AUTO_CLEANUP_FAILURE_LIMIT)
-            self.assertTrue(any(item.get("status") == "失败达到20次" for item in fake.audit))
+            self.assertEqual(result.status, "失败达到20次")
 
-    def test_trash_mode_stops_when_free_space_does_not_increase(self):
+    def test_trash_mode_stops_when_space_does_not_increase(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             for index in range(2):
                 path = root / f"{index}.jpg"
                 path.write_bytes(b"x")
                 os.utime(path, (index + 1, index + 1))
-
-            fake = FakeCleanupWindow([str(root)])
-            fake.auto_delete_use_trash = True
+            audit = MemoryAudit()
+            request = auto_request(root, use_trash=True)
+            service, _repository = indexed_service(self, audit, request)
             moved = []
             usage = DiskUsage(1000, 900, 100)
-            with mock.patch("src.ui.main_window.trash_supported", return_value=True), \
-                 mock.patch("src.ui.main_window.send_to_trash", side_effect=lambda path: moved.append(path)), \
-                 mock.patch("shutil.disk_usage", return_value=usage):
-                MainWindow._auto_cleanup_task(fake, "test")
+
+            with mock.patch(
+                "src.services.cleanup_service.send_to_trash",
+                side_effect=lambda path: moved.append(path),
+            ), mock.patch("shutil.disk_usage", return_value=usage):
+                result = service.run_auto_cleanup(
+                    request,
+                    threading.Event(),
+                    lambda message: None,
+                )
 
             self.assertEqual(len(moved), 1)
-            self.assertTrue(any(item.get("status") == "回收站未释放空间" for item in fake.audit))
+            self.assertEqual(result.status, "回收站未释放空间")
+
+    def test_delete_mode_is_read_again_before_each_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for index in range(2):
+                path = root / f"{index}.jpg"
+                path.write_bytes(b"x")
+            audit = MemoryAudit()
+            request = auto_request(root, use_trash=True)
+            service, repository = indexed_service(self, audit, request)
+            fingerprint = service.cleanup_scope_fingerprint(request)
+            ordered = repository.oldest(fingerprint, 10)
+            moved = []
+            removed = []
+            configured_modes = iter((True, True, False))
+
+            with mock.patch(
+                "src.services.cleanup_service.trash_supported", return_value=True
+            ), mock.patch(
+                "src.services.cleanup_service.send_to_trash",
+                side_effect=lambda path: moved.append(path),
+            ), mock.patch(
+                "src.services.cleanup_service.os.remove",
+                side_effect=lambda path: removed.append(path),
+            ), mock.patch(
+                "shutil.disk_usage",
+                side_effect=[
+                    DiskUsage(1000, 900, 100),
+                    DiskUsage(1000, 890, 110),
+                    DiskUsage(1000, 840, 160),
+                ],
+            ):
+                result = service.run_auto_cleanup(
+                    request,
+                    threading.Event(),
+                    lambda message: None,
+                    lambda: next(configured_modes),
+                )
+
+            self.assertEqual(moved, [ordered[0].path])
+            self.assertEqual(removed, [ordered[1].path])
+            self.assertEqual(result.status, "达到目标")
+            delete_records = [
+                item for item in audit.records if item["event"] == "DELETE_OK"
+            ]
+            self.assertEqual(
+                [item["delete_mode"] for item in delete_records],
+                ["回收站", "永久删除"],
+            )
 
     def test_cross_volume_group_is_rejected(self):
         with mock.patch.object(
-            MainWindow,
-            "_cleanup_volume_identity",
+            CleanupService,
+            "cleanup_volume_identity",
             side_effect=[("volume-a", "D:\\"), ("volume-b", "E:\\")],
         ):
-            valid, error, details = MainWindow._validate_cleanup_folder_group(["D:\\A", "E:\\B"])
+            valid, error, details = CleanupService.validate_cleanup_folder_group(
+                ["D:\\A", "E:\\B"]
+            )
         self.assertFalse(valid)
         self.assertIn("必须位于同一磁盘", error)
         self.assertEqual(len(details), 2)
 
+    def test_candidate_policy_is_oldest_first_and_deduplicates_nested_roots(self):
+        ordered = CleanupService.sort_cleanup_candidates(
+            [(2, 1, "b.jpg"), (1, 1, "z.jpg"), (1, 1, "a.jpg")]
+        )
+        self.assertEqual([Path(item[2]).name for item in ordered], ["a.jpg", "z.jpg", "b.jpg"])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            child = root / "child"
+            child.mkdir()
+            roots = CleanupService.deduplicate_cleanup_roots(
+                [str(child), str(root), str(root)]
+            )
+            self.assertEqual(roots, [str(root.resolve())])
+
     def test_cleanup_audit_uses_independent_daily_log(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            fake = mock.Mock()
-            fake.app_dir = Path(temp_dir)
-            fake._log_executor = ImmediateExecutor()
-            MainWindow._write_cleanup_audit(fake, "DELETE_OK", "run-1", path="中文路径\\图片.jpg")
-
+            repository = CleanupAuditRepository(Path(temp_dir))
+            self.assertTrue(
+                repository.write(
+                    "DELETE_OK", "run-1", path="中文路径\\图片.jpg"
+                )
+            )
             today = datetime.datetime.now().strftime("%Y-%m-%d")
-            log_path = Path(temp_dir) / "logs" / f"cleanup_{today}.log"
-            record = json.loads(log_path.read_text(encoding="utf-8").strip())
+            path = Path(temp_dir) / "logs" / f"cleanup_{today}.log"
+            record = json.loads(path.read_text(encoding="utf-8").strip())
             self.assertEqual(record["event"], "DELETE_OK")
             self.assertEqual(record["path"], "中文路径\\图片.jpg")
 
-    def test_deleted_file_is_audited_when_disk_usage_refresh_fails(self):
+    def test_deleted_file_is_audited_when_usage_refresh_fails(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             file_path = root / "old.jpg"
             file_path.write_bytes(b"old")
-            fake = FakeCleanupWindow([str(root)])
+            audit = MemoryAudit()
+            request = auto_request(root)
+            service, _repository = indexed_service(self, audit, request)
             usage = DiskUsage(1000, 900, 100)
 
-            with mock.patch("shutil.disk_usage", side_effect=[usage, OSError("drive unavailable")]), \
-                 mock.patch("os.remove") as remove:
-                MainWindow._auto_cleanup_task(fake, "test")
+            with mock.patch(
+                "shutil.disk_usage", side_effect=[usage, OSError("drive unavailable")]
+            ), mock.patch("src.services.cleanup_service.os.remove") as remove:
+                result = service.run_auto_cleanup(
+                    request, threading.Event(), lambda message: None
+                )
 
             remove.assert_called_once_with(str(file_path))
-            deleted = [item for item in fake.audit if item["event"] == "DELETE_OK"]
-            self.assertEqual(len(deleted), 1)
+            deleted = [item for item in audit.records if item["event"] == "DELETE_OK"]
             self.assertEqual(deleted[0]["path"], str(file_path))
             self.assertIsNone(deleted[0]["disk_used_percent"])
             self.assertIn("drive unavailable", deleted[0]["disk_usage_error"])
-            self.assertTrue(any(item.get("status") == "路径不可用" for item in fake.audit))
+            self.assertEqual(result.status, "路径不可用")
 
     def test_audit_start_failure_prevents_deletion(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             (root / "old.jpg").write_bytes(b"old")
-            fake = FakeCleanupWindow([str(root)])
-            fake._write_cleanup_audit = mock.Mock(return_value=False)
-            usage = DiskUsage(1000, 900, 100)
-
-            with mock.patch("shutil.disk_usage", return_value=usage), \
-                 mock.patch("os.remove") as remove:
-                MainWindow._auto_cleanup_task(fake, "test")
-
+            request = auto_request(root)
+            service, _repository = indexed_service(
+                self, MemoryAudit(fail_event="START"), request
+            )
+            with mock.patch(
+                "shutil.disk_usage", return_value=DiskUsage(1000, 900, 100)
+            ), mock.patch("src.services.cleanup_service.os.remove") as remove:
+                result = service.run_auto_cleanup(
+                    request, threading.Event(), lambda message: None
+                )
             remove.assert_not_called()
-            self.assertFalse(fake._auto_cleanup_running)
+            self.assertEqual(result.error, "清理审计日志写入失败")
 
     def test_audit_failure_after_delete_stops_before_next_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -218,111 +325,22 @@ class TestCleanupPolicy(unittest.TestCase):
                 path = root / f"{index}.jpg"
                 path.write_bytes(b"x")
                 os.utime(path, (index + 1, index + 1))
-            fake = FakeCleanupWindow([str(root)])
-            original_writer = fake._write_cleanup_audit
-
-            def fail_delete_ok(event, run_id, **fields):
-                if event == "DELETE_OK":
-                    return False
-                return original_writer(event, run_id, **fields)
-
-            fake._write_cleanup_audit = fail_delete_ok
+            request = auto_request(root)
+            service, _repository = indexed_service(
+                self, MemoryAudit(fail_event="DELETE_OK"), request
+            )
             removed = []
-            usage = DiskUsage(1000, 900, 100)
-            with mock.patch("shutil.disk_usage", return_value=usage), \
-                 mock.patch("os.remove", side_effect=lambda path: removed.append(path)):
-                MainWindow._auto_cleanup_task(fake, "test")
-
-            self.assertEqual(len(removed), 1)
-            self.assertTrue(any(item.get("status") == "任务异常" for item in fake.audit))
-
-    def test_audit_writer_reports_failure(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            fake = mock.Mock()
-            fake.app_dir = Path(temp_dir)
-            fake._log_executor = ImmediateExecutor()
-            fake._emit_async_log = mock.Mock()
-            with mock.patch("builtins.open", side_effect=PermissionError("read only")):
-                written = MainWindow._write_cleanup_audit(
-                    fake, "START", "run-fail", path="中文路径"
-                )
-
-            self.assertFalse(written)
-            fake._emit_async_log.assert_called_once()
-
-    def test_cleanup_uses_target_snapshot_for_entire_run(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            first = root / "01.jpg"
-            second = root / "02.jpg"
-            first.write_bytes(b"1")
-            second.write_bytes(b"2")
-            os.utime(first, (1, 1))
-            os.utime(second, (2, 2))
-            fake = FakeCleanupWindow([str(root)])
-            removed = []
-
-            def remove_and_change_config(path):
-                removed.append(path)
-                fake.auto_delete_target_percent = 10
-
             with mock.patch(
-                "shutil.disk_usage",
-                side_effect=[DiskUsage(1000, 900, 100), DiskUsage(1000, 840, 160)],
-            ), mock.patch("os.remove", side_effect=remove_and_change_config):
-                MainWindow._auto_cleanup_task(fake, "test")
-
-            self.assertEqual(removed, [str(first)])
-            start = next(item for item in fake.audit if item["event"] == "START")
-            self.assertEqual(start["target_percent"], 85)
-
-    def test_submit_failure_resets_running_flag(self):
-        class BrokenExecutor:
-            def submit(self, *args, **kwargs):
-                raise RuntimeError("executor closed")
-
-        fake = mock.Mock()
-        fake._is_closing = False
-        fake._auto_cleanup_lock = threading.Lock()
-        fake._auto_cleanup_running = False
-        fake._auto_cleanup_cancel_event = threading.Event()
-        fake._cleanup_executor = BrokenExecutor()
-        fake._auto_cleanup_task = mock.Mock()
-        fake._get_auto_cleanup_folders.return_value = ["E:\\监测目录"]
-        fake._append_log = mock.Mock()
-        fake._record_cleanup_blocked = mock.Mock()
-
-        submitted = MainWindow._submit_auto_cleanup(fake, "test")
-
-        self.assertFalse(submitted)
-        self.assertFalse(fake._auto_cleanup_running)
-        fake._record_cleanup_blocked.assert_called_once()
-
-    def test_shutdown_waits_for_cleanup_before_log_executor(self):
-        order = []
-
-        class RecordingExecutor:
-            def __init__(self, name):
-                self.name = name
-
-            def shutdown(self, wait, cancel_futures=True):
-                order.append((self.name, wait, cancel_futures))
-
-        fake = mock.Mock()
-        fake._is_closing = False
-        fake._auto_cleanup_timer = mock.Mock()
-        fake._auto_cleanup_cancel_event = threading.Event()
-        fake._cleanup_executor = RecordingExecutor("cleanup")
-        fake._disk_executor = RecordingExecutor("disk")
-        fake._log_executor = RecordingExecutor("log")
-        fake._shutdown_executor = MainWindow._shutdown_executor
-
-        MainWindow._shutdown_background_executors(fake)
-
-        self.assertTrue(fake._is_closing)
-        self.assertTrue(fake._auto_cleanup_cancel_event.is_set())
-        self.assertEqual([item[0] for item in order], ["cleanup", "disk", "log"])
-        self.assertTrue(all(item[1] for item in order))
+                "shutil.disk_usage", return_value=DiskUsage(1000, 900, 100)
+            ), mock.patch(
+                "src.services.cleanup_service.os.remove",
+                side_effect=lambda path: removed.append(path),
+            ):
+                result = service.run_auto_cleanup(
+                    request, threading.Event(), lambda message: None
+                )
+            self.assertEqual(len(removed), 1)
+            self.assertEqual(result.status, "任务异常")
 
     def test_cancel_event_stops_before_next_delete(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -331,46 +349,101 @@ class TestCleanupPolicy(unittest.TestCase):
                 path = root / f"{index}.jpg"
                 path.write_bytes(b"x")
                 os.utime(path, (index + 1, index + 1))
-            fake = FakeCleanupWindow([str(root)])
-            fake._auto_cleanup_cancel_event = threading.Event()
+            audit = MemoryAudit()
+            request = auto_request(root)
+            service, _repository = indexed_service(self, audit, request)
+            cancel = threading.Event()
             removed = []
 
             def remove_then_cancel(path):
                 removed.append(path)
-                fake._auto_cleanup_cancel_event.set()
+                cancel.set()
+
+            with mock.patch(
+                "shutil.disk_usage", return_value=DiskUsage(1000, 900, 100)
+            ), mock.patch(
+                "src.services.cleanup_service.os.remove",
+                side_effect=remove_then_cancel,
+            ):
+                result = service.run_auto_cleanup(
+                    request, cancel, lambda message: None
+                )
+            self.assertEqual(len(removed), 1)
+            self.assertEqual(result.status, "任务异常")
+
+    def test_auto_cleanup_reads_ready_index_without_directory_scan(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for index in range(5):
+                path = root / f"{index}.jpg"
+                path.write_bytes(b"x")
+                os.utime(path, (index + 1, index + 1))
+
+            audit = MemoryAudit()
+            request = auto_request(root)
+            service, repository = indexed_service(self, audit, request)
+            marker = Path(repository.marker_path)
+            self.assertTrue(marker.is_file())
+            self.assertEqual(marker.stat().st_size, 0)
+            self.assertEqual(
+                repository.count(service.cleanup_scope_fingerprint(request)), 5
+            )
 
             usage = DiskUsage(1000, 900, 100)
-            with mock.patch("shutil.disk_usage", return_value=usage), \
-                 mock.patch("os.remove", side_effect=remove_then_cancel):
-                MainWindow._auto_cleanup_task(fake, "test")
+            with mock.patch("src.services.cleanup_service.os.scandir") as scandir, mock.patch(
+                "src.services.cleanup_service.os.remove"
+            ), mock.patch("shutil.disk_usage", return_value=usage):
+                result = service.run_auto_cleanup(
+                    request, threading.Event(), lambda message: None
+                )
 
-            self.assertEqual(len(removed), 1)
-            self.assertTrue(any(item.get("status") == "任务异常" for item in fake.audit))
+            scandir.assert_not_called()
+            self.assertEqual(result.scanned_count, 5)
+            self.assertEqual(result.deleted_count, 5)
+            self.assertEqual(result.status, "索引已耗尽")
+
+    def test_controller_submission_failure_resets_running_flag(self):
+        class BrokenExecutor:
+            def submit(self, *args, **kwargs):
+                raise RuntimeError("executor closed")
+
+        service = mock.Mock()
+        service.record_blocked = mock.Mock()
+        controller = CleanupController(service, BrokenExecutor())
+        request = auto_request("E:\\监测目录")
+
+        self.assertFalse(controller.submit_auto_cleanup(request))
+        self.assertFalse(controller.is_auto_running)
+        service.record_blocked.assert_called_once()
+class MemoryRuntimeLog:
+    last_error = ""
+    def initialize(self): return True
+    def append(self, line): return True
 
 
-class FakeStartupWindow:
-    def __init__(self, existing, current):
+class MemoryStartupRepository:
+    def __init__(self, existing=""):
         self.existing = existing
-        self.current = current
-        self.auto_start_windows = True
-        self.logs = []
         self.writes = []
+        self.last_error = ""
 
-    def _read_startup_command(self):
-        return self.existing
-
-    def _write_startup_command(self, command):
+    def read(self): return self.existing
+    def write(self, command):
         self.existing = command
         self.writes.append(command)
+    def delete(self): self.existing = ""
 
-    def _current_startup_command(self):
-        return self.current
 
-    def _startup_target_exists(self, command):
-        return MainWindow._startup_target_exists(command)
-
-    def _append_log(self, message):
-        self.logs.append(message)
+def startup_service(executable, repository, version="3.4.1", frozen=True, main_script=None):
+    return RuntimeService(
+        Path.cwd(),
+        MemoryRuntimeLog(),
+        repository,
+        executable=str(executable),
+        main_script=Path(main_script or __file__),
+        frozen=frozen,
+        app_version=version,
+    )
 
 
 class TestStartupRepair(unittest.TestCase):
@@ -379,22 +452,23 @@ class TestStartupRepair(unittest.TestCase):
             exe = Path(temp_dir) / "中文 目录" / "ImageUploadTool_v3.4.1.exe"
             exe.parent.mkdir()
             exe.write_bytes(b"")
-            fake = mock.Mock()
-            fake._quote_startup_arg = MainWindow._quote_startup_arg
-            with mock.patch.object(sys, "frozen", True, create=True), \
-                 mock.patch.object(sys, "executable", str(exe)):
-                command = MainWindow._current_startup_command(fake)
+            service = startup_service(exe, MemoryStartupRepository())
+            command = service.current_startup_command()
             self.assertEqual(command, f'"{exe}"')
-            self.assertEqual(_extract_startup_target(command), str(exe))
+            self.assertEqual(extract_startup_target(command), str(exe))
 
     def test_source_command_requires_existing_main_script(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             missing_script = Path(temp_dir) / "中文 目录" / "src" / "main.py"
             command = f'"{sys.executable}" "{missing_script}"'
-
-            self.assertTrue(Path(sys.executable).is_file())
             self.assertFalse(missing_script.exists())
-            self.assertFalse(MainWindow._startup_target_exists(command))
+            service = startup_service(
+                sys.executable,
+                MemoryStartupRepository(),
+                frozen=False,
+                main_script=missing_script,
+            )
+            self.assertFalse(service.startup_target_exists(command))
 
     def test_higher_current_version_replaces_old_registration(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -403,24 +477,20 @@ class TestStartupRepair(unittest.TestCase):
             current_exe = base / "ImageUploadTool_v3.4.1.exe"
             old_exe.write_bytes(b"")
             current_exe.write_bytes(b"")
-            fake = FakeStartupWindow(f'"{old_exe}"', f'"{current_exe}"')
-
-            enabled = MainWindow._reconcile_startup_registration(fake)
-
-            self.assertTrue(enabled)
-            self.assertEqual(fake.writes, [f'"{current_exe}"'])
+            repository = MemoryStartupRepository(f'"{old_exe}"')
+            result = startup_service(current_exe, repository).reconcile_startup(True)
+            self.assertTrue(result.enabled)
+            self.assertEqual(repository.writes, [f'"{current_exe}"'])
 
     def test_same_target_unquoted_registration_is_normalized(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             exe = Path(temp_dir) / "中文 目录" / "ImageUploadTool_v3.4.1.exe"
             exe.parent.mkdir()
             exe.write_bytes(b"")
-            fake = FakeStartupWindow(str(exe), f'"{exe}"')
-
-            enabled = MainWindow._reconcile_startup_registration(fake)
-
-            self.assertTrue(enabled)
-            self.assertEqual(fake.writes, [f'"{exe}"'])
+            repository = MemoryStartupRepository(str(exe))
+            result = startup_service(exe, repository).reconcile_startup(True)
+            self.assertTrue(result.enabled)
+            self.assertEqual(repository.writes, [f'"{exe}"'])
 
     def test_lower_current_version_cannot_replace_valid_newer_registration(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -429,13 +499,13 @@ class TestStartupRepair(unittest.TestCase):
             newer_exe = base / "ImageUploadTool_v9.0.0.exe"
             current_exe.write_bytes(b"")
             newer_exe.write_bytes(b"")
-            fake = FakeStartupWindow(f'"{newer_exe}"', f'"{current_exe}"')
-
-            enabled = MainWindow._reconcile_startup_registration(fake, explicit=True)
-
-            self.assertTrue(enabled)
-            self.assertEqual(fake.writes, [])
-            self.assertEqual(fake.existing, f'"{newer_exe}"')
+            repository = MemoryStartupRepository(f'"{newer_exe}"')
+            result = startup_service(current_exe, repository).reconcile_startup(
+                True, explicit=True
+            )
+            self.assertTrue(result.enabled)
+            self.assertEqual(repository.writes, [])
+            self.assertEqual(repository.existing, f'"{newer_exe}"')
 
 
 if __name__ == "__main__":

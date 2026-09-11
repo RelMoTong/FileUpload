@@ -17,11 +17,11 @@ import threading
 import datetime
 import queue
 import hashlib
+import json
 import subprocess
 import logging
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict, Any
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 # 创建logger
 logger = logging.getLogger(__name__)
@@ -48,6 +48,7 @@ except ImportError:
 
 # 导入断点续传模块
 from src.core.resume_manager import ResumeManager, ResumableFileUploader
+from src.repositories import DedupIndexRepository, PendingArchiveRepository
 
 
 class UploadWorker(QtCore.QObject):  # type: ignore[misc]
@@ -82,6 +83,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
     upload_error = Signal(str, str)      # filename, error_message
     disk_warning = Signal(float, float, int)  # target_percent, backup_percent, threshold
     disk_cleanup_needed = Signal()       # 请求主窗口执行统一自动清理
+    local_file_generated = Signal(str, str)  # path, source(upload|archive)
 
     def __init__(
         self,
@@ -107,7 +109,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         ftp_client_config: Optional[Dict[str, Any]] = None,
         enable_backup: bool = True,
         limit_upload_rate: bool = False,
-        max_upload_rate_mbps: float = 10.0
+        max_upload_rate_mbps: float = 10.0,
+        file_upload_delay_seconds: float = 1.5
     ):
         """初始化上传 Worker
         
@@ -135,6 +138,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             enable_backup: 是否启用备份
             limit_upload_rate: 是否限制上传速率
             max_upload_rate_mbps: 最大上传速率（MB/s）
+            file_upload_delay_seconds: 扫描到文件后、开始上传前的延迟秒数
         """
         super().__init__()
         self.source = source
@@ -143,6 +147,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self.enable_backup = enable_backup
         self.limit_upload_rate = limit_upload_rate
         self.max_upload_rate_bytes = int(max_upload_rate_mbps * 1024 * 1024) if limit_upload_rate else 0
+        self.file_upload_delay_seconds = max(0.0, float(file_upload_delay_seconds))
         self.interval = interval
         self.mode = mode
         self.disk_threshold_percent = max(5, disk_threshold_percent)
@@ -177,6 +182,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self._archive_thread = None
         self._net_running = False
         self._net_thread = None
+        self._net_stop_event = threading.Event()
         
         # 统计数据
         self.uploaded_count = 0
@@ -195,6 +201,10 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         # 队列
         self.retry_queue: Dict[str, Dict[str, Any]] = {}
         self.archive_queue: queue.Queue = queue.Queue()
+        self._archive_stop_event = threading.Event()
+        self._archive_repository = PendingArchiveRepository(self.app_dir)
+        self._pending_archive_sources: set[str] = set()
+        self._queued_archive_sources: set[str] = set()
         
         # 网络状态
         self.network_retry_count = 0
@@ -202,18 +212,24 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self.last_network_check = 0.0
         self.current_network_status = None  # None=未检测, 'good'/'unstable'/'disconnected'=已检测
         self.network_pause_by_auto = False
+        self._last_network_path_probe = 0.0
+        self._last_backup_path_ok = False
         self._last_space_warn = 0.0
         
         # 失败日志
         self.failed_log_path = self.app_dir / "failed_files.log"
         
-        # 线程池
-        self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="FileOp")
-        self._net_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="NetChk")
-        self._executor_lock = threading.Lock()
-        self._executor_timeout_start: Optional[float] = None
-        self._executor_timeout_count = 0
+        # 网络路径元数据操作使用可终止子进程，禁止超时后遗弃 FileOp 线程。
+        self._fileop_lock = threading.Lock()
+        self._fileop_processes: set[subprocess.Popen[Any]] = set()
+        self._fileop_slots = threading.BoundedSemaphore(2)
+        self._fileop_timeout_count = 0
+        self._fileop_circuit_until = 0.0
         self._dedup_not_supported_warned = False
+        self._dedup_repository = DedupIndexRepository(self.app_dir)
+        self._dedup_index_ready = False
+        self._dedup_index_root = ""
+        self._dedup_generation = 0
         
         # 去重询问模式的全局选择
         self._duplicate_ask_choice: Optional[str] = None
@@ -228,6 +244,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             return
         self._duplicate_ask_choice = None
         self._dedup_not_supported_warned = False
+        self._dedup_index_ready = False
         if not self._validate_paths() or not self._validate_ftp_config():
             self.status.emit('stopped')
             self.finished.emit()
@@ -251,6 +268,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             self._log_event("⚠️", "NO_BACKUP", "备份已关闭，上传成功后将删除源文件")
         self._running = True
         self._paused = False
+        self._net_stop_event.clear()
+        self._archive_stop_event.clear()
+        self._restore_pending_archives()
         
         # 检查待续传的文件
         self._check_pending_resumes()
@@ -299,7 +319,10 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             'protocol': self.upload_protocol,
             'ftp_connected': self.ftp_client is not None,
             'resume_active': self.resumable_uploader is not None,
-            'executor_alive': not self._executor._shutdown if hasattr(self._executor, '_shutdown') else True,
+            'fileop_active_count': self._fileop_active_count(),
+            'fileop_legacy_task_count': 0,
+            'fileop_timeout_count': self._fileop_timeout_count,
+            'fileop_circuit_open': time.monotonic() < self._fileop_circuit_until,
         }
         return status
 
@@ -350,24 +373,25 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             except Exception as e:
                 self.log.emit(f"⚠️ FTP 客户端断开异常: {e}")
         
-        # 关闭线程池
-        try:
-            self._executor.shutdown(wait=wait, cancel_futures=not wait)
-            if wait:
-                self.log.emit(f"✓ 等待任务完成 (超时: {timeout}s)")
-        except Exception as e:
-            self.log.emit(f"⚠️ 线程池关闭异常: {e}")
+        self._terminate_fileop_processes()
+        self._archive_stop_event.set()
         
         # 停止网络监控
         self._net_running = False
-        try:
-            self._net_executor.shutdown(wait=False, cancel_futures=True)
-        except Exception:
-            # 线程池shutdown失败静默忽略
-            pass
-        
+        self._net_stop_event.set()
+
         self.log.emit("✓ 上传任务已停止")
         self.status.emit('stopped')
+
+    def has_running_tasks(self) -> bool:
+        """返回 Worker 内部是否仍有 Python 线程或线程池任务活动。"""
+        threads = [self._thread, self._archive_thread, self._net_thread]
+        return self._fileop_active_count() > 0 or any(
+            thread is not None
+            and hasattr(thread, "is_alive")
+            and thread.is_alive()
+            for thread in threads
+        )
 
     def _network_monitor_loop(self) -> None:
         """网络监控循环（独立线程）"""
@@ -375,15 +399,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         
         while getattr(self, '_net_running', False):
             try:
-                # 检测网络状态
-                target_ok = self._safe_net_check(self.target, timeout=0.3, default=False)
-                if target_ok:
-                    status = 'good'
-                else:
-                    backup_ok = False
-                    if self._is_backup_path_ready():
-                        backup_ok = self._safe_net_check(self.backup, timeout=0.3, default=False)
-                    status = 'unstable' if backup_ok else 'disconnected'
+                # 只有所有必需的 SMB 路径均可写时才显示“正常”。
+                status = self._evaluate_smb_network_status(timeout=1.5)
             except Exception as e:
                 # 网络检查异常，假设断开
                 logger.debug(f"网络监控检查异常: {type(e).__name__}: {e}")
@@ -394,7 +411,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 if status == 'good' and last_status in ('unstable', 'disconnected'):
                     self.log.emit('✅ 网络已恢复正常')
                 elif status == 'unstable':
-                    self.log.emit('⚠️ 网络不稳定：目标不可达，但备份可达')
+                    self.log.emit('⚠️ 网络不稳定：目标或备份路径不可写')
                 elif status == 'disconnected':
                     self.log.emit('❌ 网络连接中断')
                 
@@ -429,12 +446,42 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
 
             # 自适应间隔
             interval = 1 if status in ('unstable', 'disconnected') else max(1, int(self.network_check_interval))
-            time.sleep(interval)
+            if self._net_stop_event.wait(interval):
+                break
 
-    def _safe_net_check(self, path: str, timeout: float = 1.5, default: bool = False) -> bool:
+    def _evaluate_smb_network_status(self, timeout: float = 1.5) -> str:
+        """Return SMB path health, including every required writable path."""
+        target_ok = self._safe_net_check(
+            self.target, timeout=timeout, default=False, require_write=True
+        )
+        backup_required = bool(self.enable_backup and self.backup)
+        backup_ok = (
+            self._safe_net_check(
+                self.backup, timeout=timeout, default=False, require_write=True
+            )
+            if backup_required
+            else True
+        )
+        self._last_backup_path_ok = backup_ok if backup_required else True
+        self._last_network_path_probe = time.monotonic()
+        if target_ok and backup_ok:
+            return 'good'
+        if target_ok or (backup_required and backup_ok):
+            return 'unstable'
+        return 'disconnected'
+
+    def _safe_net_check(
+        self,
+        path: str,
+        timeout: float = 1.5,
+        default: bool = False,
+        require_write: bool = True,
+    ) -> bool:
         """安全检查网络路径可达性
         
-        优先使用 ping 检测网络路径（UNC/映射盘），避免 os.path.exists 阻塞。
+        UNC/映射盘必须通过带超时的目录访问或写入探测，主机能被 ping
+        通不再被视为共享目录可用。写入探测在独立 PowerShell 子进程中
+        执行，避免失联的网络路径阻塞网络监控线程。
         """
         def is_unc(p: str) -> bool:
             return isinstance(p, str) and p.startswith('\\\\')
@@ -481,50 +528,54 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 # Windows API调用失败或非Windows平台
                 return ''
 
-        def extract_host_from_unc(unc: str) -> str:
-            try:
-                parts = unc.split('\\')
-                return parts[2] if len(parts) > 2 else ''
-            except Exception:
-                # 路径解析失败
-                return ''
-
-        def ping_host(host: str, ms: int) -> bool:
+        def path_access_with_timeout(
+            p: str, seconds: float, write_required: bool
+        ) -> bool:
             try:
                 create_flag = 0
                 if os.name == 'nt' and hasattr(subprocess, 'CREATE_NO_WINDOW'):
                     create_flag = subprocess.CREATE_NO_WINDOW
+                env = os.environ.copy()
+                env['IMAGE_UPLOAD_HEALTH_PATH'] = _normalize_windows_path_for_check(p)
+                if write_required:
+                    command = (
+                        "$p=$env:IMAGE_UPLOAD_HEALTH_PATH; "
+                        "if (-not (Test-Path -LiteralPath $p -PathType Container)) { exit 1 }; "
+                        "$probe=Join-Path $p ('.image_upload_health_' + [guid]::NewGuid().ToString('N') + '.tmp'); "
+                        "$stream=$null; "
+                        "try { "
+                        "$stream=[System.IO.File]::Open($probe,[System.IO.FileMode]::CreateNew,"
+                        "[System.IO.FileAccess]::Write,[System.IO.FileShare]::None); "
+                        "$stream.Dispose(); $stream=$null; "
+                        "Remove-Item -LiteralPath $probe -Force -ErrorAction Stop; exit 0 "
+                        "} catch { "
+                        "if ($null -ne $stream) { $stream.Dispose() }; "
+                        "if (Test-Path -LiteralPath $probe) { "
+                        "Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue }; exit 1 }"
+                    )
+                else:
+                    command = (
+                        "$p=$env:IMAGE_UPLOAD_HEALTH_PATH; "
+                        "if (-not (Test-Path -LiteralPath $p -PathType Container)) { exit 1 }; "
+                        "try { Get-ChildItem -LiteralPath $p -Force -ErrorAction Stop "
+                        "| Select-Object -First 1 | Out-Null; exit 0 } catch { exit 1 }"
+                    )
                 completed = subprocess.run(
-                    ['ping', '-n', '1', '-w', str(ms), host],
+                    [
+                        'powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive',
+                        '-Command', command,
+                    ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    timeout=max(0.2, ms/1000.0 + 0.5),
-                    creationflags=create_flag
-                )
-                return completed.returncode == 0
-            except Exception:
-                # ping失败（命令不存在或网络不可用）
-                return False
-
-        def path_exists_with_timeout(p: str, seconds: float) -> bool:
-            try:
-                create_flag = 0
-                if os.name == 'nt' and hasattr(subprocess, 'CREATE_NO_WINDOW'):
-                    create_flag = subprocess.CREATE_NO_WINDOW
-                safe_path = _normalize_windows_path_for_check(p).replace('"', '""')
-                cmd = f'if exist "{safe_path}" (exit 0) else (exit 1)'
-                completed = subprocess.run(
-                    ['cmd', '/c', cmd],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=max(0.2, seconds),
-                    creationflags=create_flag
+                    timeout=max(0.5, seconds),
+                    creationflags=create_flag,
+                    env=env,
                 )
                 return completed.returncode == 0
             except subprocess.TimeoutExpired:
                 return bool(default)
             except Exception:
-                # 命令执行失败（非Windows平台或cmd不可用）
+                # 命令执行失败（非Windows平台或PowerShell不可用）
                 return bool(default)
 
         try:
@@ -532,20 +583,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 return bool(default)
             path = _normalize_windows_path_for_check(path)
             
-            # UNC 路径：先 ping 主机，ping 通则直接返回 True；ping 不通再做路径存在性检查兜底
+            # UNC 路径：必须验证共享目录本身，而不是只验证主机在线。
             if is_unc(path):
-                host = extract_host_from_unc(path)
-                if host and ping_host(host, int(timeout * 1000)):
-                    return True
-                return path_exists_with_timeout(path, timeout)
+                return path_access_with_timeout(path, timeout, require_write)
             
-            # 映射盘：转换 UNC 后先 ping，ping 通则直接返回 True；失败再做路径存在性检查兜底
+            # 映射盘：转换为 UNC 后验证实际共享目录权限。
             if is_mapped_drive(path):
                 unc = mapped_to_unc(path)
-                host = extract_host_from_unc(unc) if unc else ''
-                if host and ping_host(host, int(timeout * 1000)):
-                    return True
-                return path_exists_with_timeout(unc or path, timeout)
+                return path_access_with_timeout(unc or path, timeout, require_write)
             
             # 本地路径：直接检查
             return bool(os.path.exists(path))
@@ -553,60 +598,172 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             # 网络检查失败，返回默认值
             return bool(default)
 
-    def _rebuild_executor(self) -> None:
-        """重建文件操作线程池，避免阻塞线程长期占用。"""
-        with self._executor_lock:
-            old_executor = self._executor
-            self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="FileOp")
+    def _fileop_active_count(self) -> int:
+        with self._fileop_lock:
+            return len(self._fileop_processes)
+
+    def _terminate_fileop_processes(self) -> None:
+        with self._fileop_lock:
+            processes = tuple(self._fileop_processes)
+        for process in processes:
+            try:
+                process.kill()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _is_remote_path(path: str) -> bool:
+        if not isinstance(path, str) or not path:
+            return False
+        normalized = _normalize_windows_path_for_check(path)
+        if normalized.startswith('\\\\'):
+            return True
+        if os.name != 'nt':
+            return False
         try:
-            old_executor.shutdown(wait=False, cancel_futures=True)
+            import ctypes
+            drive, _ = os.path.splitdrive(normalized)
+            if not drive:
+                return False
+            return ctypes.windll.kernel32.GetDriveTypeW(drive + '\\') == 4
         except Exception:
-            # shutdown失败静默忽略（线程池可能已关闭）
-            pass
+            return False
 
-    def _record_executor_timeout(self) -> None:
-        now = time.time()
-        if self._executor_timeout_start is None:
-            self._executor_timeout_start = now
-            self._executor_timeout_count = 1
-            return
-        self._executor_timeout_count += 1
-        if now - self._executor_timeout_start >= 300:
-            try:
-                self.log.emit("?? 文件操作连续超时，正在重建线程池")
-            except Exception:
-                pass
-            self._rebuild_executor()
-            self._executor_timeout_start = None
-            self._executor_timeout_count = 0
-
-    def _safe_path_operation(self, func, *args, timeout: float = 3.0, default=None):
-        """安全执行文件系统操作（带超时）"""
-        future = None
+    def _run_remote_fileop(
+        self,
+        operation: str,
+        path: str,
+        timeout: float,
+        default: Any,
+        filters: Optional[List[str]] = None,
+    ) -> Any:
+        """Run network-path metadata work in a bounded, killable subprocess."""
+        if time.monotonic() < self._fileop_circuit_until:
+            return default
+        if not self._fileop_slots.acquire(blocking=False):
+            return default
+        process: Optional[subprocess.Popen[Any]] = None
         try:
-            with self._executor_lock:
-                future = self._executor.submit(func, *args)
-            result = future.result(timeout=timeout)
-            self._executor_timeout_start = None
-            self._executor_timeout_count = 0
-            return result
-        except FuturesTimeoutError:
-            if future:
-                future.cancel()
-            self._record_executor_timeout()
-            try:
-                self.log.emit(f"⏱️ 文件操作超时（{timeout}秒），可能网络中断")
-            except Exception:
-                # 日志发送失败静默忽略
-                pass
+            prefix = (
+                "$ErrorActionPreference='Stop'; "
+                "$OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); "
+                "$p=$env:IMAGE_UPLOAD_FILEOP_PATH; "
+            )
+            commands = {
+                "exists": "if (Test-Path -LiteralPath $p) { exit 0 } else { exit 1 }",
+                "isdir": (
+                    "if (Test-Path -LiteralPath $p -PathType Container) "
+                    "{ exit 0 } else { exit 1 }"
+                ),
+                "mkdir": (
+                    "[System.IO.Directory]::CreateDirectory($p) | Out-Null; exit 0"
+                ),
+                "disk_usage": (
+                    "$item=Get-Item -LiteralPath $p; $root=$item.PSDrive.Root; "
+                    "$drive=[System.IO.DriveInfo]::new($root); "
+                    "Write-Output ($drive.TotalSize.ToString()+'|'+"
+                    "$drive.AvailableFreeSpace.ToString())"
+                ),
+                "scan": (
+                    "$items=@(Get-ChildItem -LiteralPath $p -File -Recurse | "
+                    "ForEach-Object { $_.FullName }); "
+                    "$items | ConvertTo-Json -Compress"
+                ),
+            }
+            command = prefix + commands[operation]
+            env = os.environ.copy()
+            env["IMAGE_UPLOAD_FILEOP_PATH"] = _normalize_windows_path_for_check(path)
+            env["IMAGE_UPLOAD_FILEOP_FILTERS"] = json.dumps(
+                [str(item).lower() for item in (filters or [])]
+            )
+            create_flag = (
+                subprocess.CREATE_NO_WINDOW
+                if os.name == 'nt' and hasattr(subprocess, 'CREATE_NO_WINDOW')
+                else 0
+            )
+            process = subprocess.Popen(
+                [
+                    'powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive',
+                    '-Command', command,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=create_flag,
+                env=env,
+            )
+            with self._fileop_lock:
+                self._fileop_processes.add(process)
+            stdout, stderr = process.communicate(timeout=max(0.5, timeout))
+            if process.returncode != 0:
+                detail = (stderr or b"").decode("utf-8", errors="replace").strip()
+                if detail:
+                    logger.debug("网络文件操作失败 %s: %s", operation, detail[:300])
+                return default
+            self._fileop_timeout_count = 0
+            if operation in {"exists", "isdir", "mkdir"}:
+                return True
+            text = (stdout or b"").decode("utf-8-sig", errors="replace").strip()
+            if operation == "disk_usage":
+                total_text, free_text = text.split("|", 1)
+                return int(total_text), int(free_text)
+            if operation == "scan":
+                if not text:
+                    return []
+                parsed = json.loads(text)
+                items = [parsed] if isinstance(parsed, str) else list(parsed)
+                allowed = {str(item).lower() for item in (filters or [])}
+                return [
+                    item for item in items
+                    if not allowed or os.path.splitext(str(item))[1].lower() in allowed
+                ]
             return default
-        except Exception as e:
-            try:
-                self.log.emit(f"⚠️ 文件操作异常: {str(e)[:100]}")
-            except Exception:
-                # 日志发送失败静默忽略
-                pass
+        except subprocess.TimeoutExpired:
+            if process is not None:
+                try:
+                    process.kill()
+                    process.communicate(timeout=1)
+                except Exception:
+                    pass
+            self._fileop_timeout_count += 1
+            if self._fileop_timeout_count >= 3:
+                self._fileop_circuit_until = time.monotonic() + 30.0
+                self.log.emit("⛔ 网络文件操作连续超时，熔断30秒")
+            else:
+                self.log.emit(f"⏱️ 网络文件操作超时（{timeout}秒）")
             return default
+        except Exception as exc:
+            self.log.emit(f"⚠️ 网络文件操作异常: {str(exc)[:100]}")
+            return default
+        finally:
+            if process is not None:
+                with self._fileop_lock:
+                    self._fileop_processes.discard(process)
+            self._fileop_slots.release()
+
+    def _safe_path_exists(self, path: str, timeout: float = 2.0) -> bool:
+        if self._is_remote_path(path):
+            return bool(self._run_remote_fileop("exists", path, timeout, False))
+        try:
+            return os.path.exists(path)
+        except OSError:
+            return False
+
+    def _safe_path_isdir(self, path: str, timeout: float = 2.0) -> bool:
+        if self._is_remote_path(path):
+            return bool(self._run_remote_fileop("isdir", path, timeout, False))
+        try:
+            return os.path.isdir(path)
+        except OSError:
+            return False
+
+    def _safe_make_dirs(self, path: str, timeout: float = 3.0) -> bool:
+        if self._is_remote_path(path):
+            return bool(self._run_remote_fileop("mkdir", path, timeout, False))
+        try:
+            os.makedirs(path, exist_ok=True)
+            return True
+        except OSError:
+            return False
 
     def _log_event(self, level: str, code: str, message: str, **fields) -> None:
         try:
@@ -623,9 +780,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         if not path:
             self._log_event("❌", "PATH_EMPTY", f"{label}路径未设置")
             return False
-        exists = self._safe_path_operation(os.path.exists, path, timeout=2.0, default=False)
+        exists = self._safe_path_exists(path, timeout=2.0)
         if exists:
-            is_dir = self._safe_path_operation(os.path.isdir, path, timeout=2.0, default=False)
+            is_dir = self._safe_path_isdir(path, timeout=2.0)
             if not is_dir:
                 self._log_event("❌", "PATH_NOT_DIR", f"{label}路径不是文件夹", path=path)
                 return False
@@ -634,11 +791,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             self._log_event("❌", "PATH_NOT_FOUND", f"{label}路径不存在或不可访问", path=path)
             return False
 
-        def create_dir():
-            os.makedirs(path, exist_ok=True)
-            return True
-
-        created = self._safe_path_operation(create_dir, timeout=3.0, default=False)
+        created = self._safe_make_dirs(path, timeout=3.0)
         if created is False:
             self._log_event("❌", "PATH_CREATE_FAIL", f"{label}路径不可创建，可能无权限或网络中断", path=path)
             return False
@@ -673,7 +826,15 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         """Check whether backup path is enabled and reachable."""
         if not self.enable_backup or not self.backup:
             return False
-        return self._safe_net_check(self.backup, timeout=1.5, default=False)
+        cache_age = time.monotonic() - self._last_network_path_probe
+        if cache_age < max(1.0, float(self.network_check_interval)):
+            return self._last_backup_path_ok
+        ready = self._safe_net_check(
+            self.backup, timeout=1.5, default=False, require_write=True
+        )
+        self._last_backup_path_ok = ready
+        self._last_network_path_probe = time.monotonic()
+        return ready
 
     def _check_network_connection(self) -> Optional[str]:
         """检查网络连接状态
@@ -687,18 +848,11 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             now = time.time()
             if now - self.last_network_check < self.network_check_interval:
                 return self.current_network_status
-            
             try:
-                target_ok = self._safe_net_check(self.target, timeout=2.0, default=False)
+                self.current_network_status = self._evaluate_smb_network_status(timeout=2.0)
             except Exception as e:
-                logger.debug(f"目标路径检查异常: {type(e).__name__}: {e}")
-                target_ok = False
-            
-            if target_ok:
-                self.current_network_status = 'good'
-            else:
-                backup_ok = self._is_backup_path_ready()
-                self.current_network_status = 'unstable' if backup_ok else 'disconnected'
+                logger.debug(f"目标或备份路径检查异常: {type(e).__name__}: {e}")
+                self.current_network_status = 'disconnected'
             
             self.last_network_check = now
             return self.current_network_status
@@ -710,12 +864,12 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self.last_network_check = now
         
         try:
-            target_ok = self._safe_net_check(self.target, timeout=2.0, default=False)
+            status = self._evaluate_smb_network_status(timeout=2.0)
         except Exception as e:
-            logger.debug(f"标记网络良好时检查失败: {type(e).__name__}: {e}")
-            target_ok = False
+            logger.debug(f"标记网络状态时检查失败: {type(e).__name__}: {e}")
+            status = 'disconnected'
         
-        if target_ok:
+        if status == 'good':
             old_status = self.current_network_status
             self.current_network_status = 'good'
             self.network_retry_count = 0
@@ -736,14 +890,12 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         
         self.network_retry_count += 1
         
-        backup_ok = self._is_backup_path_ready()
-        
-        if backup_ok:
+        if status == 'unstable':
             old_status = self.current_network_status
             self.current_network_status = 'unstable'
             
             if old_status != 'unstable':
-                self.log.emit(f"⚠️ 网络不稳定：目标文件夹不可访问，备份文件夹正常")
+                self.log.emit("⚠️ 网络不稳定：目标或备份路径不可写")
             
             self.network_status.emit('unstable')
             return 'unstable'
@@ -832,16 +984,12 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             try:
                 protocol_state = item.get('protocol_state', {})
                 if self.upload_protocol in ('smb', 'both'):
-                    tgt_exists = self._safe_path_operation(os.path.exists, tgt, timeout=2.0, default=False)
+                    tgt_exists = self._safe_path_exists(tgt, timeout=2.0)
                     if tgt_exists and self.upload_protocol != 'both':
                         del self.retry_queue[file_path]
                         continue
 
-                    self._safe_path_operation(
-                        lambda: os.makedirs(os.path.dirname(tgt), exist_ok=True),
-                        timeout=3.0,
-                        default=False
-                    )
+                    self._safe_make_dirs(os.path.dirname(tgt), timeout=3.0)
 
                 copy_success, protocol_state = self._upload_file_by_protocol(
                     file_path,
@@ -852,11 +1000,13 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 if not copy_success:
                     raise Exception("文件上传失败")
 
-                self.archive_queue.put((file_path, bkp))
+                self._queue_archive(file_path, bkp)
                 del self.retry_queue[file_path]
                 self.uploaded_count += 1
                 self.stats.emit(self.uploaded_count, self.failed_count, self.skipped_count, self.rate)
                 self.log.emit(f"✓ 重试成功: {os.path.basename(file_path)}")
+                if self.upload_protocol in ('smb', 'both'):
+                    self.local_file_generated.emit(tgt, "upload")
             except Exception as e:
                 item['count'] = retry_count + 1
                 if item['count'] > self.retry_count:
@@ -908,27 +1058,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             return False, state
 
     def _upload_via_smb(self, src: str, dst: str) -> bool:
-        """通过 SMB 上传文件（支持断点续传）
-        
-        文件大小分级处理：
-        - ≥10MB: 使用断点续传 (ResumableFileUploader)
-        - <10MB: 直接复制 (shutil.copy2)
-        """
+        """通过 SMB 上传文件，所有文件均支持断点续传。"""
         try:
-            # 大文件使用断点续传
-            if self.resume_manager.should_resume(src):
-                return self._upload_with_resume(src, dst)
-            else:
-                # 小文件直接复制
-                def copy_file():
-                    shutil.copy2(src, dst)
-                    return True
-                
-                copy_success = self._safe_path_operation(copy_file, timeout=30.0, default=False)
-                if not copy_success:
-                    raise Exception("文件复制超时，网络可能已断开")
-            
-            return True
+            return self._upload_with_resume(src, dst)
         except Exception as e:
             self._log_event(
                 "❌",
@@ -940,7 +1072,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             return False
     
     def _upload_with_resume(self, src: str, dst: str) -> bool:
-        """使用断点续传上传大文件"""
+        """使用断点续传上传文件。"""
         try:
             # 检查是否有续传记录
             resume_info = self.resume_manager.get_resume_info(src, dst)
@@ -980,8 +1112,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             )
             
             if success:
-                self.resume_manager.complete_upload(src, success=True)
-                self.log.emit(f"✓ 大文件上传完成: {os.path.basename(src)}")
+                self.log.emit(f"✓ 文件上传完成: {os.path.basename(src)}")
                 return True
             else:
                 if "中断" in error_msg:
@@ -1007,7 +1138,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             
             if not self.ftp_client and self.ftp_client_config:
                 self.ftp_client = FTPClientUploader(self.ftp_client_config)
-                if not self.ftp_client.connect():
+                if not self.ftp_client.connect(cancel_event=self._net_stop_event):
                     host = self.ftp_client_config.get('host', 'unknown')
                     port = self.ftp_client_config.get('port', 21)
                     self._log_event("❌", "FTP_CONN", "无法连接到 FTP 服务器", host=host, port=port)
@@ -1085,30 +1216,117 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             self.log.emit(f"⚠ 哈希计算失败: {e}")
             return ""
 
-    def _find_duplicate_by_hash(self, file_hash: str, target_dir: str) -> str:
-        """在目标文件夹中查找重复文件"""
-        if not file_hash:
-            return ""
-        
+    def _ensure_dedup_index(self, target_dir: str) -> bool:
+        """每次运行只流式同步一次目标目录元数据。"""
+        normalized_root = self._dedup_repository.normalize(target_dir)
+        if (
+            self._dedup_index_ready
+            and self._dedup_index_root == normalized_root
+        ):
+            return True
+        generation = self._dedup_repository.begin_scan()
+        batch: list[tuple[str, int, int]] = []
         try:
-            for root, _, files in os.walk(target_dir):
-                for name in files:
-                    if not self._running or self._paused:
-                        return ""
-                    
-                    target_file = os.path.join(root, name)
-                    try:
-                        target_hash = self._calculate_file_hash(target_file)
-                        if target_hash == file_hash:
-                            return target_file
-                    except (OSError, IOError) as e:
-                        # 文件读取失败，继续检查下一个
-                        logger.debug(f"检查目标文件失败 {target_file}: {type(e).__name__}")
-                        continue
+            for target_file in self._iter_target_files(target_dir):
+                if not self._running or self._paused:
+                    return False
+                try:
+                    stat = self._stat_dedup_file(target_file)
+                except OSError:
+                    continue
+                batch.append((target_file, int(stat.st_size), int(stat.st_mtime_ns)))
+                if len(batch) >= 500:
+                    if not self._dedup_repository.upsert_metadata_batch(
+                        target_dir, self.hash_algorithm, generation, batch
+                    ):
+                        return False
+                    batch.clear()
+            if batch and not self._dedup_repository.upsert_metadata_batch(
+                target_dir, self.hash_algorithm, generation, batch
+            ):
+                return False
+            if not self._dedup_repository.finish_scan(
+                target_dir, self.hash_algorithm, generation
+            ):
+                return False
+            self._dedup_generation = generation
+            self._dedup_index_root = normalized_root
+            self._dedup_index_ready = True
+            return True
+        except OSError as exc:
+            logger.debug("去重索引扫描失败: %s: %s", type(exc).__name__, exc)
+            return False
+
+    def _find_duplicate_by_hash(
+        self, file_hash: str, target_dir: str, file_size: Optional[int] = None
+    ) -> str:
+        """先按大小查索引，再仅对候选文件计算或复用哈希。"""
+        if not file_hash or file_size is None or file_size < 0:
+            return ""
+        if not self._ensure_dedup_index(target_dir):
+            self._log_event(
+                "⚠️", "DEDUP_INDEX", "去重索引不可用，已跳过跨文件名去重",
+                error=self._dedup_repository.last_error,
+            )
+            return ""
+        try:
+            candidates = self._dedup_repository.candidates(
+                target_dir, self.hash_algorithm, file_size
+            )
+            for target_file, indexed_mtime, cached_hash in candidates:
+                if not self._running or self._paused:
+                    return ""
+                try:
+                    stat = self._stat_dedup_file(target_file)
+                except OSError:
+                    self._dedup_repository.remove(
+                        target_dir, self.hash_algorithm, target_file
+                    )
+                    continue
+                current_size = int(stat.st_size)
+                current_mtime = int(stat.st_mtime_ns)
+                if current_size != file_size:
+                    self._dedup_repository.update_file(
+                        target_dir, self.hash_algorithm, target_file,
+                        current_size, current_mtime, "", self._dedup_generation,
+                    )
+                    continue
+                target_hash = cached_hash
+                if not target_hash or current_mtime != indexed_mtime:
+                    target_hash = self._calculate_file_hash(target_file)
+                    if target_hash:
+                        self._dedup_repository.update_file(
+                            target_dir, self.hash_algorithm, target_file,
+                            current_size, current_mtime, target_hash,
+                            self._dedup_generation,
+                        )
+                if target_hash == file_hash:
+                    return target_file
             return ""
         except (OSError, IOError) as e:
-            logger.debug(f"在目标目录查找文件失败: {type(e).__name__}: {e}")
+            logger.debug(f"查询去重索引失败: {type(e).__name__}: {e}")
             return ""
+
+    def _record_dedup_target(self, target_path: str, digest: str) -> None:
+        if not self._dedup_index_ready or not digest:
+            return
+        try:
+            stat = self._stat_dedup_file(target_path)
+        except OSError:
+            return
+        self._dedup_repository.update_file(
+            self.target,
+            self.hash_algorithm,
+            target_path,
+            int(stat.st_size),
+            int(stat.st_mtime_ns),
+            digest,
+            self._dedup_generation,
+        )
+
+    @staticmethod
+    def _stat_dedup_file(path: str) -> os.stat_result:
+        return os.stat(path)
 
     def _get_unique_filename(self, base_path: str) -> str:
         """生成唯一文件名
@@ -1181,28 +1399,17 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
 
     def _archive_worker(self) -> None:
         """归档 Worker（独立线程）"""
-        while self._running:
+        while not self._archive_stop_event.is_set():
             src_path = ""
-            bkp_path = ""
+            item_received = False
             try:
                 item = self.archive_queue.get(timeout=1)
-                src_path, bkp_path = item
-                
-                if not os.path.exists(src_path):
-                    continue
-                
-                backup_ready = self.enable_backup and self.backup and os.path.isdir(self.backup)
-                if backup_ready:
-                    os.makedirs(os.path.dirname(bkp_path), exist_ok=True)
-                    shutil.move(src_path, bkp_path)
-                    self.log.emit(f"📦 已归档: {os.path.basename(bkp_path)}")
-                elif self.enable_backup:
-                    self.log.emit(f"⚠️ 备份路径无效，已保留源文件: {src_path}")
-                else:
-                    os.remove(src_path)
-                    self._log_event("⚠️", "DELETE_SRC", "源文件已删除", file=os.path.basename(src_path))
-                    self.log.emit(f"🗑️ 已删除: {os.path.basename(src_path)}")
-                    
+                item_received = True
+                src_path = str(item.get("source", ""))
+                self._queued_archive_sources.discard(
+                    self._archive_repository.normalize(src_path)
+                )
+                self._process_archive_item(item)
             except queue.Empty:
                 continue
             except Exception as e:
@@ -1213,6 +1420,95 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                     file=os.path.basename(src_path) if src_path else "",
                     error=type(e).__name__
                 )
+            finally:
+                if item_received:
+                    try:
+                        self.archive_queue.task_done()
+                    except ValueError:
+                        pass
+
+    def _process_archive_item(self, item: Dict[str, Any]) -> None:
+        """执行一条已持久化的归档任务。
+
+        仅在移动/删除真正完成后删除日志记录；任何异常都由调用者
+        记录，记录本身保留到下次启动重试。
+        """
+        src_path = str(item.get("source", ""))
+        bkp_path = str(item.get("destination", ""))
+        action = str(item.get("action", "move")).lower()
+        if not src_path:
+            raise ValueError("待归档记录缺少源路径")
+        if not os.path.exists(src_path):
+            self._complete_archive_record(src_path)
+            return
+        if action == "move":
+            parent = os.path.dirname(bkp_path)
+            if not bkp_path or not parent:
+                raise OSError("备份路径无效，待归档记录已保留")
+            os.makedirs(parent, exist_ok=True)
+            shutil.move(src_path, bkp_path)
+            self.log.emit(f"📦 已归档: {os.path.basename(bkp_path)}")
+            self.local_file_generated.emit(bkp_path, "archive")
+        elif action == "delete":
+            os.remove(src_path)
+            self._log_event(
+                "⚠️", "DELETE_SRC", "源文件已删除",
+                file=os.path.basename(src_path),
+            )
+            self.log.emit(f"🗑️ 已删除: {os.path.basename(src_path)}")
+        else:
+            raise ValueError(f"未知归档动作: {action}")
+        self._complete_archive_record(src_path)
+
+    def _queue_archive(self, source: str, destination: str) -> bool:
+        action = "move" if self.enable_backup else "delete"
+        if not self._archive_repository.add(source, destination, action):
+            self._log_event(
+                "❌", "ARCHIVE_JOURNAL", "无法保存待归档记录，源文件已保留",
+                file=os.path.basename(source), error=self._archive_repository.last_error,
+            )
+            return False
+        normalized = self._archive_repository.normalize(source)
+        self._pending_archive_sources.add(normalized)
+        if normalized in self._queued_archive_sources:
+            return True
+        self._queued_archive_sources.add(normalized)
+        self.archive_queue.put(
+            {"source": source, "destination": destination, "action": action}
+        )
+        return True
+
+    def _complete_archive_record(self, source: str) -> None:
+        if self._archive_repository.remove(source):
+            self._pending_archive_sources.discard(
+                self._archive_repository.normalize(source)
+            )
+        else:
+            self._log_event(
+                "⚠️", "ARCHIVE_JOURNAL", "归档完成但记录清理失败",
+                file=os.path.basename(source), error=self._archive_repository.last_error,
+            )
+
+    def _restore_pending_archives(self) -> None:
+        restored = 0
+        for record in self._archive_repository.load():
+            source = str(record.get("source", ""))
+            if not source:
+                continue
+            if not os.path.exists(source):
+                self._archive_repository.remove(source)
+                continue
+            self._pending_archive_sources.add(
+                self._archive_repository.normalize(source)
+            )
+            normalized = self._archive_repository.normalize(source)
+            if normalized in self._queued_archive_sources:
+                continue
+            self._queued_archive_sources.add(normalized)
+            self.archive_queue.put(dict(record))
+            restored += 1
+        if restored:
+            self.log.emit(f"📦 已恢复 {restored} 个待归档任务，源文件不会重复上传")
 
     def _disk_ok(self, path: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
         """检查磁盘空间
@@ -1224,21 +1520,25 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             
         注意：0.0% 表示磁盘真的满了，None 表示检查失败（网络盘离线等）
         """
-        def check():
-            try:
-                parent = os.path.dirname(path) or path
+        try:
+            parent = os.path.dirname(path) or path
+            if self._is_remote_path(parent):
+                values = self._run_remote_fileop(
+                    "disk_usage", parent, 2.0, None
+                )
+                if values is None:
+                    return None, None, None
+                total, free = values
+            else:
                 usage = shutil.disk_usage(parent)
-                total_gb = usage.total / (1024 ** 3)
-                free_gb = usage.free / (1024 ** 3)
-                free_percent = (usage.free / usage.total) * 100 if usage.total > 0 else 0.0
-                return free_percent, total_gb, free_gb
-            except (OSError, IOError) as e:
-                # 检查失败返回None（区别于0%）
-                logger.debug(f"磁盘空间检查失败: {type(e).__name__}: {e}")
-                return None, None, None
-        
-        result = self._safe_path_operation(check, timeout=2.0, default=(None, None, None))
-        return result if result is not None else (None, None, None)
+                total, free = usage.total, usage.free
+            total_gb = total / (1024 ** 3)
+            free_gb = free / (1024 ** 3)
+            free_percent = (free / total) * 100 if total > 0 else 0.0
+            return free_percent, total_gb, free_gb
+        except (OSError, IOError, TypeError, ValueError) as exc:
+            logger.debug(f"磁盘空间检查失败: {type(exc).__name__}: {exc}")
+            return None, None, None
 
     def _ensure_disk_space(self) -> bool:
         """检查磁盘空间，不足时通知主窗口执行清理。
@@ -1292,23 +1592,110 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             return False
         return True
 
-    def _get_image_files(self) -> List[str]:
-        """扫描图片文件"""
-        def scan():
-            if not os.path.exists(self.source):
-                return []
-            files = []
-            for root, _, names in os.walk(self.source):
+    def _stream_remote_files(
+        self, root_path: str, filters: Optional[List[str]] = None
+    ) -> Iterator[str]:
+        if time.monotonic() < self._fileop_circuit_until:
+            return
+        if not self._fileop_slots.acquire(blocking=False):
+            return
+        process: Optional[subprocess.Popen[Any]] = None
+        try:
+            command = (
+                "$ErrorActionPreference='Stop'; "
+                "$OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); "
+                "$p=$env:IMAGE_UPLOAD_FILEOP_PATH; "
+                "Get-ChildItem -LiteralPath $p -File -Recurse | "
+                "ForEach-Object { [Console]::Out.WriteLine($_.FullName) }"
+            )
+            env = os.environ.copy()
+            env["IMAGE_UPLOAD_FILEOP_PATH"] = _normalize_windows_path_for_check(
+                root_path
+            )
+            create_flag = (
+                subprocess.CREATE_NO_WINDOW
+                if os.name == 'nt' and hasattr(subprocess, 'CREATE_NO_WINDOW')
+                else 0
+            )
+            process = subprocess.Popen(
+                [
+                    'powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive',
+                    '-Command', command,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                creationflags=create_flag,
+                env=env,
+            )
+            with self._fileop_lock:
+                self._fileop_processes.add(process)
+            stdout = process.stdout
+            if stdout is None:
+                return
+            for raw_line in iter(stdout.readline, b""):
+                if not self._running:
+                    process.kill()
+                    break
+                path = raw_line.decode("utf-8-sig", errors="replace").rstrip("\r\n")
+                ext = os.path.splitext(path)[1].lower()
+                if path and (not filters or ext in filters):
+                    yield path
+            process.wait(timeout=1)
+        except Exception as exc:
+            logger.debug("网络目录流式扫描失败: %s: %s", type(exc).__name__, exc)
+            if process is not None:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+        finally:
+            if process is not None:
+                with self._fileop_lock:
+                    self._fileop_processes.discard(process)
+            self._fileop_slots.release()
+
+    def _stream_remote_image_files(self) -> Iterator[str]:
+        for path in self._stream_remote_files(self.source, self.filters):
+            if (
+                self._archive_repository.normalize(path)
+                not in self._pending_archive_sources
+            ):
+                yield path
+
+    def _iter_target_files(self, target_dir: str) -> Iterator[str]:
+        if self._is_remote_path(target_dir):
+            yield from self._stream_remote_files(target_dir)
+            return
+        for root, _, names in os.walk(target_dir):
+            for name in names:
+                yield os.path.join(root, name)
+
+    def _get_image_files(self) -> Iterable[str]:
+        """流式遍历图片文件，不构造全量路径列表。"""
+        if self._is_remote_path(self.source):
+            yield from self._stream_remote_image_files()
+            return
+        if not os.path.exists(self.source):
+            return
+        for root, _, names in os.walk(self.source):
+            if not self._running:
+                break
+            for name in names:
                 if not self._running:
                     break
-                for n in names:
-                    ext = os.path.splitext(n)[1].lower()
-                    if not self.filters or ext in self.filters:
-                        files.append(os.path.join(root, n))
-            return files
-        
-        result = self._safe_path_operation(scan, timeout=5.0, default=[])
-        return result if result is not None else []
+                ext = os.path.splitext(name)[1].lower()
+                if not self.filters or ext in self.filters:
+                    path = os.path.join(root, name)
+                    if (
+                        self._archive_repository.normalize(path)
+                        not in self._pending_archive_sources
+                    ):
+                        yield path
+
+    def _wait_before_upload(self, images: List[str]) -> None:
+        """发现待上传文件后，按配置延迟本轮上传。"""
+        if images and self.file_upload_delay_seconds > 0:
+            time.sleep(self.file_upload_delay_seconds)
 
     def _run(self) -> None:
         """主运行循环"""
@@ -1393,13 +1780,27 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 self._process_retry_queue()
 
                 # 扫描文件
-                images = self._get_image_files()
-                self.total_files = len(images)
+                images = iter(self._get_image_files())
+                try:
+                    first_image = next(images)
+                except StopIteration:
+                    first_image = None
+                if first_image is not None:
+                    initial_image: str = first_image
+                    self._wait_before_upload([initial_image])
+                    def include_first() -> Iterator[str]:
+                        yield initial_image
+                        yield from images
+                    image_stream: Iterable[str] = include_first()
+                else:
+                    image_stream = ()
+                self.total_files = 0
                 self.current = 0
                 self.progress.emit(self.current, self.total_files, "")
 
                 # 处理每个文件
-                for path in images:
+                for path in image_stream:
+                    self.total_files += 1
                     if not self._running:
                         break
                     if not self._ensure_disk_space():
@@ -1445,10 +1846,10 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                     # 创建目标目录（FTP-only 不需要本地目标目录）
                     if self.upload_protocol in ('smb', 'both'):
                         try:
-                            self._safe_path_operation(
-                                lambda: os.makedirs(os.path.dirname(tgt), exist_ok=True),
-                                timeout=3.0
-                            )
+                            if not self._safe_make_dirs(
+                                os.path.dirname(tgt), timeout=3.0
+                            ):
+                                raise OSError("目标目录创建失败")
                         except Exception as e:
                             self._log_event(
                                 "❌",
@@ -1471,9 +1872,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                         # 检查文件是否已存在（FTP-only 不依赖本地目标路径）
                         tgt_exists = False
                         if self.upload_protocol in ('smb', 'both'):
-                            tgt_exists = self._safe_path_operation(
-                                os.path.exists, tgt, timeout=2.0, default=False
-                            )
+                            tgt_exists = self._safe_path_exists(tgt, timeout=2.0)
                         
                         if tgt_exists and not self.enable_deduplication and self.upload_protocol != 'both':
                             self._log_event("⏭", "EXISTS_SKIP", "文件已存在，已跳过", file=fname)
@@ -1497,6 +1896,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
 
                             should_upload = True
                             final_target = tgt
+                            src_hash = ""
                             if dedup_supported:
                                 duplicate_path = ""
                                 src_hash = self._calculate_file_hash(path)
@@ -1509,7 +1909,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                                         self.log.emit("?? 哈希计算失败，按同名文件处理")
                                     duplicate_path = tgt
                                 elif src_hash:
-                                    duplicate_path = self._find_duplicate_by_hash(src_hash, self.target)
+                                    duplicate_path = self._find_duplicate_by_hash(
+                                        src_hash, self.target, self.current_file_size
+                                    )
 
                                 if duplicate_path:
                                     self._log_event(
@@ -1528,7 +1930,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                                         self.skipped_count += 1
                                         self.stats.emit(self.uploaded_count, self.failed_count, self.skipped_count, self.rate)
                                         self.file_progress.emit(fname, 100)
-                                        self.archive_queue.put((path, bkp))
+                                        self._queue_archive(path, bkp)
                                         should_upload = False
                                     elif choice == 'rename':
                                         self._log_event("ℹ️", "DUP_RENAME", "重复文件将重命名上传", file=fname)
@@ -1540,11 +1942,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                             # 执行上传
                             if should_upload:
                                 if self.upload_protocol in ('smb', 'both'):
-                                    def create_dir():
-                                        os.makedirs(os.path.dirname(final_target), exist_ok=True)
-                                    
-                                    dir_created = self._safe_path_operation(
-                                        create_dir, timeout=3.0, default=False
+                                    dir_created = self._safe_make_dirs(
+                                        os.path.dirname(final_target), timeout=3.0
                                     )
                                     
                                     if dir_created is False:
@@ -1575,7 +1974,11 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                                 self.stats.emit(self.uploaded_count, self.failed_count, self.skipped_count, self.rate)
                                 self.file_progress.emit(fname, 100)
                                 self.log.emit(f"✓ 上传成功: {os.path.basename(final_target)}")
-                                self.archive_queue.put((path, bkp))
+                                if self.upload_protocol in ('smb', 'both'):
+                                    self.local_file_generated.emit(final_target, "upload")
+                                    if dedup_supported:
+                                        self._record_dedup_target(final_target, src_hash)
+                                self._queue_archive(path, bkp)
                             else:
                                 self.file_progress.emit(fname, 100)
                                 

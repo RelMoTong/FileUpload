@@ -5,8 +5,12 @@
 负责配置文件的加载、保存和默认值生成
 """
 import copy
+from datetime import datetime
 import json
+import os
 from pathlib import Path
+import shutil
+import tempfile
 from typing import Dict, Any, Optional
 
 
@@ -19,6 +23,7 @@ class ConfigManager:
         'backup_folder': '',
         'enable_backup': True,
         'upload_interval': 30,
+        'file_upload_delay_seconds': 1.5,
         'monitor_mode': 'periodic',
         'disk_threshold_percent': 10,
         'retry_count': 3,
@@ -61,7 +66,6 @@ class ConfigManager:
         'language': 'zh_CN',
         # v3.0.2 新增：断点续传设置
         'enable_resume': True,
-        'resume_min_size_mb': 10,
         # FTP 服务器配置
         'ftp_server': {
             'host': '0.0.0.0',
@@ -74,6 +78,8 @@ class ConfigManager:
             'passive_ports_start': 60000,
             'passive_ports_end': 65535,
             'enable_tls': False,
+            'cert_file': '',
+            'key_file': '',
             'max_connections': 256,
             'max_connections_per_ip': 5,
         },
@@ -102,6 +108,7 @@ class ConfigManager:
         """
         self.config_path = config_path
         self._config: Dict[str, Any] = {}
+        self.last_error = ''
 
     @staticmethod
     def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -120,6 +127,7 @@ class ConfigManager:
         Returns:
             配置字典
         """
+        self.last_error = ''
         if not self.config_path.exists():
             self._config = copy.deepcopy(self.DEFAULT_CONFIG)
             self.save(self._config)
@@ -136,12 +144,26 @@ class ConfigManager:
                 self.save(merged_config)
             return copy.deepcopy(self._config)
         except Exception as e:
-            print(f"配置加载失败: {e}")
+            backup_path: Optional[Path] = None
+            backup_error = ""
+            try:
+                timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+                backup_path = self.config_path.with_name(
+                    f"{self.config_path.name}.corrupt-{timestamp}.bak"
+                )
+                shutil.copy2(self.config_path, backup_path)
+            except Exception as backup_exc:
+                backup_error = f"；损坏配置备份失败: {backup_exc}"
+            backup_text = f"；备份: {backup_path}" if backup_path else ""
+            self.last_error = (
+                f"配置文件解析失败，原文件未覆盖{backup_text}: "
+                f"{type(e).__name__}: {e}{backup_error}"
+            )
+            print(self.last_error)
             self._config = copy.deepcopy(self.DEFAULT_CONFIG)
-            self.save(self._config)
             return copy.deepcopy(self._config)
     
-    def save(self, config: Dict[str, Any]) -> bool:
+    def save(self, config: Dict[str, Any], preserve_users: bool = True) -> bool:
         """保存配置文件
         
         Args:
@@ -150,24 +172,59 @@ class ConfigManager:
         Returns:
             是否保存成功
         """
+        self.last_error = ''
+        temp_path: Optional[Path] = None
+        descriptor: Optional[int] = None
         try:
-            # 保留现有的用户密码
+            payload = copy.deepcopy(config)
+            # 合并现有有效配置，避免旧版本未知字段被无意丢弃。
+            old_cfg: Dict[str, Any] = {}
             if self.config_path.exists():
                 try:
                     with open(self.config_path, 'r', encoding='utf-8') as f:
                         old_cfg = json.load(f)
-                        config['users'] = old_cfg.get('users', {})
+                    if isinstance(old_cfg, dict):
+                        payload = self._deep_merge(old_cfg, payload)
+                    else:
+                        old_cfg = {}
+                    # 保留现有的用户密码。
+                    if preserve_users:
+                        payload['users'] = old_cfg.get('users', {})
                 except Exception:
                     pass
-            
-            with open(self.config_path, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
-            
-            self._config = copy.deepcopy(config)
+
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, raw_temp_path = tempfile.mkstemp(
+                prefix=f".{self.config_path.name}.",
+                suffix=".tmp",
+                dir=str(self.config_path.parent),
+            )
+            temp_path = Path(raw_temp_path)
+            with os.fdopen(descriptor, 'w', encoding='utf-8', newline='') as f:
+                descriptor = None
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, self.config_path)
+            temp_path = None
+
+            self._config = copy.deepcopy(payload)
             return True
         except Exception as e:
+            self.last_error = str(e)
             print(f"配置保存失败: {e}")
             return False
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
     
     def get(self, key: str, default: Any = None) -> Any:
         """获取配置项

@@ -188,6 +188,22 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '启用 TLS/SSL (FTPS)',
         LANG_EN_US: 'Enable TLS/SSL (FTPS)',
     },
+    'tls_cert_file': {
+        LANG_ZH_CN: 'TLS 证书:',
+        LANG_EN_US: 'TLS Certificate:',
+    },
+    'tls_key_file': {
+        LANG_ZH_CN: 'TLS 私钥:',
+        LANG_EN_US: 'TLS Private Key:',
+    },
+    'select_tls_cert': {
+        LANG_ZH_CN: '选择 TLS 证书文件',
+        LANG_EN_US: 'Select TLS certificate file',
+    },
+    'select_tls_key': {
+        LANG_ZH_CN: '选择 TLS 私钥文件',
+        LANG_EN_US: 'Select TLS private key file',
+    },
     'test_config': {
         LANG_ZH_CN: '🧪 测试配置',
         LANG_EN_US: '🧪 Test Config',
