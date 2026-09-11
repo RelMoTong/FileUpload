@@ -92,6 +92,7 @@ def run_packaged_release_probe(
     creating lazy databases before their features are used.
     """
     from src.core import ResumeManager, get_resource_path
+    from src.core.file_identity import FileIdentity
     from src.core.i18n import LANG_EN_US, LANG_ZH_CN, TRANSLATIONS
     from src.protocols.ftp import FTPServerManager, TLS_FTPHandler
     from src.repositories import DedupIndexRepository, PendingArchiveRepository
@@ -160,10 +161,20 @@ def run_packaged_release_probe(
 
     try:
         archive_repository = PendingArchiveRepository(app_dir)
-        probe_source = str(app_dir / ".release-smoke-source")
-        probe_target = str(app_dir / ".release-smoke-target")
-        archive_ok = archive_repository.add(probe_source, probe_target, "delete")
-        archive_ok = archive_ok and archive_repository.remove(probe_source)
+        probe_source_path = app_dir / ".release-smoke-source"
+        try:
+            probe_source_path.write_bytes(b"release-smoke")
+            probe_source = str(probe_source_path)
+            probe_target = str(app_dir / ".release-smoke-target")
+            archive_ok = archive_repository.add(
+                probe_source,
+                probe_target,
+                "delete",
+                FileIdentity.capture(probe_source_path),
+            )
+            archive_ok = archive_ok and archive_repository.remove(probe_source)
+        finally:
+            probe_source_path.unlink(missing_ok=True)
         record(
             "pending_archive_journal",
             archive_ok and archive_repository.path.is_file(),

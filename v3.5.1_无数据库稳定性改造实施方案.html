@@ -341,25 +341,25 @@
         </div>
       </article>
 
-      <article class="task" id="task-P0-02" data-status="pending" data-phase="0">
-        <div class="task-head"><input class="task-check" id="check-P0-02" type="checkbox" disabled><div class="task-title"><h4>P0-02｜修正 FTP 误报成功与连接竞态</h4><p><span class="badge critical">P0</span>依赖：GATE-00</p></div></div>
+      <article class="task" id="task-P0-02" data-status="done" data-phase="0">
+        <div class="task-head"><input class="task-check" id="check-P0-02" type="checkbox" checked disabled><div class="task-title"><h4>P0-02｜修正 FTP 误报成功与连接竞态</h4><p><span class="badge critical">P0</span>依赖：GATE-00</p></div></div>
         <div class="task-grid">
           <div><h5>目标</h5><p>任何未实际执行并确认完成的上传都必须返回失败，断线不能落入成功分支。</p></div>
           <div><h5>主要文件</h5><p><code>src/protocols/ftp.py</code>、FTP 调用方、FTP 单元与并发测试。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>在一次上传调用内锁定连接所有权或获取稳定连接快照，禁止检查与使用之间被清空。</li><li>连接为空、已关闭、命令未执行、服务器响应异常一律显式失败。</li><li>成功值只由完整 <code>STOR</code> 和响应确认产生；补充字节数/远端大小核验接口。</li><li>统一异常到结构化传输结果，移除“仅日志记录后继续成功”的路径。</li><li>加入断线、上传中关闭、对象变为 <code>None</code>、服务器拒绝四类故障注入。</li></ol></div>
-          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>原复现 <code>ftp_returns_success_without_socket=True</code> 变为失败。</li><li><input type="checkbox" disabled>失败不会进入归档或源文件删除。</li><li><input type="checkbox" disabled>并发断线测试连续运行无误报成功。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜日期：—｜测试证据：—｜提交：—｜回退点：—</p></div>
+          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" checked disabled>原复现 <code>ftp_returns_success_without_socket=True</code> 变为失败。</li><li><input type="checkbox" checked disabled>失败不会进入归档或源文件删除。</li><li><input type="checkbox" checked disabled>并发断线测试连续运行无误报成功。</li></ul></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">已完成</span>｜开始/完成：2026-09-11｜变更文件：src/protocols/ftp.py、src/workers/upload_worker.py、tests/test_ftp_upload_commit.py｜实现：连接代际快照、STOR 响应/字节数/远端大小确认、断线失败关闭、结构化结果日志｜测试证据：任务级 31 passed（含 25 次上传中断线循环、远端大小确认期间断线、空连接、服务器拒绝与非 2xx 响应）；完整回归 179 passed、1 skipped、5 subtests passed；pyright 0 errors；git diff --check 通过｜提交/补丁：P0-02 未提交工作区补丁（仅上述 3 个代码/测试文件）｜回退点：P0-01 完成提交 3463752</p></div>
         </div>
       </article>
 
-      <article class="task" id="task-P0-03" data-status="pending" data-phase="0">
-        <div class="task-head"><input class="task-check" id="check-P0-03" type="checkbox" disabled><div class="task-title"><h4>P0-03｜为待归档记录绑定精确文件代际</h4><p><span class="badge critical">P0</span>依赖：GATE-00、P0-01</p></div></div>
+      <article class="task" id="task-P0-03" data-status="done" data-phase="0">
+        <div class="task-head"><input class="task-check" id="check-P0-03" type="checkbox" checked disabled><div class="task-title"><h4>P0-03｜为待归档记录绑定精确文件代际</h4><p><span class="badge critical">P0</span>依赖：GATE-00、P0-01</p></div></div>
         <div class="task-grid">
           <div><h5>目标</h5><p>路径相同但内容已更新时，绝不能移动或删除新生成的文件。</p></div>
           <div><h5>主要文件</h5><p><code>src/repositories/pending_archive_repository.py</code>、<code>src/workers/upload_worker.py</code>、文件身份工具。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>定义 <code>FileIdentity</code>：规范路径、size、mtime_ns，并在必要时加入 inode/file-id 与内容摘要。</li><li>扫描时冻结身份；上传成功后把身份、目标、协议结果、创建时间写入待归档记录。</li><li>归档前重新读取身份，逐字段核对；不一致则将旧记录标记 stale，不操作当前文件。</li><li>兼容读取旧格式记录，但只允许安全跳过，不允许无身份执行。</li><li>增加“上传后同路径被快速覆盖”“文件删除后重建”“时间戳碰撞”测试。</li></ol></div>
-          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>原复现 <code>archive_moves_new_generation=True</code> 变为 false。</li><li><input type="checkbox" disabled>代际不一致产生清晰日志和可处理状态。</li><li><input type="checkbox" disabled>旧记录不会误处理现场新文件。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜日期：—｜状态格式版本：—｜测试：—｜回退：—</p></div>
+          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" checked disabled>原复现 <code>archive_moves_new_generation=True</code> 变为 false。</li><li><input type="checkbox" checked disabled>代际不一致产生清晰日志和可处理状态。</li><li><input type="checkbox" checked disabled>旧记录不会误处理现场新文件。</li></ul></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">已完成</span>｜开始/完成：2026-09-11｜状态格式版本：2（identity、protocol_results、created_at、state）｜变更文件：src/core/file_identity.py、src/repositories/pending_archive_repository.py、src/workers/upload_worker.py、src/main.py、tests/test_pending_archive.py｜实现：SHA-256 身份快照、归档前复核、身份不符/旧记录标记 stale 并保留审计、解除新一代文件扫描阻塞｜测试证据：任务级 9 passed（同路径覆盖、删除后重建、同大小时间戳碰撞、旧记录恢复）；完整回归 183 passed、1 skipped、5 subtests passed；pyright 0 errors；git diff --check 通过｜提交/补丁：P0-02/P0-03 未提交工作区补丁｜回退点：P0-02 未提交工作区补丁</p></div>
         </div>
       </article>
 

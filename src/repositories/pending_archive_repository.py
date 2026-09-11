@@ -7,7 +7,13 @@ import os
 from pathlib import Path
 import tempfile
 import threading
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Mapping
+
+from src.core.file_identity import FileIdentity
+
+
+ARCHIVE_RECORD_SCHEMA_VERSION = 2
 
 
 class PendingArchiveRepository:
@@ -27,16 +33,48 @@ class PendingArchiveRepository:
                 return ()
             return tuple(dict(value) for value in records.values())
 
-    def add(self, source: str, destination: str, action: str) -> bool:
+    def add(
+        self,
+        source: str,
+        destination: str,
+        action: str,
+        identity: FileIdentity,
+        protocol_results: Mapping[str, bool] | None = None,
+    ) -> bool:
+        """Persist an archive request bound to one exact source generation."""
         with self._lock:
+            if identity.normalized_path != self.normalize(source):
+                self.last_error = "ValueError: archive identity path does not match source"
+                return False
             records = self._read()
             if records is None:
                 return False
             records[self.normalize(source)] = {
+                "schema_version": ARCHIVE_RECORD_SCHEMA_VERSION,
                 "source": source,
                 "destination": destination,
                 "action": action,
+                "identity": identity.to_mapping(),
+                "protocol_results": dict(protocol_results or {}),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "state": "pending",
             }
+            return self._write(records)
+
+    def mark_stale(self, source: str, reason: str) -> bool:
+        """Retain an unsafe record as audit evidence without executing it."""
+        with self._lock:
+            records = self._read()
+            if records is None:
+                return False
+            record = records.get(self.normalize(source))
+            if record is None:
+                self.last_error = "KeyError: pending archive record not found"
+                return False
+            record["state"] = "stale"
+            record["stale_reason"] = reason
+            record["stale_at"] = datetime.now(timezone.utc).isoformat()
+            records[self.normalize(source)] = record
             return self._write(records)
 
     def remove(self, source: str) -> bool:

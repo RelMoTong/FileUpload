@@ -47,6 +47,7 @@ except ImportError:
     FTPClientUploader = None  # type: ignore[assignment, misc]
 
 # 导入断点续传模块
+from src.core.file_identity import FileIdentity
 from src.core.resume_manager import ResumeManager, ResumableFileUploader
 from src.repositories import DedupIndexRepository, PendingArchiveRepository
 
@@ -982,6 +983,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             bkp = os.path.join(self.backup, rel)
             
             try:
+                # Freeze the exact generation before this retry starts.  The
+                # archive action may only operate on this same identity.
+                archive_identity = FileIdentity.capture(file_path)
                 protocol_state = item.get('protocol_state', {})
                 if self.upload_protocol in ('smb', 'both'):
                     tgt_exists = self._safe_path_exists(tgt, timeout=2.0)
@@ -1000,7 +1004,12 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 if not copy_success:
                     raise Exception("文件上传失败")
 
-                self._queue_archive(file_path, bkp)
+                self._queue_archive(
+                    file_path,
+                    bkp,
+                    archive_identity,
+                    protocol_state,
+                )
                 del self.retry_queue[file_path]
                 self.uploaded_count += 1
                 self.stats.emit(self.uploaded_count, self.failed_count, self.skipped_count, self.rate)
@@ -1153,8 +1162,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             remote_path = self.ftp_client_config.get('remote_path', '/upload')
             remote_file = f"{remote_path}/{rel_path}".replace('\\', '/')
             
-            success = self.ftp_client.upload_file(Path(src), remote_file)
-            if success:
+            transfer = self.ftp_client.upload_file_result(Path(src), remote_file)
+            if transfer.success:
                 self._log_event(
                     "✅",
                     "FTP_OK",
@@ -1169,7 +1178,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                     "FTP_UPLOAD",
                     "FTP 上传失败",
                     file=os.path.basename(remote_file),
-                    remote=remote_file
+                    remote=remote_file,
+                    ftp_result_code=transfer.status.get("code", "unknown"),
+                    error=transfer.message,
                 )
                 return False
                 
@@ -1438,9 +1449,20 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         action = str(item.get("action", "move")).lower()
         if not src_path:
             raise ValueError("待归档记录缺少源路径")
-        if not os.path.exists(src_path):
-            self._complete_archive_record(src_path)
+        expected_identity = self._archive_identity_from_item(item, src_path)
+        if expected_identity is None:
             return
+        try:
+            if not expected_identity.matches_path(src_path):
+                self._mark_archive_stale(src_path, "source_identity_changed")
+                return
+        except FileNotFoundError:
+            self._mark_archive_stale(src_path, "source_missing_or_recreated")
+            return
+        except OSError as exc:
+            # Identity could not be verified.  Keep the durable pending record
+            # and do not take a destructive archive action.
+            raise OSError(f"归档前无法确认源文件身份: {type(exc).__name__}: {exc}") from exc
         if action == "move":
             parent = os.path.dirname(bkp_path)
             if not bkp_path or not parent:
@@ -1460,9 +1482,61 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             raise ValueError(f"未知归档动作: {action}")
         self._complete_archive_record(src_path)
 
-    def _queue_archive(self, source: str, destination: str) -> bool:
+    def _archive_identity_from_item(
+        self,
+        item: Dict[str, Any],
+        source: str,
+    ) -> Optional[FileIdentity]:
+        """Read an actionable v2 identity; legacy records are fail-closed."""
+        try:
+            identity_data = item.get("identity")
+            if not isinstance(identity_data, dict):
+                raise ValueError("missing identity")
+            identity = FileIdentity.from_mapping(identity_data)
+            if identity.normalized_path != self._archive_repository.normalize(source):
+                raise ValueError("identity path does not match source")
+            return identity
+        except (TypeError, ValueError) as exc:
+            self._mark_archive_stale(source, f"unsafe_record:{exc}")
+            return None
+
+    def _mark_archive_stale(self, source: str, reason: str) -> None:
+        """Make an unsafe record auditable and allow a new generation to scan."""
+        if self._archive_repository.mark_stale(source, reason):
+            self._pending_archive_sources.discard(
+                self._archive_repository.normalize(source)
+            )
+            self._log_event(
+                "⚠️",
+                "ARCHIVE_STALE",
+                "待归档文件身份已变化，已跳过归档",
+                file=os.path.basename(source),
+                reason=reason,
+            )
+            return
+        self._log_event(
+            "❌",
+            "ARCHIVE_JOURNAL",
+            "无法标记不安全的待归档记录",
+            file=os.path.basename(source),
+            error=self._archive_repository.last_error,
+        )
+
+    def _queue_archive(
+        self,
+        source: str,
+        destination: str,
+        identity: FileIdentity,
+        protocol_results: Optional[Dict[str, bool]] = None,
+    ) -> bool:
         action = "move" if self.enable_backup else "delete"
-        if not self._archive_repository.add(source, destination, action):
+        if not self._archive_repository.add(
+            source,
+            destination,
+            action,
+            identity,
+            protocol_results,
+        ):
             self._log_event(
                 "❌", "ARCHIVE_JOURNAL", "无法保存待归档记录，源文件已保留",
                 file=os.path.basename(source), error=self._archive_repository.last_error,
@@ -1474,7 +1548,13 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             return True
         self._queued_archive_sources.add(normalized)
         self.archive_queue.put(
-            {"source": source, "destination": destination, "action": action}
+            {
+                "source": source,
+                "destination": destination,
+                "action": action,
+                "identity": identity.to_mapping(),
+                "protocol_results": dict(protocol_results or {}),
+            }
         )
         return True
 
@@ -1495,8 +1575,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             source = str(record.get("source", ""))
             if not source:
                 continue
-            if not os.path.exists(source):
-                self._archive_repository.remove(source)
+            if record.get("state") == "stale":
+                continue
+            if self._archive_identity_from_item(record, source) is None:
                 continue
             self._pending_archive_sources.add(
                 self._archive_repository.normalize(source)
@@ -1886,6 +1967,12 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                             except (OSError, IOError) as e:
                                 logger.debug(f"获取文件大小失败 {fname}: {type(e).__name__}")
                                 self.current_file_size = 0
+
+                            # This snapshot is bound to the upload (or the
+                            # duplicate-skip decision) and checked again by
+                            # the separate archive thread before it mutates
+                            # the source path.
+                            archive_identity = FileIdentity.capture(path)
                             
                             self.file_progress.emit(fname, 0)
                             
@@ -1930,7 +2017,12 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                                         self.skipped_count += 1
                                         self.stats.emit(self.uploaded_count, self.failed_count, self.skipped_count, self.rate)
                                         self.file_progress.emit(fname, 100)
-                                        self._queue_archive(path, bkp)
+                                        self._queue_archive(
+                                            path,
+                                            bkp,
+                                            archive_identity,
+                                            protocol_state,
+                                        )
                                         should_upload = False
                                     elif choice == 'rename':
                                         self._log_event("ℹ️", "DUP_RENAME", "重复文件将重命名上传", file=fname)
@@ -1978,7 +2070,12 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                                     self.local_file_generated.emit(final_target, "upload")
                                     if dedup_supported:
                                         self._record_dedup_target(final_target, src_hash)
-                                self._queue_archive(path, bkp)
+                                self._queue_archive(
+                                    path,
+                                    bkp,
+                                    archive_identity,
+                                    protocol_state,
+                                )
                             else:
                                 self.file_progress.emit(fname, 100)
                                 

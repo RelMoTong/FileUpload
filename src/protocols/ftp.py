@@ -26,6 +26,8 @@ from pyftpdlib.servers import FTPServer
 from typing import Optional, Callable, Tuple, Dict, List, Union, cast
 from queue import Queue
 
+from src.models import FTPOperationResult
+
 # 配置日志
 logger = logging.getLogger(__name__)
 
@@ -424,7 +426,12 @@ class FTPClientUploader:
         self.config = config
         self.ftp: Optional[Union[FTP, FTP_TLS]] = None
         self.connected = False
+        # `_lock` serializes connect and transfer operations.  Connection state
+        # has a separate lock because disconnect/cancel must be able to close a
+        # blocked socket without waiting for a long-running STOR call.
         self._lock = threading.Lock()
+        self._connection_lock = threading.Lock()
+        self._connection_epoch = 0
         self._cancel_event = threading.Event()
         
         logger.info(f"FTP 客户端初始化: {config.get('name', 'Unknown')} -> {config.get('host')}")
@@ -457,7 +464,9 @@ class FTPClientUploader:
             return False
 
         with self._lock:
-            if self.connected:
+            with self._connection_lock:
+                already_connected = self.connected
+            if already_connected:
                 logger.warning("已连接到 FTP 服务器")
                 return True
 
@@ -485,7 +494,18 @@ class FTPClientUploader:
                         # 普通 FTP 连接
                         candidate = FTP()
                         logger.info("使用普通 FTP 连接")
-                    self.ftp = candidate
+                    # Publish the candidate before I/O so disconnect() can
+                    # actively close a connect/login operation.  The epoch
+                    # binds every later upload confirmation to this exact
+                    # connection generation.
+                    with self._connection_lock:
+                        if cancelled():
+                            candidate.close()
+                            logger.info("FTP 连接在开始前已取消")
+                            return False
+                        self.ftp = candidate
+                        self.connected = False
+                        self._connection_epoch += 1
                     
                     # 连接
                     host = str(self.config.get('host', ''))
@@ -518,15 +538,16 @@ class FTPClientUploader:
                     # 设置编码
                     candidate.encoding = 'utf-8'
 
-                    if cancelled():
+                    with self._connection_lock:
+                        is_current_candidate = self.ftp is candidate
+                        if not cancelled() and is_current_candidate:
+                            self.connected = True
+                            logger.info(f"✓ 已连接到 FTP 服务器：{self.config.get('host')}")
+                            return True
+                    if cancelled() or not is_current_candidate:
                         candidate.close()
-                        self.ftp = None
                         logger.info("FTP 连接在完成前已取消")
                         return False
-                    
-                    self.connected = True
-                    logger.info(f"✓ 已连接到 FTP 服务器：{self.config.get('host')}")
-                    return True
                     
                 except Exception as e:
                     logger.error(f"连接失败 (尝试 {attempt + 1}/{retry_count})：{e}")
@@ -540,8 +561,11 @@ class FTPClientUploader:
                         except Exception as e:
                             # 意外的关闭错误
                             logger.debug(f"FTP关闭异常: {type(e).__name__}: {e}")
-                    if self.ftp is candidate:
-                        self.ftp = None
+                    with self._connection_lock:
+                        if self.ftp is candidate:
+                            self.ftp = None
+                            self.connected = False
+                            self._connection_epoch += 1
                     if cancelled():
                         logger.info("FTP 连接已取消")
                         return False
@@ -554,7 +578,8 @@ class FTPClientUploader:
                     else:
                         logger.error("连接 FTP 服务器失败，已达最大重试次数")
             
-            self.connected = False
+            with self._connection_lock:
+                self.connected = False
             return False
     
     def disconnect(self) -> bool:
@@ -565,10 +590,12 @@ class FTPClientUploader:
             bool: 断开是否成功
         """
         self._cancel_event.set()
-        ftp = self.ftp
-        self.ftp = None
-        was_active = self.connected or ftp is not None
-        self.connected = False
+        with self._connection_lock:
+            ftp = self.ftp
+            self.ftp = None
+            was_active = self.connected or ftp is not None
+            self.connected = False
+            self._connection_epoch += 1
         if ftp is None:
             if not was_active:
                 logger.warning("未连接到 FTP 服务器")
@@ -584,13 +611,7 @@ class FTPClientUploader:
 
     def cancel(self) -> None:
         """非阻塞请求取消连接、重试等待或当前 FTP 操作。"""
-        self._cancel_event.set()
-        ftp = self.ftp
-        if ftp is not None:
-            try:
-                ftp.close()
-            except Exception:
-                pass
+        self.disconnect()
     
     def upload_file(
         self,
@@ -600,86 +621,275 @@ class FTPClientUploader:
         enable_speed_limit: bool = False,
         speed_limit_mbps: int = 10
     ) -> bool:
-        """
-        上传单个文件
-        
-        Args:
-            local_path: 本地文件路径
-            remote_path: 远程文件路径（可选，默认使用配置中的路径）
-            progress_callback: 进度回调函数 callback(uploaded_bytes, total_bytes)
-            enable_speed_limit: v2.2.0 是否启用速度限制
-            speed_limit_mbps: v2.2.0 速度限制（MB/s）
-        
-        Returns:
-            bool: 上传是否成功
-        """
-        if not self.connected:
-            logger.error("未连接到 FTP 服务器")
-            return False
-        
-        try:
-            local_file = Path(local_path)
-            if not local_file.exists():
-                logger.error(f"文件不存在：{local_path}")
-                return False
-            
-            # 确定远程路径
-            if remote_path is None:
-                base_remote = self.config.get('remote_path', '/')
-                remote_path = f"{base_remote}/{local_file.name}"
-            
-            # 标准化远程路径：FTP协议要求使用正斜杠
-            remote_path = remote_path.replace('\\', '/')
-            # 移除Windows盘符（C:/ → /）
-            if len(remote_path) > 2 and remote_path[1] == ':':
-                remote_path = remote_path[2:]
-            # 确保以 / 开头
-            if not remote_path.startswith('/'):
-                remote_path = '/' + remote_path
-            
-            # 确保远程目录存在
-            remote_dir = os.path.dirname(remote_path)
-            self._ensure_remote_dir(remote_dir)
-            
-            # 获取文件大小
-            file_size = local_file.stat().st_size
-            uploaded_bytes = 0
-            
-            # v2.2.0 限速相关变量
-            speed_limit_bytes_per_sec = speed_limit_mbps * 1024 * 1024 if enable_speed_limit else 0
-            last_chunk_time = time.time()
-            
-            # 定义进度回调（带限速）
-            def callback(block):
-                nonlocal uploaded_bytes, last_chunk_time
-                chunk_start = last_chunk_time
-                uploaded_bytes += len(block)
-                if progress_callback:
-                    progress_callback(uploaded_bytes, file_size)
-                
-                # v2.2.0 限速：在每个块传输后等待
-                if enable_speed_limit and speed_limit_bytes_per_sec > 0:
-                    expected_time = len(block) / speed_limit_bytes_per_sec
-                    actual_time = time.time() - chunk_start
-                    if actual_time < expected_time:
-                        time.sleep(expected_time - actual_time)
-                
+        """Compatibility wrapper around the structured transfer result."""
+        return self.upload_file_result(
+            local_path,
+            remote_path,
+            progress_callback,
+            enable_speed_limit,
+            speed_limit_mbps,
+        ).success
+
+    def upload_file_result(
+        self,
+        local_path: Path,
+        remote_path: Optional[str] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        enable_speed_limit: bool = False,
+        speed_limit_mbps: int = 10,
+    ) -> FTPOperationResult:
+        """Upload once and report success only after explicit confirmation."""
+
+        def make_result(
+            success: bool,
+            code: str,
+            message: str,
+            *,
+            command_executed: bool = False,
+            normalized_remote: str = "",
+            local_size: int = -1,
+            uploaded_bytes: int = 0,
+            remote_size: Optional[int] = None,
+            response: str = "",
+        ) -> FTPOperationResult:
+            return FTPOperationResult(
+                success,
+                message,
+                errors=() if success else (message,),
+                status={
+                    "code": code,
+                    "command_executed": command_executed,
+                    "remote_path": normalized_remote,
+                    "local_size": local_size,
+                    "uploaded_bytes": uploaded_bytes,
+                    "remote_size": remote_size,
+                    "response": response,
+                },
+            )
+
+        local_file = Path(local_path)
+        if not local_file.is_file():
+            message = f"文件不存在：{local_path}"
+            logger.error(message)
+            return make_result(False, "local_missing", message)
+
+        if remote_path is None:
+            base_remote = self.config.get('remote_path', '/')
+            remote_path = f"{base_remote}/{local_file.name}"
+        normalized_remote = remote_path.replace('\\', '/')
+        if len(normalized_remote) > 2 and normalized_remote[1] == ':':
+            normalized_remote = normalized_remote[2:]
+        if not normalized_remote.startswith('/'):
+            normalized_remote = '/' + normalized_remote
+
+        file_size = local_file.stat().st_size
+        uploaded_bytes = 0
+        command_executed = False
+        response_text = ""
+        with self._lock:
+            with self._connection_lock:
+                ftp = self.ftp
+                connection_epoch = self._connection_epoch
+                connection_ready = (
+                    self.connected and ftp is not None and not self._cancel_event.is_set()
+                )
+            if not connection_ready or ftp is None:
+                message = "FTP 连接不可用，未执行上传命令"
+                logger.error(message)
+                return make_result(
+                    False,
+                    "connection_missing",
+                    message,
+                    normalized_remote=normalized_remote,
+                    local_size=file_size,
+                )
+
+            try:
+                remote_dir = os.path.dirname(normalized_remote)
+                if not self._ensure_remote_dir(remote_dir, ftp):
+                    message = f"无法确认或创建 FTP 远端目录：{remote_dir}"
+                    logger.error(message)
+                    return make_result(
+                        False,
+                        "remote_directory_error",
+                        message,
+                        normalized_remote=normalized_remote,
+                        local_size=file_size,
+                    )
+
+                speed_limit_bytes_per_sec = (
+                    speed_limit_mbps * 1024 * 1024 if enable_speed_limit else 0
+                )
                 last_chunk_time = time.time()
-            
-            # 上传文件（二进制模式）
-            if self.ftp:
-                with open(local_file, 'rb') as f:
-                    self.ftp.storbinary(f'STOR {remote_path}', f, callback=callback)
-            
-            logger.info(f"✓ 文件上传成功：{local_file.name} → {remote_path} ({file_size} 字节)")
-            return True
-            
-        except error_perm as e:
-            logger.error(f"权限错误，上传失败：{e}")
-            return False
-        except Exception as e:
-            logger.error(f"上传文件失败：{e}")
-            return False
+
+                def callback(block: bytes) -> None:
+                    nonlocal uploaded_bytes, last_chunk_time
+                    chunk_start = last_chunk_time
+                    uploaded_bytes += len(block)
+                    if progress_callback:
+                        progress_callback(uploaded_bytes, file_size)
+                    if enable_speed_limit and speed_limit_bytes_per_sec > 0:
+                        expected_time = len(block) / speed_limit_bytes_per_sec
+                        actual_time = time.time() - chunk_start
+                        if actual_time < expected_time:
+                            time.sleep(expected_time - actual_time)
+                    last_chunk_time = time.time()
+
+                command_executed = True
+                with open(local_file, 'rb') as stream:
+                    response = ftp.storbinary(
+                        f'STOR {normalized_remote}', stream, callback=callback
+                    )
+                response_text = str(response or "")
+                if not response_text.startswith("2"):
+                    message = f"FTP STOR 未返回成功响应：{response_text or '空响应'}"
+                    logger.error(message)
+                    return make_result(
+                        False,
+                        "response_unconfirmed",
+                        message,
+                        command_executed=True,
+                        normalized_remote=normalized_remote,
+                        local_size=file_size,
+                        uploaded_bytes=uploaded_bytes,
+                        response=response_text,
+                    )
+                if uploaded_bytes != file_size:
+                    message = (
+                        f"FTP 已发送字节数不匹配：本地 {file_size}，已发送 {uploaded_bytes}"
+                    )
+                    logger.error(message)
+                    return make_result(
+                        False,
+                        "byte_count_mismatch",
+                        message,
+                        command_executed=True,
+                        normalized_remote=normalized_remote,
+                        local_size=file_size,
+                        uploaded_bytes=uploaded_bytes,
+                        response=response_text,
+                    )
+                if not self._is_current_connection(ftp, connection_epoch):
+                    message = "FTP 连接在上传确认前已断开"
+                    logger.error(message)
+                    return make_result(
+                        False,
+                        "connection_lost",
+                        message,
+                        command_executed=True,
+                        normalized_remote=normalized_remote,
+                        local_size=file_size,
+                        uploaded_bytes=uploaded_bytes,
+                        response=response_text,
+                    )
+                try:
+                    remote_size_value = ftp.size(normalized_remote)
+                    remote_size = (
+                        int(remote_size_value) if remote_size_value is not None else None
+                    )
+                except Exception as exc:
+                    message = f"FTP 远端大小确认失败：{type(exc).__name__}: {exc}"
+                    logger.error(message)
+                    return make_result(
+                        False,
+                        "remote_size_unavailable",
+                        message,
+                        command_executed=True,
+                        normalized_remote=normalized_remote,
+                        local_size=file_size,
+                        uploaded_bytes=uploaded_bytes,
+                        response=response_text,
+                    )
+                if remote_size != file_size:
+                    message = f"FTP 远端大小不匹配：本地 {file_size}，远端 {remote_size}"
+                    logger.error(message)
+                    return make_result(
+                        False,
+                        "remote_size_mismatch",
+                        message,
+                        command_executed=True,
+                        normalized_remote=normalized_remote,
+                        local_size=file_size,
+                        uploaded_bytes=uploaded_bytes,
+                        remote_size=remote_size,
+                        response=response_text,
+                    )
+
+                # This locked check is the linearization point for a
+                # successful upload.  If disconnect() completed before it,
+                # the connection generation no longer matches and this call
+                # must fail rather than allow archival of the source file.
+                if not self._is_current_connection(ftp, connection_epoch):
+                    message = "FTP 连接在远端确认完成前已断开"
+                    logger.error(message)
+                    return make_result(
+                        False,
+                        "connection_lost",
+                        message,
+                        command_executed=True,
+                        normalized_remote=normalized_remote,
+                        local_size=file_size,
+                        uploaded_bytes=uploaded_bytes,
+                        remote_size=remote_size,
+                        response=response_text,
+                    )
+
+                message = (
+                    f"文件上传已确认：{local_file.name} → {normalized_remote} "
+                    f"({file_size} 字节)"
+                )
+                logger.info(message)
+                return make_result(
+                    True,
+                    "confirmed",
+                    message,
+                    command_executed=True,
+                    normalized_remote=normalized_remote,
+                    local_size=file_size,
+                    uploaded_bytes=uploaded_bytes,
+                    remote_size=remote_size,
+                    response=response_text,
+                )
+            except error_perm as exc:
+                message = f"FTP 权限错误，上传失败：{exc}"
+                logger.error(message)
+                return make_result(
+                    False,
+                    "permission_denied",
+                    message,
+                    command_executed=command_executed,
+                    normalized_remote=normalized_remote,
+                    local_size=file_size,
+                    uploaded_bytes=uploaded_bytes,
+                    response=response_text,
+                )
+            except Exception as exc:
+                message = f"FTP 上传失败：{type(exc).__name__}: {exc}"
+                logger.error(message)
+                return make_result(
+                    False,
+                    "transfer_error",
+                    message,
+                    command_executed=command_executed,
+                    normalized_remote=normalized_remote,
+                    local_size=file_size,
+                    uploaded_bytes=uploaded_bytes,
+                    response=response_text,
+                )
+
+    def _is_current_connection(
+        self,
+        ftp: Union[FTP, FTP_TLS],
+        connection_epoch: int,
+    ) -> bool:
+        """Return whether *ftp* is still the live, uncancelled generation."""
+        with self._connection_lock:
+            return (
+                self.ftp is ftp
+                and self.connected
+                and self._connection_epoch == connection_epoch
+                and not self._cancel_event.is_set()
+            )
     
     def upload_folder(
         self,
@@ -744,7 +954,11 @@ class FTPClientUploader:
         logger.info(f"✓ 文件夹上传完成：成功 {success}，失败 {failed}")
         return (success, failed)
     
-    def _ensure_remote_dir(self, remote_dir: str):
+    def _ensure_remote_dir(
+        self,
+        remote_dir: str,
+        ftp_connection: Optional[Union[FTP, FTP_TLS]] = None,
+    ) -> bool:
         """
         确保远程目录存在
         
@@ -752,31 +966,32 @@ class FTPClientUploader:
             remote_dir: 远程目录路径
         """
         if not remote_dir or remote_dir == '/' or remote_dir == '.':
-            return
+            return True
         
         # 标准化路径
         remote_dir = remote_dir.replace('\\', '/').strip('/')
         
         if not remote_dir:
-            return
+            return True
         
-        if not self.ftp:
-            return
+        ftp = ftp_connection or self.ftp
+        if ftp is None:
+            return False
             
         try:
             # 尝试切换到目录
-            current = self.ftp.pwd()
+            current = ftp.pwd()
             try:
-                self.ftp.cwd(remote_dir)
-                self.ftp.cwd(current)  # 切换回原目录
-                return  # 目录存在
+                ftp.cwd(remote_dir)
+                ftp.cwd(current)  # 切换回原目录
+                return True  # 目录存在
             except error_perm:
                 # 目录不存在（预期情况），需要创建
                 pass
             except Exception as e:
                 # 意外的目录检查错误
                 logger.debug(f"FTP目录检查异常: {type(e).__name__}: {e}")
-                return  # 出错时不创建
+                return False  # 出错时不创建
             
             # 递归创建目录
             parts = remote_dir.split('/')
@@ -786,16 +1001,17 @@ class FTPClientUploader:
                     continue
                 current_path += f'/{part}'
                 try:
-                    if self.ftp:
-                        self.ftp.mkd(current_path)
+                    ftp.mkd(current_path)
                     logger.debug(f"创建目录：{current_path}")
                 except error_perm:
                     pass  # 目录可能已存在
                 except Exception as e:
                     logger.debug(f"创建目录失败 {current_path}：{e}")
+            return True
             
         except Exception as e:
             logger.warning(f"确保远程目录存在时出错：{e}")
+            return False
     
     def test_connection(
         self,
