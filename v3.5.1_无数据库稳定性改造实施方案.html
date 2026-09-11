@@ -316,17 +316,17 @@
     <section id="phase0">
       <h2 class="phase-title"><span>PHASE 0</span>冻结基线与高危止血</h2>
 
-      <article class="task" id="task-GATE-00" data-status="in-progress" data-phase="0">
+      <article class="task" id="task-GATE-00" data-status="done" data-phase="0">
         <div class="task-head">
-          <input class="task-check" id="check-GATE-00" type="checkbox" disabled>
+          <input class="task-check" id="check-GATE-00" type="checkbox" checked disabled>
           <div class="task-title"><h4>GATE-00｜建立可回退基线与功能冻结</h4><p><span class="badge critical">门禁</span><span class="badge db">无数据库</span>依赖：无</p></div>
         </div>
         <div class="task-grid">
           <div><h5>目标</h5><p>把当前 v3.5.1 的代码、测试结果、运行配置和已知脏工作区状态固化为可追溯基线；在数据库移除完成前禁用自动清理与跨文件去重。</p></div>
           <div><h5>涉及范围</h5><p><code>src/__init__.py</code>、配置默认值、启动提示、版本说明、Git 分支/提交记录；不改变上传协议行为。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>保存工作树清单、v3.5.1 版本号、完整测试与静态检查结果。</li><li>将现有未提交改动分组审阅，禁止覆盖用户改动；为本改造建立独立可回退点。</li><li>配置层将自动清理、跨文件持久化去重默认关闭，并在 UI 中明确标注“改造中不可启用”。</li><li>记录现场临时运行限制和恢复方法。</li></ol></div>
-          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>基线完整测试通过，结果已记录。</li><li><input type="checkbox" disabled>可以明确回到改造前 v3.5.1。</li><li><input type="checkbox" disabled>默认配置不会启动数据库型去重或自动清理。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">进行中</span>｜开始：2026-09-11｜完成：—｜计划改动：基线报告、配置冻结、UI 禁用提示、发布说明｜测试证据：实施前 159 passed、5 subtests passed；pyright 0 errors｜回退点：Git 基点 77b63c8094ea7bd63ed26fd01cc34220260bdd05，并建立当前工作树本地基线提交</p></div>
+          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" checked disabled>基线完整测试通过，结果已记录。</li><li><input type="checkbox" checked disabled>可以明确回到改造前 v3.5.1。</li><li><input type="checkbox" checked disabled>默认配置不会启动数据库型去重或自动清理。</li></ul></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">已完成</span>｜开始：2026-09-11｜完成：2026-09-11｜提交/补丁：aa77dcd（功能冻结）；bcd716a（改造前基线）｜测试证据：任务级 17 passed；完整回归 161 passed、5 subtests passed；pyright 0 errors；git diff --check 通过｜回退点：本地标签 v3.5.1-pre-no-db-baseline 指向 bcd716a</p></div>
         </div>
       </article>
 
