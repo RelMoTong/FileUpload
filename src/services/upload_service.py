@@ -9,6 +9,10 @@ from typing import Any, Callable, Dict, Optional
 from PySide6 import QtCore
 
 from src.models import UploadCommandResult, UploadTaskRequest, UploadValidationResult
+from src.services.path_safety import (
+    describe_local_path_conflict,
+    find_local_path_conflicts,
+)
 from src.workers.upload_worker import UploadWorker
 
 
@@ -113,10 +117,11 @@ class UploadService:
     @staticmethod
     def validate_request(request: UploadTaskRequest) -> UploadValidationResult:
         errors: list[str] = []
-        paths = (
-            ("源文件夹", request.source),
-            ("目标文件夹", request.target),
-        )
+        protocol = str(request.upload_protocol or "smb").lower()
+        uses_smb_target = protocol in {"smb", "both"}
+        paths = [("源文件夹", request.source)]
+        if uses_smb_target:
+            paths.append(("目标文件夹", request.target))
         for label, path in paths:
             if not path:
                 errors.append(f"{label}路径为空")
@@ -129,19 +134,13 @@ class UploadService:
             elif not os.path.exists(request.backup):
                 errors.append(f"备份文件夹不存在: {request.backup}")
 
-        try:
-            source = os.path.normcase(os.path.abspath(request.source)) if request.source else ""
-            target = os.path.normcase(os.path.abspath(request.target)) if request.target else ""
-            backup = os.path.normcase(os.path.abspath(request.backup)) if request.backup else ""
-            if source and target and source == target:
-                errors.append("源文件夹与目标文件夹路径相同，请选择不同的路径")
-            if request.enable_backup:
-                if source and backup and source == backup:
-                    errors.append("源文件夹与备份文件夹路径相同，请选择不同的路径")
-                if target and backup and target == backup:
-                    errors.append("目标文件夹与备份文件夹路径相同，请选择不同的路径")
-        except Exception:
-            pass
+        local_paths = [("源文件夹", request.source)]
+        if uses_smb_target:
+            local_paths.append(("目标文件夹", request.target))
+        if request.enable_backup:
+            local_paths.append(("备份文件夹", request.backup))
+        for conflict in find_local_path_conflicts(local_paths):
+            errors.append(describe_local_path_conflict(conflict))
         return UploadValidationResult(tuple(errors))
 
     def start(

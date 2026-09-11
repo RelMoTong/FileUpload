@@ -330,14 +330,14 @@
         </div>
       </article>
 
-      <article class="task" id="task-P0-01" data-status="pending" data-phase="0">
+      <article class="task" id="task-P0-01" data-status="in-progress" data-phase="0">
         <div class="task-head"><input class="task-check" id="check-P0-01" type="checkbox" disabled><div class="task-title"><h4>P0-01｜阻止源、目标、备份目录相同或嵌套</h4><p><span class="badge critical">P0</span>依赖：GATE-00</p></div></div>
         <div class="task-grid">
           <div><h5>目标</h5><p>在启动扫描前拒绝递归上传、备份回灌和同目录误操作。</p></div>
           <div><h5>主要文件</h5><p><code>src/services/upload_service.py</code>、路径模型、UI 校验调用、对应测试。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>新增唯一的纯函数路径关系校验器，统一规范化大小写、分隔符、真实路径和 UNC 表达。</li><li>对 source、SMB target、backup 两两校验：相等、父包含子、子包含父均拒绝。</li><li>FTP 远端路径按协议规则单独校验，不与本地路径混算。</li><li>让 UI、Service 和启动前最终门禁调用同一实现；错误信息指出冲突目录。</li><li>增加 Windows 盘符、尾分隔符、大小写、UNC、符号链接可用场景测试。</li></ol></div>
           <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>嵌套目标和嵌套备份的复现用例均被拒绝。</li><li><input type="checkbox" disabled>合法的同级独立目录仍可启动。</li><li><input type="checkbox" disabled>校验失败发生在 Worker 创建之前。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜日期：—｜变更文件：—｜测试：—｜回退：恢复旧校验器并保留新增测试</p></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">进行中</span>｜开始：2026-09-11｜计划改动：路径关系纯函数、UploadService 最终门禁、UI 复用、路径安全测试｜测试：—｜回退：恢复旧校验器并保留新增测试</p></div>
         </div>
       </article>
 
