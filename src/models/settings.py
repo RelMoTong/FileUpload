@@ -11,6 +11,7 @@ from .auth_model import AuthModel
 from .cleanup_settings import CleanupSettings
 from .ftp_settings import FTPSettings
 from .upload_settings import UploadSettings
+from .stability import apply_stability_feature_freeze
 
 
 @dataclass
@@ -23,6 +24,7 @@ class ApplicationSettings:
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> "ApplicationSettings":
+        config = apply_stability_feature_freeze(dict(config))
         known_fields = (
             *UploadSettings.CONFIG_KEYS,
             *UploadSettings.RETIRED_CONFIG_KEYS,

@@ -24,6 +24,45 @@ def test_repository_loads_defaults_as_typed_settings(tmp_path: Path) -> None:
     assert repository.config_path.exists()
 
 
+def test_stability_freeze_disables_database_backed_features_on_load(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "enable_deduplication": True,
+                "enable_auto_delete": True,
+                "source_folder": "D:/camera",
+            }
+        ),
+        encoding="utf-8",
+    )
+    repository = ConfigRepository(config_path)
+
+    settings = repository.load()
+
+    assert settings.upload.enable_deduplication is False
+    assert settings.cleanup.enable_auto_delete is False
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["enable_deduplication"] is False
+    assert persisted["enable_auto_delete"] is False
+
+
+def test_stability_freeze_cannot_be_bypassed_when_saving(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    manager = ConfigManager(config_path)
+    unsafe = ConfigManager.get_default_config()
+    unsafe["enable_deduplication"] = True
+    unsafe["enable_auto_delete"] = True
+
+    assert manager.save(unsafe, preserve_users=False)
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["enable_deduplication"] is False
+    assert persisted["enable_auto_delete"] is False
+
+
 def test_controller_saves_typed_settings_without_losing_unknown_fields(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     repository = ConfigRepository(config_path)

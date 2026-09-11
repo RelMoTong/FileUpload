@@ -25,7 +25,7 @@
   "network_check_interval": 12,
   "network_auto_pause": false,
   "network_auto_resume": false,
-  "enable_auto_delete": true,
+  "enable_auto_delete": false,
   "auto_delete_folder": "E:/Python/文件上传/build",
   "auto_delete_folders": [
     "E:/Python/文件上传/build"

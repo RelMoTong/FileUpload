@@ -35,6 +35,7 @@ from src.models import (
     UploadTaskRequest,
     UserRole,
 )
+from src.models.stability import STABILITY_FREEZE_ACTIVE, STABILITY_FREEZE_NOTICE
 from src.ui.dialogs import ChangePasswordDialog, DiskCleanupDialog, LoginDialog
 from src.ui.panels import UploadFoldersPanel, UploadLogPanel, UploadSettingsPanel, UploadStatusPanel
 from src.ui.widgets import Toast
@@ -361,6 +362,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.cleanup_controller.configure_index(
             self._collect_auto_cleanup_request("startup")
         )
+        if STABILITY_FREEZE_ACTIVE:
+            self._append_log(
+                f"⚠️ {STABILITY_FREEZE_NOTICE}：自动清理与跨文件持久化去重已强制关闭。"
+            )
         self._apply_theme()
         self._update_ui_permissions()
         
@@ -1248,7 +1253,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
 
         # 智能去重和网络监控
         if hasattr(self, 'cb_dedup_enable'):
-            self.cb_dedup_enable.setEnabled(states['cb_dedup_enable'])
+            self.cb_dedup_enable.setEnabled(
+                states['cb_dedup_enable'] and not STABILITY_FREEZE_ACTIVE
+            )
+            if STABILITY_FREEZE_ACTIVE:
+                self.cb_dedup_enable.setToolTip(STABILITY_FREEZE_NOTICE)
         if hasattr(self, 'combo_hash'):
             self.combo_hash.setEnabled(states['combo_hash'])
         if hasattr(self, 'combo_strategy'):
@@ -1581,6 +1590,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
     
     def _on_dedup_toggled(self, checked: bool):
         """切换智能去重开关"""
+        if STABILITY_FREEZE_ACTIVE and checked:
+            self.cb_dedup_enable.blockSignals(True)
+            self.cb_dedup_enable.setChecked(False)
+            self.cb_dedup_enable.blockSignals(False)
+            self.enable_deduplication = False
+            self._append_log(f"⚠️ {STABILITY_FREEZE_NOTICE}：智能去重保持关闭。")
+            return
         self.enable_deduplication = checked
         self._mark_config_modified()
         self._update_ui_permissions()
@@ -2121,13 +2137,17 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             retry_count=self.spin_retry.value(),
             filters=filters,
             app_dir=self.app_dir,
-            enable_deduplication=self.cb_dedup_enable.isChecked(),
+            enable_deduplication=(
+                self.cb_dedup_enable.isChecked() and not STABILITY_FREEZE_ACTIVE
+            ),
             hash_algorithm=self.combo_hash.currentText().lower(),
             duplicate_strategy=duplicate_strategy,
             network_check_interval=self.spin_network_check.value(),
             network_auto_pause=self.cb_network_auto_pause.isChecked(),
             network_auto_resume=self.cb_network_auto_resume.isChecked(),
-            enable_auto_delete=self.enable_auto_delete,
+            enable_auto_delete=(
+                self.enable_auto_delete and not STABILITY_FREEZE_ACTIVE
+            ),
             auto_delete_threshold=self.auto_delete_threshold,
             auto_delete_target_percent=self.auto_delete_target_percent,
             upload_protocol=self.current_protocol,
@@ -2270,7 +2290,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             'limit_upload_rate': self.cb_limit_rate.isChecked() if hasattr(self, 'cb_limit_rate') else False,
             'max_upload_rate_mbps': self.spin_max_rate.value() if hasattr(self, 'spin_max_rate') else 10.0,
             # v1.9 新增：去重
-            'enable_deduplication': self.cb_dedup_enable.isChecked(),
+            'enable_deduplication': (
+                self.cb_dedup_enable.isChecked() and not STABILITY_FREEZE_ACTIVE
+            ),
             'hash_algorithm': self.combo_hash.currentText().lower(),
             'duplicate_strategy': strategy_map.get(self.combo_strategy.currentText(), 'ask'),
             # v1.9 新增：网络监控
@@ -2278,7 +2300,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             'network_auto_pause': self.cb_network_auto_pause.isChecked(),
             'network_auto_resume': self.cb_network_auto_resume.isChecked(),
             # v1.9 新增：自动删除
-            'enable_auto_delete': self.enable_auto_delete,
+            'enable_auto_delete': (
+                self.enable_auto_delete and not STABILITY_FREEZE_ACTIVE
+            ),
             'auto_delete_folder': self.auto_delete_folder,
             'auto_delete_folders': self.auto_delete_folders,
             'auto_delete_threshold': self.auto_delete_threshold,
@@ -2343,6 +2367,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
     def _save_auto_cleanup_config(self, cleanup_config: dict) -> bool:
         """独立保存自动清理配置，避免被主配置校验链连坐。"""
         self.last_config_save_error = ''
+        if STABILITY_FREEZE_ACTIVE and cleanup_config.get('enable_auto_delete'):
+            self.last_config_save_error = STABILITY_FREEZE_NOTICE
+            self._append_log(f"❌ 自动清理配置保存已阻止: {STABILITY_FREEZE_NOTICE}")
+            return False
         reason = self._get_disk_cleanup_block_reason()
         if reason:
             self.last_config_save_error = reason
@@ -2506,7 +2534,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.spin_max_rate.setValue(self.max_upload_rate_mbps)
             
             # v1.9 新增：加载去重配置
-            self.enable_deduplication = cfg.get('enable_deduplication', False)
+            self.enable_deduplication = (
+                bool(cfg.get('enable_deduplication', False))
+                and not STABILITY_FREEZE_ACTIVE
+            )
             self.hash_algorithm = cfg.get('hash_algorithm', 'md5')
             self.duplicate_strategy = cfg.get('duplicate_strategy', 'ask')
             
@@ -2532,7 +2563,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.cb_network_auto_resume.setChecked(self.network_auto_resume)
             
             # v1.9 新增：加载自动删除配置
-            self.enable_auto_delete = cfg.get('enable_auto_delete', False)
+            self.enable_auto_delete = (
+                bool(cfg.get('enable_auto_delete', False))
+                and not STABILITY_FREEZE_ACTIVE
+            )
             self.auto_delete_folder = cfg.get('auto_delete_folder', '')
             self.auto_delete_folders = cfg.get('auto_delete_folders', [])
             if not isinstance(self.auto_delete_folders, list):

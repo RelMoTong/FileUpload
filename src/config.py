@@ -13,6 +13,8 @@ import shutil
 import tempfile
 from typing import Dict, Any, Optional
 
+from src.models.stability import apply_stability_feature_freeze
+
 
 class ConfigManager:
     """配置管理器"""
@@ -138,7 +140,9 @@ class ConfigManager:
                 loaded_config = json.load(f)
             
             # 合并默认配置和加载的配置（深度合并，保留新增默认值）
-            merged_config = self._deep_merge(self.DEFAULT_CONFIG, loaded_config)
+            merged_config = apply_stability_feature_freeze(
+                self._deep_merge(self.DEFAULT_CONFIG, loaded_config)
+            )
             self._config = merged_config
             if merged_config != loaded_config:
                 self.save(merged_config)
@@ -176,7 +180,7 @@ class ConfigManager:
         temp_path: Optional[Path] = None
         descriptor: Optional[int] = None
         try:
-            payload = copy.deepcopy(config)
+            payload = apply_stability_feature_freeze(config)
             # 合并现有有效配置，避免旧版本未知字段被无意丢弃。
             old_cfg: Dict[str, Any] = {}
             if self.config_path.exists():
@@ -184,7 +188,9 @@ class ConfigManager:
                     with open(self.config_path, 'r', encoding='utf-8') as f:
                         old_cfg = json.load(f)
                     if isinstance(old_cfg, dict):
-                        payload = self._deep_merge(old_cfg, payload)
+                        payload = apply_stability_feature_freeze(
+                            self._deep_merge(old_cfg, payload)
+                        )
                     else:
                         old_cfg = {}
                     # 保留现有的用户密码。

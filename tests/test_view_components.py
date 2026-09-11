@@ -120,6 +120,9 @@ def test_upload_panels_can_be_built_as_independent_widgets() -> None:
         assert all(isinstance(panel, QtWidgets.QWidget) for panel in panels)
         assert all(panel.content is not None for panel in panels)
         assert host.log.document().maximumBlockCount() == 5000
+        assert not host.cb_dedup_enable.isChecked()
+        assert not host.cb_dedup_enable.isEnabled()
+        assert "无数据库改造中不可启用" in host.cb_dedup_enable.toolTip()
     finally:
         for panel in panels:
             panel.close()
@@ -187,8 +190,13 @@ def test_cleanup_folder_row_visual_state_is_consistent_from_initial_render() -> 
     controller = CleanupController(CleanupService())
     dialog = DiskCleanupDialog(host, controller, settings_gateway=host)
     try:
+        dialog._on_tab_changed(1)
         dialog.show()
         app.processEvents()
+
+        assert not dialog.btn_auto_config.isEnabled()
+        assert "无数据库改造中不可启用" in dialog.btn_auto_config.toolTip()
+        assert "改造中不可启用" in dialog.auto_status_label.text()
 
         assert not dialog.cb_backup.isChecked()
         assert dialog.cb_backup.property("folderActive") is False
