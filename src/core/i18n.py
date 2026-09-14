@@ -8,10 +8,8 @@ v3.0.2 新增功能：
 - 易于扩展更多语言
 """
 
-import json
 import logging
-from pathlib import Path
-from typing import Dict, Any, Optional, Callable, List
+from typing import Dict, Optional, Callable, List
 
 logger = logging.getLogger(__name__)
 
@@ -252,38 +250,6 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '🔍 启用文件去重 (v1.8)',
         LANG_EN_US: '🔍 Enable Deduplication (v1.8)',
     },
-    'hash_algorithm': {
-        LANG_ZH_CN: '哈希算法:',
-        LANG_EN_US: 'Hash Algorithm:',
-    },
-    'duplicate_strategy': {
-        LANG_ZH_CN: '重复策略:',
-        LANG_EN_US: 'Duplicate Strategy:',
-    },
-    'strategy_skip': {
-        LANG_ZH_CN: '跳过',
-        LANG_EN_US: 'Skip',
-    },
-    'strategy_rename': {
-        LANG_ZH_CN: '重命名',
-        LANG_EN_US: 'Rename',
-    },
-    'strategy_overwrite': {
-        LANG_ZH_CN: '覆盖',
-        LANG_EN_US: 'Overwrite',
-    },
-    'strategy_ask': {
-        LANG_ZH_CN: '询问',
-        LANG_EN_US: 'Ask',
-    },
-    'dedup_hint': {
-        LANG_ZH_CN: '💡 通过文件哈希检测重复，避免上传相同内容的文件',
-        LANG_EN_US: '💡 Detect duplicates by file hash, avoid uploading identical files',
-    },
-    'network_monitor': {
-        LANG_ZH_CN: '🌐 网络监控',
-        LANG_EN_US: '🌐 Network Monitor',
-    },
     'check_interval': {
         LANG_ZH_CN: '检测间隔:',
         LANG_EN_US: 'Check Interval:',
@@ -295,10 +261,6 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     'auto_resume_on_reconnect': {
         LANG_ZH_CN: '▶️ 恢复时自动继续',
         LANG_EN_US: '▶️ Auto Resume on Reconnect',
-    },
-    'network_hint': {
-        LANG_ZH_CN: '💡 实时监控网络状态，断网时自动暂停，恢复后自动继续',
-        LANG_EN_US: '💡 Monitor network status, auto pause on disconnect, resume on reconnect',
     },
     
     # ========== 操作控制卡片 ==========
@@ -313,10 +275,6 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     'pause_upload': {
         LANG_ZH_CN: '⏸ 暂停上传',
         LANG_EN_US: '⏸ Pause Upload',
-    },
-    'resume_upload': {
-        LANG_ZH_CN: '▶ 继续上传',
-        LANG_EN_US: '▶ Resume Upload',
     },
     'stop_upload': {
         LANG_ZH_CN: '⏹ 停止上传',
@@ -474,21 +432,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '登录角色:',
         LANG_EN_US: 'Role:',
     },
-    'enter_password': {
-        LANG_ZH_CN: '请输入密码',
-        LANG_EN_US: 'Enter password',
-    },
-    'cancel': {
-        LANG_ZH_CN: '取消',
-        LANG_EN_US: 'Cancel',
-    },
     'confirm': {
         LANG_ZH_CN: '确认',
         LANG_EN_US: 'Confirm',
-    },
-    'ok': {
-        LANG_ZH_CN: '确定',
-        LANG_EN_US: 'OK',
     },
     
     # ========== 提示消息 ==========
@@ -577,11 +523,6 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_EN_US: 'Exit',
     },
     
-    # ========== 秒/分钟/小时 ==========
-    'seconds': {
-        LANG_ZH_CN: '秒',
-        LANG_EN_US: 'sec',
-    },
     'minutes': {
         LANG_ZH_CN: '分钟',
         LANG_EN_US: 'min',
@@ -617,10 +558,6 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     'protocol_type_label': {
         LANG_ZH_CN: '协议类型:',
         LANG_EN_US: 'Protocol:',
-    },
-    'max_connections': {
-        LANG_ZH_CN: '最大连接:',
-        LANG_EN_US: 'Max Conn:',
     },
     'ip_limit': {
         LANG_ZH_CN: '  单IP限制:',
@@ -692,22 +629,6 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     },
     
     # ========== FTP 表单标签 ==========
-    'listen_address': {
-        LANG_ZH_CN: '监听地址:',
-        LANG_EN_US: 'Listen Address:',
-    },
-    'port_label': {
-        LANG_ZH_CN: '端口:',
-        LANG_EN_US: 'Port:',
-    },
-    'username_label': {
-        LANG_ZH_CN: '用户名:',
-        LANG_EN_US: 'Username:',
-    },
-    'password_label': {
-        LANG_ZH_CN: '密码:',
-        LANG_EN_US: 'Password:',
-    },
     'shared_dir': {
         LANG_ZH_CN: '共享目录:',
         LANG_EN_US: 'Shared Dir:',
@@ -719,10 +640,6 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     'remote_path_label': {
         LANG_ZH_CN: '远程路径:',
         LANG_EN_US: 'Remote Path:',
-    },
-    'timeout_label': {
-        LANG_ZH_CN: '超时(秒):',
-        LANG_EN_US: 'Timeout(s):',
     },
     
     # ========== 登录对话框 ==========
@@ -832,10 +749,6 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     },
     
     # ========== 去重相关 ==========
-    'hash_algorithm': {
-        LANG_ZH_CN: '哈希算法',
-        LANG_EN_US: 'Hash Algorithm',
-    },
     'duplicate_strategy': {
         LANG_ZH_CN: '重复策略',
         LANG_EN_US: 'Duplicate Strategy',
@@ -958,10 +871,6 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     },
     
     # ========== FTP 客户端标签 ==========
-    'remote_path': {
-        LANG_ZH_CN: '远程路径:',
-        LANG_EN_US: 'Remote Path:',
-    },
     'remote_path_tooltip': {
         LANG_ZH_CN: '上传到远程FTP服务器的目标路径',
         LANG_EN_US: 'Target path on remote FTP server',

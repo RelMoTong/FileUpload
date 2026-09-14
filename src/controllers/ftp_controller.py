@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import ntpath
+import logging
 from typing import Any, Callable, Dict, Mapping, Optional, Protocol
 
 from src.models import FTPEvent, FTPOperationResult, FTPValidationResult
+
+logger = logging.getLogger(__name__)
 
 
 class FTPBusinessService(Protocol):
@@ -156,8 +159,12 @@ class FTPController:
         if self._event_writer is not None:
             try:
                 self._event_writer.write(event)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "FTP event audit write failed for %s: %s",
+                    event.event,
+                    exc,
+                )
         if self._event_listener is not None:
             notification = event.to_mapping()
             notification["display_message"] = self.format_event(event)

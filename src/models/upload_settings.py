@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping
 
-from ._conversion import as_bool, as_enum, as_float, as_int, as_str
+from ._conversion import SHARED_RETIRED_CONFIG_KEYS, as_bool, as_enum, as_float, as_int, as_str
 from .app_state import DuplicateStrategy, UploadProtocol
 
 
@@ -17,7 +17,6 @@ class UploadSettings:
     enable_backup: bool = True
     upload_interval: int = 30
     file_upload_delay_seconds: float = 1.5
-    monitor_mode: str = "periodic"
     disk_threshold_percent: int = 10
     retry_count: int = 3
     disk_check_interval: int = 5
@@ -40,9 +39,31 @@ class UploadSettings:
     upload_protocol: UploadProtocol = UploadProtocol.SMB
     current_protocol: UploadProtocol = UploadProtocol.SMB
     language: str = "zh_CN"
-    enable_resume: bool = True
 
-    RETIRED_CONFIG_KEYS = ("resume_min_size_mb",)
+    def __post_init__(self) -> None:
+        self.upload_interval = max(1, int(self.upload_interval))
+        self.file_upload_delay_seconds = max(0.0, float(self.file_upload_delay_seconds))
+        self.disk_threshold_percent = min(95, max(1, int(self.disk_threshold_percent)))
+        self.retry_count = min(20, max(0, int(self.retry_count)))
+        self.disk_check_interval = min(3600, max(1, int(self.disk_check_interval)))
+        self.max_upload_rate_mbps = max(0.1, float(self.max_upload_rate_mbps))
+        self.network_check_interval = min(3600, max(1, int(self.network_check_interval)))
+        if not isinstance(self.duplicate_strategy, DuplicateStrategy):
+            self.duplicate_strategy = as_enum(
+                DuplicateStrategy, self.duplicate_strategy, DuplicateStrategy.ASK
+            )
+        if not isinstance(self.upload_protocol, UploadProtocol):
+            self.upload_protocol = as_enum(
+                UploadProtocol, self.upload_protocol, UploadProtocol.SMB
+            )
+        if not isinstance(self.current_protocol, UploadProtocol):
+            self.current_protocol = as_enum(
+                UploadProtocol, self.current_protocol, self.upload_protocol
+            )
+
+    # These keys were formerly persisted but had no runtime switch.  Accept
+    # them from older JSON files, then omit them on the next successful save.
+    RETIRED_CONFIG_KEYS = SHARED_RETIRED_CONFIG_KEYS
 
     CONFIG_KEYS = (
         "source_folder",
@@ -51,7 +72,6 @@ class UploadSettings:
         "enable_backup",
         "upload_interval",
         "file_upload_delay_seconds",
-        "monitor_mode",
         "disk_threshold_percent",
         "retry_count",
         "disk_check_interval",
@@ -74,7 +94,6 @@ class UploadSettings:
         "upload_protocol",
         "current_protocol",
         "language",
-        "enable_resume",
     )
 
     @classmethod
@@ -88,7 +107,6 @@ class UploadSettings:
             file_upload_delay_seconds=max(
                 0.0, as_float(data.get("file_upload_delay_seconds"), 1.5)
             ),
-            monitor_mode=as_str(data.get("monitor_mode"), "periodic"),
             disk_threshold_percent=as_int(data.get("disk_threshold_percent"), 10),
             retry_count=as_int(data.get("retry_count"), 3),
             disk_check_interval=as_int(data.get("disk_check_interval"), 5),
@@ -119,7 +137,6 @@ class UploadSettings:
                 UploadProtocol.SMB,
             ),
             language=as_str(data.get("language"), "zh_CN"),
-            enable_resume=as_bool(data.get("enable_resume"), True),
         )
 
     def to_mapping(self) -> Dict[str, Any]:
@@ -130,7 +147,6 @@ class UploadSettings:
             "enable_backup": self.enable_backup,
             "upload_interval": self.upload_interval,
             "file_upload_delay_seconds": self.file_upload_delay_seconds,
-            "monitor_mode": self.monitor_mode,
             "disk_threshold_percent": self.disk_threshold_percent,
             "retry_count": self.retry_count,
             "disk_check_interval": self.disk_check_interval,
@@ -153,5 +169,4 @@ class UploadSettings:
             "upload_protocol": self.upload_protocol.value,
             "current_protocol": self.current_protocol.value,
             "language": self.language,
-            "enable_resume": self.enable_resume,
         }

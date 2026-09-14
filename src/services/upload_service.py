@@ -13,6 +13,7 @@ from src.services.path_safety import (
     describe_local_path_conflict,
     find_local_path_conflicts,
 )
+from src.services.path_probe_service import PathProbe, PathProbeResult, PathProbeService
 from src.workers.upload_worker import UploadWorker
 
 
@@ -106,6 +107,7 @@ class UploadService:
         self,
         worker_factory: Callable[..., Any] = UploadWorker,
         thread_factory: Callable[[], Any] = QtCore.QThread,
+        path_probe_service: Optional[PathProbeService] = None,
     ) -> None:
         self._worker_factory = worker_factory
         self._thread_factory = thread_factory
@@ -113,6 +115,7 @@ class UploadService:
         self._thread: Any = None
         self._bridge: Optional[_UploadEventBridge] = None
         self._release_check_scheduled = False
+        self._path_probe_service = path_probe_service or PathProbeService()
 
     @staticmethod
     def validate_request(request: UploadTaskRequest) -> UploadValidationResult:
@@ -125,13 +128,13 @@ class UploadService:
         for label, path in paths:
             if not path:
                 errors.append(f"{label}路径为空")
-            elif not os.path.exists(path):
+            elif not UploadService._is_remote_path(path) and not os.path.exists(path):
                 errors.append(f"{label}不存在: {path}")
 
         if request.enable_backup:
             if not request.backup:
                 errors.append("备份文件夹路径为空")
-            elif not os.path.exists(request.backup):
+            elif not UploadService._is_remote_path(request.backup) and not os.path.exists(request.backup):
                 errors.append(f"备份文件夹不存在: {request.backup}")
 
         local_paths = [("源文件夹", request.source)]
@@ -142,6 +145,37 @@ class UploadService:
         for conflict in find_local_path_conflicts(local_paths):
             errors.append(describe_local_path_conflict(conflict))
         return UploadValidationResult(tuple(errors))
+
+    @staticmethod
+    def _is_remote_path(path: str) -> bool:
+        value = str(path).replace("/", "\\")
+        return value.startswith("\\\\")
+
+    @staticmethod
+    def path_probes_for(request: UploadTaskRequest) -> tuple[PathProbe, ...]:
+        """Build only I/O requirements; relationship rules stay synchronous."""
+        protocol = str(request.upload_protocol or "smb").lower()
+        probes = [PathProbe("源文件夹", request.source)]
+        if protocol in {"smb", "both"}:
+            probes.append(PathProbe("目标文件夹", request.target, require_write=True))
+        if request.enable_backup:
+            probes.append(PathProbe("备份文件夹", request.backup, require_write=True))
+        return tuple(probes)
+
+    def probe_request_async(
+        self,
+        request: UploadTaskRequest,
+        callback: Callable[[PathProbeResult], None],
+        *,
+        timeout: float = 2.0,
+    ) -> int:
+        """Probe availability outside the caller's thread."""
+        return self._path_probe_service.probe(
+            self.path_probes_for(request), callback, timeout=timeout
+        )
+
+    def cancel_path_probes(self) -> int:
+        return self._path_probe_service.cancel()
 
     def start(
         self,
@@ -267,6 +301,14 @@ class UploadService:
         except Exception:
             return 0
 
+    @property
+    def worker_pause_reasons(self) -> frozenset[str]:
+        """Expose the worker's effective pause reasons to the controller."""
+        try:
+            return frozenset(getattr(self._worker, "pause_reasons", ()))
+        except Exception:
+            return frozenset()
+
     def request_stop_all(self) -> UploadCommandResult:
         """非阻塞请求停止当前上传及其内部后台任务。"""
         return self.stop()
@@ -279,6 +321,7 @@ class UploadService:
         return running
 
     def shutdown(self, timeout_ms: int = 3000) -> None:
+        self._path_probe_service.shutdown()
         worker = self._worker
         thread = self._thread
         if worker is not None:

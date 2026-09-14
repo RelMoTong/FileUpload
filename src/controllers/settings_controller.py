@@ -42,6 +42,10 @@ class SettingsController:
         self.last_error = self._repository.last_error
         return settings
 
+    def load_settings(self) -> ApplicationSettings:
+        """Typed alias used by views; raw payloads stay at the repository edge."""
+        return self.load()
+
     def load_raw(self) -> Dict[str, Any]:
         config = self._repository.load_raw()
         self.last_error = self._repository.last_error

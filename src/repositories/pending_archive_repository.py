@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
-import tempfile
 import threading
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from src.core.file_identity import FileIdentity
+from src.core.file_identity import FileIdentity, normalize_file_path
+from src.core.atomic_json_store import AtomicJsonStore
 
 
 ARCHIVE_RECORD_SCHEMA_VERSION = 2
@@ -19,12 +17,22 @@ ARCHIVE_RECORD_SCHEMA_VERSION = 2
 class PendingArchiveRepository:
     def __init__(self, app_dir: Path) -> None:
         self.path = Path(app_dir) / "data" / "pending_archives.json"
+        self.failure_path = Path(app_dir) / "data" / "pending_archive_failures.json"
+        self._store = AtomicJsonStore(
+            self.path,
+            max_bytes=4 * 1024 * 1024,
+            max_records=10_000,
+        )
+        self._failure_store = AtomicJsonStore(
+            self.failure_path, max_bytes=4 * 1024 * 1024, max_records=10_000
+        )
         self._lock = threading.RLock()
         self.last_error = ""
 
     @staticmethod
     def normalize(path: str) -> str:
-        return os.path.normcase(os.path.abspath(path))
+        """Use the same identity key for local and network-backed sources."""
+        return normalize_file_path(path)
 
     def load(self) -> tuple[dict[str, Any], ...]:
         with self._lock:
@@ -85,11 +93,51 @@ class PendingArchiveRepository:
             records.pop(self.normalize(source), None)
             return self._write(records)
 
+    def load_failures(self) -> tuple[dict[str, Any], ...]:
+        with self._lock:
+            payload = self._failure_store.read(default={})
+            if self._failure_store.last_error:
+                self.last_error = self._failure_store.last_error
+                return ()
+            self.last_error = ""
+            if not isinstance(payload, dict):
+                return ()
+            return tuple(dict(value) for value in payload.values() if isinstance(value, dict))
+
+    def record_failure(self, record: Mapping[str, Any]) -> bool:
+        source = self.normalize(str(record.get("source", "")))
+        if not source:
+            self._failure_store.last_error = "ValueError: missing source"
+            return False
+        with self._lock:
+            payload = self._failure_store.read(default={})
+            if self._failure_store.last_error:
+                self.last_error = self._failure_store.last_error
+                return False
+            if not isinstance(payload, dict):
+                return False
+            payload[source] = dict(record)
+            return self._failure_store.write(payload)
+
+    def remove_failure(self, source: str) -> bool:
+        with self._lock:
+            payload = self._failure_store.read(default={})
+            if self._failure_store.last_error:
+                self.last_error = self._failure_store.last_error
+                return False
+            if not isinstance(payload, dict):
+                return False
+            payload.pop(self.normalize(source), None)
+            return self._failure_store.write(payload)
+
     def _read(self) -> dict[str, dict[str, Any]] | None:
         if not self.path.exists():
             return {}
         try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            payload = self._store.read(default=None)
+            if payload is None:
+                self.last_error = self._store.last_error
+                return None
             if not isinstance(payload, dict):
                 raise ValueError("pending archive journal must be an object")
             self.last_error = ""
@@ -105,34 +153,11 @@ class PendingArchiveRepository:
             return None
 
     def _write(self, records: dict[str, dict[str, Any]]) -> bool:
-        temp_path: Path | None = None
-        descriptor: int | None = None
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            descriptor, raw_path = tempfile.mkstemp(
-                prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent
-            )
-            temp_path = Path(raw_path)
-            with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
-                descriptor = None
-                json.dump(records, stream, ensure_ascii=False, indent=2)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temp_path, self.path)
-            temp_path = None
+            if not self._store.write(records):
+                raise OSError(self._store.last_error)
             self.last_error = ""
             return True
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
             return False
-        finally:
-            if descriptor is not None:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
-            if temp_path is not None:
-                try:
-                    temp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass

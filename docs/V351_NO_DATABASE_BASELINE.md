@@ -1,12 +1,14 @@
 # v3.5.1 无数据库稳定性改造基线
 
+> 历史基线记录（2026-09-11）。其中“当前组合根仍构造 SQLite 索引”等描述仅记录改造开始前状态，已由 P2-01 移除；当前运行限制以 `V351_OPERATIONS_MANUAL.md` 和 `V351_RELEASE_VERIFICATION.md` 为准。
+
 ## 基线身份
 
 - 建立日期：2026-09-11
 - 改造分支：`codex/v3.5.1-no-database-stability`
 - 改造前 Git 基点：`77b63c8094ea7bd63ed26fd01cc34220260bdd05`
 - 应用版本：`3.5.1`
-- 实施主清单：`v3.5.1_无数据库稳定性改造实施方案.html`
+- 当前运行手册：`V351_OPERATIONS_MANUAL.md`
 
 当前工作树包含此前尚未提交的 v3.5.1、MVC 分层、清理、FTP、测试和发布审查成果。它们作为用户既有工作整体保留，并在本分支的首个本地提交中固化；本次改造不回滚或覆盖这些成果。
 
@@ -14,7 +16,7 @@
 
 ## 实施前验证
 
-- `pytest -q tests -p no:cacheprovider --basetemp="$env:TEMP\image-upload-v351-no-db-plan-audit"`
+- 测试套件属于开发环境内容，精简源代码目录不包含 `tests/`；发布前应在独立开发检出中运行完整回归测试。
   - 结果：`159 passed, 5 subtests passed in 26.08s`
 - `pyright`
   - 结果：`0 errors, 0 warnings, 0 informations`

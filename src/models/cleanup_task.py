@@ -22,6 +22,28 @@ class CleanupFileItem:
 
 
 @dataclass(frozen=True)
+class CleanupCandidate:
+    """统一的清理候选快照；手动预览和自动清理使用同一身份字段。"""
+
+    path: str
+    root_path: str
+    size: int
+    mtime: float
+    mtime_ns: int = 0
+    file_id: str = ""
+    created_at: float = 0.0
+
+    def as_file_item(self) -> CleanupFileItem:
+        return CleanupFileItem(
+            path=self.path,
+            size=self.size,
+            mtime=self.mtime,
+            mtime_ns=self.mtime_ns,
+            file_id=self.file_id,
+        )
+
+
+@dataclass(frozen=True)
 class CleanupScanRequest:
     folders: Tuple[str, ...]
     formats: Tuple[str, ...]
@@ -32,6 +54,8 @@ class CleanupScanRequest:
 class CleanupDeleteRequest:
     files: Tuple[CleanupFileItem, ...]
     use_trash: bool = True
+    permanent_authorized: bool = False
+    allowed_roots: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -73,29 +97,4 @@ class AutoCleanupResult:
     failed_count: int = 0
     attempted_delete_bytes: int = 0
     actual_released_bytes: int = 0
-
-
-@dataclass(frozen=True)
-class CleanupIndexRecord:
-    normalized_path: str
-    path: str
-    file_name: str
-    created_at: float
-    size_bytes: int
-    root_path: str
-    source: str = "scan"
-    modified_at_ns: int = 0
-    file_id: str = ""
-
-
-@dataclass(frozen=True)
-class CleanupIndexResult:
-    status: str
-    error: str = ""
-    indexed_count: int = 0
-    failed_count: int = 0
-    scope_fingerprint: str = ""
-
-    @property
-    def success(self) -> bool:
-        return self.status in {"已就绪", "建立完成"} and not self.error
+    skipped_changed_count: int = 0

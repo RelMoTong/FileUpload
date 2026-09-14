@@ -3,14 +3,13 @@
 包含文件上传的核心逻辑，支持：
 - 多协议上传（SMB、FTP客户端）
 - 网络监控和自动暂停/恢复
-- 智能去重（MD5/SHA256）
+- 会话内智能去重（MD5/SHA256）
 - 速率限制
 - 失败重试机制
 - 异步归档
 """
 
 import os
-import sys
 import time
 import shutil
 import threading
@@ -47,9 +46,13 @@ except ImportError:
     FTPClientUploader = None  # type: ignore[assignment, misc]
 
 # 导入断点续传模块
-from src.core.file_identity import FileIdentity
+from src.core.file_identity import FileIdentity, normalize_file_path
+from src.core.file_task_registry import FileTaskRegistry, FileTaskState
 from src.core.resume_manager import ResumeManager, ResumableFileUploader
-from src.repositories import DedupIndexRepository, PendingArchiveRepository
+from src.core.safe_deletion import SafeDeletionPolicy, SafeDeletionRequest
+from src.repositories import PendingArchiveRepository
+from src.core.session_dedup_cache import SessionDedupCache
+from src.core.pause_state import PauseState
 
 
 class UploadWorker(QtCore.QObject):  # type: ignore[misc]
@@ -178,7 +181,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         
         # 运行状态
         self._running = False
-        self._paused = False
+        self._pause_state = PauseState()
         self._thread = None
         self._archive_thread = None
         self._net_running = False
@@ -201,11 +204,16 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         
         # 队列
         self.retry_queue: Dict[str, Dict[str, Any]] = {}
+        self._task_registry = FileTaskRegistry()
         self.archive_queue: queue.Queue = queue.Queue()
         self._archive_stop_event = threading.Event()
         self._archive_repository = PendingArchiveRepository(self.app_dir)
         self._pending_archive_sources: set[str] = set()
         self._queued_archive_sources: set[str] = set()
+        self._archive_persist_retries: Dict[str, Dict[str, Any]] = {}
+        self._archive_persist_retry_limit = 5
+        self._archive_persist_retry_base_seconds = 1.0
+        self._archive_persist_retry_max_seconds = 30.0
         
         # 网络状态
         self.network_retry_count = 0
@@ -213,6 +221,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self.last_network_check = 0.0
         self.current_network_status = None  # None=未检测, 'good'/'unstable'/'disconnected'=已检测
         self.network_pause_by_auto = False
+        self._network_good_streak = 0
+        self._network_bad_streak = 0
         self._last_network_path_probe = 0.0
         self._last_backup_path_ok = False
         self._last_space_warn = 0.0
@@ -227,9 +237,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self._fileop_timeout_count = 0
         self._fileop_circuit_until = 0.0
         self._dedup_not_supported_warned = False
-        self._dedup_repository = DedupIndexRepository(self.app_dir)
-        self._dedup_index_ready = False
-        self._dedup_index_root = ""
+        self._dedup_cache = SessionDedupCache(4096)
+        self._dedup_cache_ready = False
+        self._dedup_cache_root = ""
         self._dedup_generation = 0
         
         # 去重询问模式的全局选择
@@ -239,13 +249,32 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self.resume_manager = ResumeManager(self.app_dir)
         self.resumable_uploader: Optional[ResumableFileUploader] = None
 
+    @property
+    def _paused(self) -> bool:
+        """Compatibility view of the unified pause state."""
+        return self._pause_state.is_paused
+
+    @_paused.setter
+    def _paused(self, value: bool) -> None:
+        # Legacy callers can still force a manual pause in tests/integrations.
+        self._pause_state.set("manual", bool(value))
+
+    @property
+    def pause_reasons(self) -> frozenset[str]:
+        return self._pause_state.reasons
+
+    def _set_pause_reason(self, reason: str, active: bool) -> None:
+        changed = self._pause_state.set(reason, active)
+        if changed and self._running:
+            self.status.emit('paused' if self._pause_state.is_paused else 'running')
+
     def start(self) -> None:
         """启动上传任务"""
         if self._running:
             return
         self._duplicate_ask_choice = None
         self._dedup_not_supported_warned = False
-        self._dedup_index_ready = False
+        self._dedup_cache_ready = False
         if not self._validate_paths() or not self._validate_ftp_config():
             self.status.emit('stopped')
             self.finished.emit()
@@ -268,10 +297,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         if not self.enable_backup:
             self._log_event("⚠️", "NO_BACKUP", "备份已关闭，上传成功后将删除源文件")
         self._running = True
-        self._paused = False
+        self._pause_state.clear()
+        self.network_pause_by_auto = False
+        self._network_good_streak = 0
+        self._network_bad_streak = 0
         self._net_stop_event.clear()
         self._archive_stop_event.clear()
         self._restore_pending_archives()
+        self._restore_archive_persist_failures()
         
         # 检查待续传的文件
         self._check_pending_resumes()
@@ -313,6 +346,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         status = {
             'running': self._running,
             'paused': self._paused,
+            'pause_reasons': tuple(sorted(self.pause_reasons)),
             'network_status': self.current_network_status,
             'uploaded_count': self.uploaded_count,
             'failed_count': self.failed_count,
@@ -338,15 +372,13 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         """暂停上传任务"""
         if not self._running:
             return
-        self._paused = True
-        self.status.emit('paused')
+        self._set_pause_reason("manual", True)
 
     def resume(self) -> None:
         """恢复上传任务"""
         if not self._running:
             return
-        self._paused = False
-        self.status.emit('running')
+        self._set_pause_reason("manual", False)
 
     def stop(self, wait: bool = False, timeout: float = 5.0) -> None:
         """停止上传任务
@@ -357,7 +389,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         """
         self.log.emit(f"🛑 正在停止上传任务 ({'安全模式' if wait else '快速模式'})...")
         self._running = False
-        self._paused = False
+        self._set_pause_reason("stopping", True)
         
         # 停止断点续传上传器（保存进度）
         if self.resumable_uploader:
@@ -384,6 +416,44 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self.log.emit("✓ 上传任务已停止")
         self.status.emit('stopped')
 
+    def _apply_network_status(self, status: str) -> None:
+        """Apply a published network event to the sole pause state."""
+        if status == "disconnected":
+            self._network_bad_streak += 1
+            self._network_good_streak = 0
+            if self.network_auto_pause and self._network_bad_streak >= 1:
+                if "network" not in self.pause_reasons:
+                    self.log.emit("⏸️ 检测到网络中断，自动暂停上传...")
+                self.network_pause_by_auto = True
+                self._set_pause_reason("network", True)
+        elif status == "good":
+            self._network_good_streak += 1
+            self._network_bad_streak = 0
+            if (
+                self.network_auto_resume
+                and self.network_pause_by_auto
+                and self._network_good_streak >= 2
+            ):
+                self.log.emit("🔄 网络已恢复，自动继续上传...")
+                self.network_pause_by_auto = False
+                self._set_pause_reason("network", False)
+        else:
+            self._network_good_streak = 0
+
+    def _record_network_status(self, status: str) -> None:
+        """Publish one network sample and let the pause state consume it."""
+        previous = self.current_network_status
+        self.current_network_status = status
+        if status != previous:
+            if status == 'good' and previous in ('unstable', 'disconnected'):
+                self.log.emit('✅ 网络已恢复正常')
+            elif status == 'unstable':
+                self.log.emit('⚠️ 网络不稳定：目标或备份路径不可写')
+            elif status == 'disconnected':
+                self.log.emit('❌ 网络连接中断')
+            self.network_status.emit(status)
+        self._apply_network_status(status)
+
     def has_running_tasks(self) -> bool:
         """返回 Worker 内部是否仍有 Python 线程或线程池任务活动。"""
         threads = [self._thread, self._archive_thread, self._net_thread]
@@ -396,8 +466,6 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
 
     def _network_monitor_loop(self) -> None:
         """网络监控循环（独立线程）"""
-        last_status = None  # None=未检测, 初始状态
-        
         while getattr(self, '_net_running', False):
             try:
                 # 只有所有必需的 SMB 路径均可写时才显示“正常”。
@@ -407,29 +475,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 logger.debug(f"网络监控检查异常: {type(e).__name__}: {e}")
                 status = 'disconnected'
 
-            # 状态变化时发送日志和信号
-            if status != last_status:
-                if status == 'good' and last_status in ('unstable', 'disconnected'):
-                    self.log.emit('✅ 网络已恢复正常')
-                elif status == 'unstable':
-                    self.log.emit('⚠️ 网络不稳定：目标或备份路径不可写')
-                elif status == 'disconnected':
-                    self.log.emit('❌ 网络连接中断')
-                
-                self.network_status.emit(status)
-                self.current_network_status = status
-                last_status = status
-
-                # 自动暂停/恢复
-                if status == 'disconnected' and self.network_auto_pause and not self._paused:
-                    self.log.emit("⏸️ 检测到网络中断，自动暂停上传...")
-                    self.network_pause_by_auto = True
-                    self.pause()
-                if status == 'good' and self.network_auto_resume and self.network_pause_by_auto:
-                    self.log.emit("🔄 网络已恢复，自动继续上传...")
-                    self.network_pause_by_auto = False
-                    self.resume()
-
+            self._record_network_status(status)
             # 断开状态心跳
             if status == 'disconnected':
                 self.network_retry_count += 1
@@ -639,6 +685,33 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         filters: Optional[List[str]] = None,
     ) -> Any:
         """Run network-path metadata work in a bounded, killable subprocess."""
+        # Local paths do not need a PowerShell hop.  Besides avoiding needless
+        # process creation, direct APIs preserve Unicode paths reliably.
+        if not self._is_remote_path(path):
+            try:
+                if operation == "exists":
+                    return os.path.exists(path)
+                if operation == "isdir":
+                    return os.path.isdir(path)
+                if operation == "mkdir":
+                    os.makedirs(path, exist_ok=True)
+                    return True
+                if operation == "disk_usage":
+                    usage = shutil.disk_usage(path)
+                    return int(usage.total), int(usage.free)
+                if operation == "scan":
+                    allowed = {str(item).lower() for item in (filters or [])}
+                    return [
+                        str(item)
+                        for item in Path(path).rglob("*")
+                        if item.is_file()
+                        and (
+                            not allowed
+                            or item.suffix.lower() in allowed
+                        )
+                    ]
+            except (OSError, ValueError):
+                return default
         if time.monotonic() < self._fileop_circuit_until:
             return default
         if not self._fileop_slots.acquire(blocking=False):
@@ -846,16 +919,6 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         if self.upload_protocol == 'ftp_client':
             return 'good'
         if getattr(self, '_net_running', False):
-            now = time.time()
-            if now - self.last_network_check < self.network_check_interval:
-                return self.current_network_status
-            try:
-                self.current_network_status = self._evaluate_smb_network_status(timeout=2.0)
-            except Exception as e:
-                logger.debug(f"目标或备份路径检查异常: {type(e).__name__}: {e}")
-                self.current_network_status = 'disconnected'
-            
-            self.last_network_check = now
             return self.current_network_status
 
         now = time.time()
@@ -870,59 +933,40 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             logger.debug(f"标记网络状态时检查失败: {type(e).__name__}: {e}")
             status = 'disconnected'
         
+        self._record_network_status(status)
         if status == 'good':
-            old_status = self.current_network_status
-            self.current_network_status = 'good'
             self.network_retry_count = 0
-            
-            if old_status == 'disconnected':
-                self.log.emit("✅ 网络已恢复正常")
-                # 注意：自动恢复主要由主循环和网络监控线程处理
-                # 这里只记录状态变化，避免重复调用resume()
-                if self.network_auto_resume and self.network_pause_by_auto and not getattr(self, '_net_running', False):
-                    # 只有在网络监控线程未运行时才在这里恢复
-                    self.log.emit("🔄 网络恢复，自动继续上传...")
-                    time.sleep(0.5)
-                    self.network_pause_by_auto = False
-                    self.resume()
-            
-            self.network_status.emit('good')
-            return 'good'
-        
-        self.network_retry_count += 1
-        
-        if status == 'unstable':
-            old_status = self.current_network_status
-            self.current_network_status = 'unstable'
-            
-            if old_status != 'unstable':
-                self.log.emit("⚠️ 网络不稳定：目标或备份路径不可写")
-            
-            self.network_status.emit('unstable')
-            return 'unstable'
-        
-        old_status = self.current_network_status
-        self.current_network_status = 'disconnected'
-        
-        if old_status != 'disconnected':
-            self.log.emit(f"❌ 网络连接中断（目标和备份文件夹均不可访问）")
-            
-            if self.network_auto_pause and not self._paused:
-                self.log.emit("⏸️ 检测到网络中断，自动暂停上传...")
-                self.network_pause_by_auto = True
-                self.pause()
         else:
-            if self.network_retry_count % 3 == 0:
-                self.log.emit(f"🔌 网络仍未恢复 (第{self.network_retry_count}次检测)")
-        
-        self.network_status.emit('disconnected')
-        return 'disconnected'
+            self.network_retry_count += 1
+        return status
 
-    def _handle_upload_failure(self, file_path: str, protocol_state: Optional[Dict[str, bool]] = None) -> None:
+    def _log_task_transition(
+        self, identity: FileIdentity, state: FileTaskState, reason: str
+    ) -> None:
+        self._log_event(
+            "ℹ️" if state not in {FileTaskState.FAILED, FileTaskState.STALE} else "⚠️",
+            "TASK_STATE",
+            "文件任务状态转换",
+            task_id=identity.sha256[:16],
+            file=os.path.basename(identity.normalized_path),
+            state=state.value,
+            reason=reason,
+        )
+
+    def _handle_upload_failure(
+        self,
+        file_path: str,
+        protocol_state: Optional[Dict[str, bool]] = None,
+        identity: Optional[FileIdentity] = None,
+    ) -> None:
         """处理上传失败（带重试调度）"""
+        try:
+            task_identity = identity or FileIdentity.capture(file_path)
+        except OSError:
+            return
         item = self.retry_queue.get(file_path)
         if item is None:
-            item = {'count': 1, 'next': 0.0}
+            item = {'count': 1, 'next': 0.0, 'identity': task_identity}
         else:
             item['count'] += 1
 
@@ -937,6 +981,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             self._log_failed_file(file_path, f"重试{retry_count-1}次后仍然失败")
             if file_path in self.retry_queue:
                 del self.retry_queue[file_path]
+            self._task_registry.mark_failed(task_identity, "retry_exhausted")
+            self._log_task_transition(task_identity, FileTaskState.FAILED, "retry_exhausted")
             self.failed_count += 1
             self.stats.emit(self.uploaded_count, self.failed_count, self.skipped_count, self.rate)
             self._log_event(
@@ -952,7 +998,16 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         wait_times = [10, 30, 60]
         wait_time = wait_times[min(retry_count - 1, len(wait_times) - 1)]
         item['next'] = time.time() + wait_time
+        item['identity'] = task_identity
         self.retry_queue[file_path] = item
+        self._task_registry.schedule_retry(
+            task_identity,
+            retry_count,
+            item['next'],
+            protocol_results=item.get('protocol_state'),
+            reason="upload_failed",
+        )
+        self._log_task_transition(task_identity, FileTaskState.RETRY_WAIT, "upload_failed")
         self.log.emit(f"⚠ 文件将在稍后重试 ({retry_count}/{self.retry_count})，等待{wait_time}秒: {os.path.basename(file_path)}")
 
     def _process_retry_queue(self) -> None:
@@ -966,9 +1021,18 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         for file_path, item in retry_list:
             if not self._running or self._paused:
                 break
-            
+            identity = item.get('identity')
+            if not isinstance(identity, FileIdentity):
+                try:
+                    identity = FileIdentity.capture(file_path)
+                except OSError:
+                    del self.retry_queue[file_path]
+                    continue
+                item['identity'] = identity
             if not os.path.exists(file_path):
                 del self.retry_queue[file_path]
+                self._task_registry.mark_stale(identity, "retry_source_missing")
+                self._log_task_transition(identity, FileTaskState.STALE, "retry_source_missing")
                 continue
             
             retry_count = item.get('count', 1)
@@ -976,6 +1040,28 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             
             if now < next_at:
                 continue
+
+            try:
+                if not identity.matches_path(file_path):
+                    del self.retry_queue[file_path]
+                    self._task_registry.mark_stale(identity, "retry_source_identity_changed")
+                    self._log_task_transition(
+                        identity, FileTaskState.STALE, "retry_source_identity_changed"
+                    )
+                    continue
+            except OSError:
+                continue
+            if self._task_registry.get(identity) is None:
+                self._task_registry.schedule_retry(
+                    identity,
+                    retry_count,
+                    next_at,
+                    protocol_results=item.get('protocol_state'),
+                    reason="legacy_retry_queue_recovered",
+                )
+            if not self._task_registry.claim_due_retry(identity, now):
+                continue
+            self._log_task_transition(identity, FileTaskState.UPLOADING, "retry_claimed")
             
             self.log.emit(f"📤 开始重试上传 ({retry_count}/{self.retry_count}): {os.path.basename(file_path)}")
             rel = os.path.relpath(file_path, self.source)
@@ -985,12 +1071,15 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             try:
                 # Freeze the exact generation before this retry starts.  The
                 # archive action may only operate on this same identity.
-                archive_identity = FileIdentity.capture(file_path)
+                archive_identity = identity
                 protocol_state = item.get('protocol_state', {})
                 if self.upload_protocol in ('smb', 'both'):
                     tgt_exists = self._safe_path_exists(tgt, timeout=2.0)
                     if tgt_exists and self.upload_protocol != 'both':
                         del self.retry_queue[file_path]
+                        self._task_registry.set_state(
+                            identity, FileTaskState.WAITING, reason="target_exists"
+                        )
                         continue
 
                     self._safe_make_dirs(os.path.dirname(tgt), timeout=3.0)
@@ -1004,12 +1093,20 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 if not copy_success:
                     raise Exception("文件上传失败")
 
-                self._queue_archive(
+                self._task_registry.set_state(
+                    identity,
+                    FileTaskState.UPLOADED,
+                    reason="retry_upload_committed",
+                    protocol_results=protocol_state,
+                )
+                archive_ok = self._queue_archive(
                     file_path,
                     bkp,
                     archive_identity,
                     protocol_state,
                 )
+                if not archive_ok:
+                    self._log_event("⚠️", "ARCHIVE_PERSIST_RETRY", "上传已提交，归档记录等待会话内重试", file=os.path.basename(file_path))
                 del self.retry_queue[file_path]
                 self.uploaded_count += 1
                 self.stats.emit(self.uploaded_count, self.failed_count, self.skipped_count, self.rate)
@@ -1021,6 +1118,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 if item['count'] > self.retry_count:
                     self._log_failed_file(file_path, f"重试{retry_count}次后仍然失败: {str(e)[:100]}")
                     del self.retry_queue[file_path]
+                    self._task_registry.mark_failed(identity, "retry_exhausted")
+                    self._log_task_transition(identity, FileTaskState.FAILED, "retry_exhausted")
                     self.failed_count += 1
                     self.stats.emit(self.uploaded_count, self.failed_count, self.skipped_count, self.rate)
                     self.log.emit(f"❌ 文件上传失败，已记录到失败日志: {os.path.basename(file_path)}")
@@ -1029,6 +1128,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                     wait_time = wait_times[min(item['count'] - 1, len(wait_times) - 1)]
                     item['next'] = time.time() + wait_time
                     self.retry_queue[file_path] = item
+                    self._task_registry.schedule_retry(
+                        identity,
+                        item['count'],
+                        item['next'],
+                        protocol_results=item.get('protocol_state'),
+                        reason="retry_failed",
+                    )
+                    self._log_task_transition(identity, FileTaskState.RETRY_WAIT, "retry_failed")
                     self.log.emit(f"⚠ 重试失败，已重新排队 ({item['count']}/{self.retry_count})，等待{wait_time}秒: {os.path.basename(file_path)}")
 
     def _log_failed_file(self, file_path: str, reason: str) -> None:
@@ -1227,15 +1334,15 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             self.log.emit(f"⚠ 哈希计算失败: {e}")
             return ""
 
-    def _ensure_dedup_index(self, target_dir: str) -> bool:
+    def _ensure_dedup_cache(self, target_dir: str) -> bool:
         """每次运行只流式同步一次目标目录元数据。"""
-        normalized_root = self._dedup_repository.normalize(target_dir)
+        normalized_root = normalize_file_path(target_dir)
         if (
-            self._dedup_index_ready
-            and self._dedup_index_root == normalized_root
+            self._dedup_cache_ready
+            and self._dedup_cache_root == normalized_root
         ):
             return True
-        generation = self._dedup_repository.begin_scan()
+        self._dedup_cache.clear()
         batch: list[tuple[str, int, int]] = []
         try:
             for target_file in self._iter_target_files(target_dir):
@@ -1247,22 +1354,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                     continue
                 batch.append((target_file, int(stat.st_size), int(stat.st_mtime_ns)))
                 if len(batch) >= 500:
-                    if not self._dedup_repository.upsert_metadata_batch(
-                        target_dir, self.hash_algorithm, generation, batch
-                    ):
-                        return False
+                    for target_file, size, _mtime in batch:
+                        self._dedup_cache.put(size, "", target_file)
                     batch.clear()
-            if batch and not self._dedup_repository.upsert_metadata_batch(
-                target_dir, self.hash_algorithm, generation, batch
-            ):
-                return False
-            if not self._dedup_repository.finish_scan(
-                target_dir, self.hash_algorithm, generation
-            ):
-                return False
-            self._dedup_generation = generation
-            self._dedup_index_root = normalized_root
-            self._dedup_index_ready = True
+            for target_file, size, _mtime in batch:
+                self._dedup_cache.put(size, "", target_file)
+            self._dedup_generation += 1
+            self._dedup_cache_root = normalized_root
+            self._dedup_cache_ready = True
             return True
         except OSError as exc:
             logger.debug("去重索引扫描失败: %s: %s", type(exc).__name__, exc)
@@ -1274,43 +1373,32 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         """先按大小查索引，再仅对候选文件计算或复用哈希。"""
         if not file_hash or file_size is None or file_size < 0:
             return ""
-        if not self._ensure_dedup_index(target_dir):
+        if not self._ensure_dedup_cache(target_dir):
             self._log_event(
-                "⚠️", "DEDUP_INDEX", "去重索引不可用，已跳过跨文件名去重",
-                error=self._dedup_repository.last_error,
+                "⚠️", "DEDUP_CACHE", "去重缓存不可用，已跳过跨文件名去重",
+                error="session cache unavailable",
             )
             return ""
         try:
-            candidates = self._dedup_repository.candidates(
-                target_dir, self.hash_algorithm, file_size
-            )
+            candidates = tuple((path, 0, digest) for (size, digest), path in self._dedup_cache.items() if size == file_size)
             for target_file, indexed_mtime, cached_hash in candidates:
                 if not self._running or self._paused:
                     return ""
                 try:
                     stat = self._stat_dedup_file(target_file)
                 except OSError:
-                    self._dedup_repository.remove(
-                        target_dir, self.hash_algorithm, target_file
-                    )
+                    self._dedup_cache.remove_path(target_file)
                     continue
                 current_size = int(stat.st_size)
                 current_mtime = int(stat.st_mtime_ns)
                 if current_size != file_size:
-                    self._dedup_repository.update_file(
-                        target_dir, self.hash_algorithm, target_file,
-                        current_size, current_mtime, "", self._dedup_generation,
-                    )
+                    self._dedup_cache.remove_path(target_file)
                     continue
                 target_hash = cached_hash
                 if not target_hash or current_mtime != indexed_mtime:
                     target_hash = self._calculate_file_hash(target_file)
                     if target_hash:
-                        self._dedup_repository.update_file(
-                            target_dir, self.hash_algorithm, target_file,
-                            current_size, current_mtime, target_hash,
-                            self._dedup_generation,
-                        )
+                        self._dedup_cache.put(current_size, target_hash, target_file)
                 if target_hash == file_hash:
                     return target_file
             return ""
@@ -1319,21 +1407,13 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             return ""
 
     def _record_dedup_target(self, target_path: str, digest: str) -> None:
-        if not self._dedup_index_ready or not digest:
+        if not self._dedup_cache_ready or not digest:
             return
         try:
             stat = self._stat_dedup_file(target_path)
         except OSError:
             return
-        self._dedup_repository.update_file(
-            self.target,
-            self.hash_algorithm,
-            target_path,
-            int(stat.st_size),
-            int(stat.st_mtime_ns),
-            digest,
-            self._dedup_generation,
-        )
+        self._dedup_cache.put(int(stat.st_size), digest, target_path)
 
     @staticmethod
     def _stat_dedup_file(path: str) -> os.stat_result:
@@ -1471,13 +1551,28 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             shutil.move(src_path, bkp_path)
             self.log.emit(f"📦 已归档: {os.path.basename(bkp_path)}")
             self.local_file_generated.emit(bkp_path, "archive")
-        elif action == "delete":
-            os.remove(src_path)
+        elif action == "trash":
+            delete_result = SafeDeletionPolicy().delete(
+                SafeDeletionRequest(
+                    path=src_path,
+                    allowed_roots=(self.source,),
+                    identity_verifier=lambda: (
+                        expected_identity.matches_path(src_path),
+                        "源文件身份已变化",
+                    ),
+                    mode="trash",
+                    automatic=True,
+                )
+            )
+            if not delete_result.success:
+                raise OSError(delete_result.message)
             self._log_event(
-                "⚠️", "DELETE_SRC", "源文件已删除",
+                "⚠️", "TRASH_SRC", "源文件已移入回收站",
                 file=os.path.basename(src_path),
             )
-            self.log.emit(f"🗑️ 已删除: {os.path.basename(src_path)}")
+            self.log.emit(f"🗑️ 已移入回收站: {os.path.basename(src_path)}")
+        elif action == "delete":
+            raise OSError("归档永久删除已禁止，待归档记录已保留")
         else:
             raise ValueError(f"未知归档动作: {action}")
         self._complete_archive_record(src_path)
@@ -1513,6 +1608,10 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 file=os.path.basename(source),
                 reason=reason,
             )
+            for task in self._task_registry.for_path(source):
+                if task.state in {FileTaskState.ARCHIVE_PENDING, FileTaskState.UPLOADED}:
+                    self._task_registry.mark_stale(task.identity, reason)
+                    self._log_task_transition(task.identity, FileTaskState.STALE, reason)
             return
         self._log_event(
             "❌",
@@ -1529,7 +1628,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         identity: FileIdentity,
         protocol_results: Optional[Dict[str, bool]] = None,
     ) -> bool:
-        action = "move" if self.enable_backup else "delete"
+        action = "move" if self.enable_backup else "trash"
         if not self._archive_repository.add(
             source,
             destination,
@@ -1537,13 +1636,29 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             identity,
             protocol_results,
         ):
+            self._schedule_archive_persist_retry(
+                source,
+                destination,
+                action,
+                identity,
+                protocol_results,
+            )
             self._log_event(
                 "❌", "ARCHIVE_JOURNAL", "无法保存待归档记录，源文件已保留",
                 file=os.path.basename(source), error=self._archive_repository.last_error,
             )
             return False
         normalized = self._archive_repository.normalize(source)
+        self._archive_persist_retries.pop(normalized, None)
+        self._archive_repository.remove_failure(source)
         self._pending_archive_sources.add(normalized)
+        self._task_registry.set_state(
+            identity,
+            FileTaskState.ARCHIVE_PENDING,
+            reason="archive_queued",
+            protocol_results=dict(protocol_results or {}),
+        )
+        self._log_task_transition(identity, FileTaskState.ARCHIVE_PENDING, "archive_queued")
         if normalized in self._queued_archive_sources:
             return True
         self._queued_archive_sources.add(normalized)
@@ -1558,11 +1673,213 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         )
         return True
 
+    def _schedule_archive_persist_retry(
+        self,
+        source: str,
+        destination: str,
+        action: str,
+        identity: FileIdentity,
+        protocol_results: Optional[Dict[str, bool]] = None,
+    ) -> None:
+        """Retain an uploaded generation until its archive journal is durable."""
+        normalized = self._archive_repository.normalize(source)
+        existing = self._archive_persist_retries.get(normalized)
+        attempts = int(existing.get("attempts", 0)) + 1 if existing else 1
+        delay = min(
+            self._archive_persist_retry_base_seconds * (2 ** max(0, attempts - 1)),
+            self._archive_persist_retry_max_seconds,
+        )
+        exhausted = attempts >= self._archive_persist_retry_limit
+        record = {
+            "source": source,
+            "destination": destination,
+            "action": action,
+            "identity": identity,
+            "protocol_results": dict(protocol_results or {}),
+            "attempts": attempts,
+            "next_retry_at": time.time() + delay,
+            "last_error": self._archive_repository.last_error,
+            "exhausted": exhausted,
+        }
+        self._archive_persist_retries[normalized] = record
+        durable_record = dict(record)
+        durable_record["identity"] = identity.to_mapping()
+        if not self._archive_repository.record_failure(durable_record):
+            self._log_event(
+                "❌", "ARCHIVE_FAILURE_OUTBOX", "归档失败 outbox 无法持久化，已保留源文件并需要人工介入",
+                file=os.path.basename(source), error=self._archive_repository.last_error,
+            )
+        self._pending_archive_sources.add(normalized)
+        self._task_registry.set_state(
+            identity,
+            FileTaskState.ARCHIVE_PERSIST_FAILED,
+            reason="archive_journal_write_failed",
+            protocol_results=dict(protocol_results or {}),
+        )
+        self._log_task_transition(
+            identity,
+            FileTaskState.ARCHIVE_PERSIST_FAILED,
+            "archive_journal_write_failed",
+        )
+        if exhausted:
+            self._log_event(
+                "❌",
+                "ARCHIVE_PERSIST_EXHAUSTED",
+                "归档记录多次保存失败，源文件已保留，需人工重试",
+                file=os.path.basename(source),
+                attempts=attempts,
+                error=self._archive_repository.last_error,
+            )
+        else:
+            self._log_event(
+                "⚠️",
+                "ARCHIVE_PERSIST_RETRY",
+                "归档记录保存失败，源文件已保留并将在会话内重试",
+                file=os.path.basename(source),
+                attempts=attempts,
+                retry_in_seconds=delay,
+                error=self._archive_repository.last_error,
+            )
+
+    def _process_archive_persist_retries(self) -> None:
+        """Retry journal writes only; successful uploads are never replayed."""
+        now = time.time()
+        for normalized, record in list(self._archive_persist_retries.items()):
+            if record.get("exhausted") or now < float(record.get("next_retry_at", 0.0)):
+                continue
+            identity = record.get("identity")
+            source = str(record.get("source", ""))
+            if not isinstance(identity, FileIdentity) or not source:
+                self._archive_persist_retries.pop(normalized, None)
+                self._pending_archive_sources.discard(normalized)
+                continue
+            try:
+                if not identity.matches_path(source):
+                    self._archive_persist_retries.pop(normalized, None)
+                    self._pending_archive_sources.discard(normalized)
+                    self._archive_repository.remove_failure(source)
+                    self._task_registry.mark_stale(
+                        identity, "archive_journal_source_identity_changed"
+                    )
+                    self._log_task_transition(
+                        identity, FileTaskState.STALE, "archive_journal_source_identity_changed"
+                    )
+                    continue
+            except FileNotFoundError:
+                self._archive_persist_retries.pop(normalized, None)
+                self._pending_archive_sources.discard(normalized)
+                self._archive_repository.remove_failure(source)
+                self._task_registry.mark_stale(identity, "archive_journal_source_missing")
+                self._log_task_transition(
+                    identity, FileTaskState.STALE, "archive_journal_source_missing"
+                )
+                continue
+            except OSError:
+                # The file may be temporarily unavailable.  Preserve both the
+                # source reservation and retry record until the normal retry
+                # limit can make the need for operator action explicit.
+                self._schedule_archive_persist_retry(
+                    source,
+                    str(record.get("destination", "")),
+                    str(record.get("action", "move")),
+                    identity,
+                    record.get("protocol_results"),
+                )
+                continue
+
+            if self._archive_repository.add(
+                source,
+                str(record.get("destination", "")),
+                str(record.get("action", "move")),
+                identity,
+                record.get("protocol_results"),
+            ):
+                self._archive_persist_retries.pop(normalized, None)
+                self._archive_repository.remove_failure(source)
+                self._task_registry.set_state(
+                    identity,
+                    FileTaskState.ARCHIVE_PENDING,
+                    reason="archive_journal_recovered",
+                    protocol_results=record.get("protocol_results"),
+                )
+                self._log_task_transition(
+                    identity, FileTaskState.ARCHIVE_PENDING, "archive_journal_recovered"
+                )
+                if normalized not in self._queued_archive_sources:
+                    self._queued_archive_sources.add(normalized)
+                    self.archive_queue.put(
+                        {
+                            "source": source,
+                            "destination": str(record.get("destination", "")),
+                            "action": str(record.get("action", "move")),
+                            "identity": identity.to_mapping(),
+                            "protocol_results": dict(record.get("protocol_results") or {}),
+                        }
+                    )
+                self._log_event(
+                    "✅", "ARCHIVE_PERSIST_RECOVERED", "归档记录已保存，等待归档执行",
+                    file=os.path.basename(source),
+                )
+                continue
+
+            self._schedule_archive_persist_retry(
+                source,
+                str(record.get("destination", "")),
+                str(record.get("action", "move")),
+                identity,
+                record.get("protocol_results"),
+            )
+
+    def retry_archive_persistence(self, source: str) -> bool:
+        """Request an immediate operator-triggered retry of a failed journal write."""
+        normalized = self._archive_repository.normalize(source)
+        record = self._archive_persist_retries.get(normalized)
+        if record is None:
+            return False
+        record["attempts"] = 0
+        record["exhausted"] = False
+        record["next_retry_at"] = 0.0
+        self._process_archive_persist_retries()
+        return normalized not in self._archive_persist_retries
+
+    def _restore_archive_persist_failures(self) -> None:
+        for persisted in self._archive_repository.load_failures():
+            source = str(persisted.get("source", ""))
+            try:
+                identity_data = persisted.get("identity")
+                if not isinstance(identity_data, dict):
+                    continue
+                identity = FileIdentity.from_mapping(identity_data)
+            except (TypeError, ValueError):
+                continue
+            if not source or identity.normalized_path != self._archive_repository.normalize(source):
+                continue
+            normalized = self._archive_repository.normalize(source)
+            restored = dict(persisted)
+            restored["identity"] = identity
+            self._archive_persist_retries[normalized] = restored
+            self._pending_archive_sources.add(normalized)
+            self._task_registry.set_state(
+                identity,
+                FileTaskState.ARCHIVE_PERSIST_FAILED,
+                reason="archive_journal_failure_recovered",
+                protocol_results=restored.get("protocol_results"),
+            )
+
     def _complete_archive_record(self, source: str) -> None:
+        identities = self._task_registry.for_path(source)
         if self._archive_repository.remove(source):
             self._pending_archive_sources.discard(
                 self._archive_repository.normalize(source)
             )
+            for task in identities:
+                if task.state is FileTaskState.ARCHIVE_PENDING:
+                    self._task_registry.set_state(
+                        task.identity, FileTaskState.ARCHIVED, reason="archive_completed"
+                    )
+                    self._log_task_transition(
+                        task.identity, FileTaskState.ARCHIVED, "archive_completed"
+                    )
         else:
             self._log_event(
                 "⚠️", "ARCHIVE_JOURNAL", "归档完成但记录清理失败",
@@ -1658,6 +1975,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             self.disk_cleanup_needed.emit()
 
         if tf_ok < self.disk_threshold_percent or (backup_check and bf_ok < self.disk_threshold_percent):
+            self._set_pause_reason("disk", True)
             now = time.time()
             if now - self._last_space_warn > 10:
                 self._last_space_warn = now
@@ -1671,6 +1989,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 )
                 self.disk_warning.emit(tf_ok, bf_ok, self.disk_threshold_percent)
             return False
+        self._set_pause_reason("disk", False)
         return True
 
     def _stream_remote_files(
@@ -1737,11 +2056,25 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
 
     def _stream_remote_image_files(self) -> Iterator[str]:
         for path in self._stream_remote_files(self.source, self.filters):
-            if (
-                self._archive_repository.normalize(path)
-                not in self._pending_archive_sources
-            ):
+            if self._should_yield_source_path(path):
                 yield path
+
+    def _should_yield_source_path(self, path: str) -> bool:
+        """Apply the shared identity and pending-archive gate for source scans.
+
+        Enumeration remains protocol-specific, while this method owns the
+        generation check used by both local and network-backed streams. A file
+        whose identity cannot be captured is skipped by both paths; uploading an
+        unverified generation would otherwise create divergent behavior.
+        """
+        normalized = self._archive_repository.normalize(path)
+        if normalized in self._pending_archive_sources:
+            return False
+        try:
+            identity = FileIdentity.capture(path)
+        except OSError:
+            return False
+        return not self._task_registry.should_skip_scan(identity)
 
     def _iter_target_files(self, target_dir: str) -> Iterator[str]:
         if self._is_remote_path(target_dir):
@@ -1767,10 +2100,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 ext = os.path.splitext(name)[1].lower()
                 if not self.filters or ext in self.filters:
                     path = os.path.join(root, name)
-                    if (
-                        self._archive_repository.normalize(path)
-                        not in self._pending_archive_sources
-                    ):
+                    if self._should_yield_source_path(path):
                         yield path
 
     def _wait_before_upload(self, images: List[str]) -> None:
@@ -1806,32 +2136,22 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         
         try:
             while self._running:
+                # Archive-journal recovery is local state work and must not be
+                # blocked by upload network or disk eligibility checks.
+                self._process_archive_persist_retries()
                 # 定期健康检查（每 60 次循环，约每 30 秒）
                 self._health_check_counter += 1
                 if self._health_check_counter >= 60:
                     self._health_check_counter = 0
                     self.log_health_status()
                 
-                # 暂停处理（支持网络恢复自动继续）
+                # 所有暂停原因由 PauseState 管理，网络线程负责发布恢复事件。
                 pause_log_counter = 0
                 while self._paused and self._running:
                     time.sleep(0.2)
                     pause_log_counter += 1
-                    
-                    # 每隔一段时间检查网络状态（如果是自动暂停）
-                    if self.network_pause_by_auto and pause_log_counter % 15 == 0:  # 每3秒检查一次
-                        try:
-                            network_status = self._check_network_connection()
-                            if network_status == 'good' and self.network_auto_resume:
-                                self.log.emit("✅ 检测到网络已恢复，自动继续上传...")
-                                self.network_pause_by_auto = False
-                                self._paused = False
-                                self.status.emit('running')
-                                break
-                        except Exception as e:
-                            # 记录异常而不是完全吞掉（限频避免刷屏）
-                            if pause_log_counter % 150 == 0:  # 每30秒记录一次
-                                self.log.emit(f"⚠️ 网络检查异常: {type(e).__name__}: {str(e)[:100]}")
+                    if "disk" in self.pause_reasons and pause_log_counter % 5 == 0:
+                        self._ensure_disk_space()
                     
                     if pause_log_counter >= 50:  # 每10秒显示一次暂停提示
                         pause_log_counter = 0
@@ -1888,26 +2208,13 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                         time.sleep(2)
                         break
                     
-                    # 暂停处理（支持网络恢复自动继续）
+                    # 暂停处理由统一状态查询；网络恢复不会清除 manual/disk 原因。
                     pause_check_counter = 0
                     while self._paused and self._running:
                         time.sleep(0.2)
                         pause_check_counter += 1
-                        
-                        # 如果是网络自动暂停，定期检查网络状态
-                        if self.network_pause_by_auto and pause_check_counter % 15 == 0:
-                            try:
-                                network_status = self._check_network_connection()
-                                if network_status == 'good' and self.network_auto_resume:
-                                    self.log.emit("✅ 网络已恢复，自动继续上传...")
-                                    self.network_pause_by_auto = False
-                                    self._paused = False
-                                    self.status.emit('running')
-                                    break
-                            except Exception as e:
-                                # 记录异常（限频）
-                                if pause_check_counter % 150 == 0:
-                                    self.log.emit(f"⚠️ 网络检查异常: {type(e).__name__}: {str(e)[:100]}")
+                        if "disk" in self.pause_reasons and pause_check_counter % 5 == 0:
+                            self._ensure_disk_space()
                     
                     if not self._running:
                         break
@@ -1923,6 +2230,19 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                     tgt = os.path.join(self.target, rel)
                     bkp = os.path.join(self.backup, rel)
                     fname = os.path.basename(path)
+                    try:
+                        task_identity = FileIdentity.capture(path)
+                    except OSError as exc:
+                        self._log_event(
+                            "⚠️", "TASK_CAPTURE", "无法冻结文件身份，已跳过本轮",
+                            file=fname, error=type(exc).__name__,
+                        )
+                        continue
+                    if not self._task_registry.claim_for_upload(task_identity):
+                        continue
+                    self._log_task_transition(
+                        task_identity, FileTaskState.UPLOADING, "scanner_claimed"
+                    )
                     
                     # 创建目标目录（FTP-only 不需要本地目标目录）
                     if self.upload_protocol in ('smb', 'both'):
@@ -1939,7 +2259,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                                 path=os.path.dirname(tgt)
                             )
                             self.upload_error.emit(fname, str(e))
-                            self._handle_upload_failure(path)
+                            self._handle_upload_failure(path, identity=task_identity)
                             continue
 
                     self.current_file_name = fname
@@ -1960,6 +2280,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                             self.skipped_count += 1
                             self.stats.emit(self.uploaded_count, self.failed_count, self.skipped_count, self.rate)
                             self.file_progress.emit(fname, 100)
+                            self._task_registry.release_for_scan(
+                                task_identity, "target_exists"
+                            )
                         else:
                             # 获取文件大小
                             try:
@@ -1972,7 +2295,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                             # duplicate-skip decision) and checked again by
                             # the separate archive thread before it mutates
                             # the source path.
-                            archive_identity = FileIdentity.capture(path)
+                            archive_identity = task_identity
                             
                             self.file_progress.emit(fname, 0)
                             
@@ -2017,12 +2340,17 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                                         self.skipped_count += 1
                                         self.stats.emit(self.uploaded_count, self.failed_count, self.skipped_count, self.rate)
                                         self.file_progress.emit(fname, 100)
-                                        self._queue_archive(
+                                        archive_ok = self._queue_archive(
                                             path,
                                             bkp,
                                             archive_identity,
                                             protocol_state,
                                         )
+                                        if not archive_ok:
+                                            self._log_event(
+                                                "⚠️", "ARCHIVE_PERSIST_RETRY",
+                                                "重复文件归档记录等待会话内重试", file=fname,
+                                            )
                                         should_upload = False
                                     elif choice == 'rename':
                                         self._log_event("ℹ️", "DUP_RENAME", "重复文件将重命名上传", file=fname)
@@ -2049,6 +2377,16 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                                 
                                 if not upload_success:
                                     raise Exception("文件上传失败")
+
+                                self._task_registry.set_state(
+                                    archive_identity,
+                                    FileTaskState.UPLOADED,
+                                    reason="upload_committed",
+                                    protocol_results=protocol_state,
+                                )
+                                self._log_task_transition(
+                                    archive_identity, FileTaskState.UPLOADED, "upload_committed"
+                                )
                                 
                                 self.uploaded_count += 1
                                 
@@ -2070,12 +2408,17 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                                     self.local_file_generated.emit(final_target, "upload")
                                     if dedup_supported:
                                         self._record_dedup_target(final_target, src_hash)
-                                self._queue_archive(
+                                archive_ok = self._queue_archive(
                                     path,
                                     bkp,
                                     archive_identity,
                                     protocol_state,
                                 )
+                                if not archive_ok:
+                                    self._log_event(
+                                        "⚠️", "ARCHIVE_PERSIST_RETRY",
+                                        "上传已提交，归档记录等待会话内重试", file=fname,
+                                    )
                             else:
                                 self.file_progress.emit(fname, 100)
                                 
@@ -2089,7 +2432,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                         )
                         self.log.emit(f"✗ 上传失败 {fname}: {e}")
                         self.upload_error.emit(fname, str(e))
-                        self._handle_upload_failure(path, protocol_state=protocol_state)
+                        self._handle_upload_failure(
+                            path, protocol_state=protocol_state, identity=task_identity
+                        )
 
                     self.current += 1
                     self.progress.emit(self.current, self.total_files, fname)

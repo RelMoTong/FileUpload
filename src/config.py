@@ -10,10 +10,11 @@ import json
 import os
 from pathlib import Path
 import shutil
-import tempfile
 from typing import Dict, Any, Optional
 
 from src.models.stability import apply_stability_feature_freeze
+from src.core.atomic_json_store import AtomicJsonStore
+from src.models._conversion import SHARED_RETIRED_CONFIG_KEYS
 
 
 class ConfigManager:
@@ -26,7 +27,6 @@ class ConfigManager:
         'enable_backup': True,
         'upload_interval': 30,
         'file_upload_delay_seconds': 1.5,
-        'monitor_mode': 'periodic',
         'disk_threshold_percent': 10,
         'retry_count': 3,
         'disk_check_interval': 5,
@@ -58,16 +58,15 @@ class ConfigManager:
         'auto_delete_folders': [],
         'auto_delete_threshold': 80,
         'auto_delete_target_percent': 40,
-        'auto_delete_keep_days': 10,
         'auto_delete_check_interval': 300,
+        'auto_delete_formats': [],
+        'auto_delete_use_trash': True,
         # 协议配置
         'upload_protocol': 'smb',  # 上传协议: smb, ftp_client, both
         'current_protocol': 'smb',
         'enable_ftp_server': False,  # v3.1.0: FTP服务器独立开关
         # v3.0.2 新增：语言设置
         'language': 'zh_CN',
-        # v3.0.2 新增：断点续传设置
-        'enable_resume': True,
         # FTP 服务器配置
         'ftp_server': {
             'host': '0.0.0.0',
@@ -101,6 +100,11 @@ class ConfigManager:
         # 用户账户
         'users': {},
     }
+
+    # Persisted by older releases but either ignored or superseded by a fixed
+    # runtime policy.  They are deliberately removed without touching unknown
+    # forward-compatible settings.
+    RETIRED_CONFIG_KEYS = SHARED_RETIRED_CONFIG_KEYS
     
     def __init__(self, config_path: Path):
         """初始化配置管理器
@@ -111,6 +115,11 @@ class ConfigManager:
         self.config_path = config_path
         self._config: Dict[str, Any] = {}
         self.last_error = ''
+        self._store = AtomicJsonStore(
+            self.config_path,
+            wrap_envelope=False,
+            replace_func=lambda source, target: os.replace(source, target),
+        )
 
     @staticmethod
     def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -122,6 +131,14 @@ class ConfigManager:
             else:
                 result[key] = copy.deepcopy(value)
         return result
+
+    @classmethod
+    def _without_retired_keys(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            key: copy.deepcopy(value)
+            for key, value in config.items()
+            if key not in cls.RETIRED_CONFIG_KEYS
+        }
     
     def load(self) -> Dict[str, Any]:
         """加载配置文件
@@ -136,10 +153,12 @@ class ConfigManager:
             return copy.deepcopy(self._config)
         
         try:
-            with open(self.config_path, 'r', encoding='utf-8') as f:
-                loaded_config = json.load(f)
+            loaded_config = self._store.read(default=None)
+            if not isinstance(loaded_config, dict):
+                raise ValueError("配置文件必须是 JSON 对象")
             
             # 合并默认配置和加载的配置（深度合并，保留新增默认值）
+            loaded_config = self._without_retired_keys(loaded_config)
             merged_config = apply_stability_feature_freeze(
                 self._deep_merge(self.DEFAULT_CONFIG, loaded_config)
             )
@@ -177,10 +196,10 @@ class ConfigManager:
             是否保存成功
         """
         self.last_error = ''
-        temp_path: Optional[Path] = None
-        descriptor: Optional[int] = None
         try:
-            payload = apply_stability_feature_freeze(config)
+            payload = apply_stability_feature_freeze(
+                self._without_retired_keys(config)
+            )
             # 合并现有有效配置，避免旧版本未知字段被无意丢弃。
             old_cfg: Dict[str, Any] = {}
             if self.config_path.exists():
@@ -189,7 +208,9 @@ class ConfigManager:
                         old_cfg = json.load(f)
                     if isinstance(old_cfg, dict):
                         payload = apply_stability_feature_freeze(
-                            self._deep_merge(old_cfg, payload)
+                            self._deep_merge(
+                                self._without_retired_keys(old_cfg), payload
+                            )
                         )
                     else:
                         old_cfg = {}
@@ -199,20 +220,8 @@ class ConfigManager:
                 except Exception:
                     pass
 
-            self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            descriptor, raw_temp_path = tempfile.mkstemp(
-                prefix=f".{self.config_path.name}.",
-                suffix=".tmp",
-                dir=str(self.config_path.parent),
-            )
-            temp_path = Path(raw_temp_path)
-            with os.fdopen(descriptor, 'w', encoding='utf-8', newline='') as f:
-                descriptor = None
-                json.dump(payload, f, indent=2, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temp_path, self.config_path)
-            temp_path = None
+            if not self._store.write(payload):
+                raise OSError(self._store.last_error)
 
             self._config = copy.deepcopy(payload)
             return True
@@ -220,17 +229,6 @@ class ConfigManager:
             self.last_error = str(e)
             print(f"配置保存失败: {e}")
             return False
-        finally:
-            if descriptor is not None:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
-            if temp_path is not None:
-                try:
-                    temp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
     
     def get(self, key: str, default: Any = None) -> Any:
         """获取配置项

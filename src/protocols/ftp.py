@@ -13,6 +13,7 @@ import threading
 import logging
 import time
 import datetime
+import uuid
 from pathlib import Path
 from ftplib import FTP, FTP_TLS, error_perm
 from pyftpdlib.authorizers import DummyAuthorizer
@@ -23,15 +24,12 @@ except ImportError:
     # 旧版本的 pyftpdlib 中 TLS_FTPHandler 可能不存在
     TLS_FTPHandler = None  # type: ignore
 from pyftpdlib.servers import FTPServer
-from typing import Optional, Callable, Tuple, Dict, List, Union, cast
-from queue import Queue
+from typing import Optional, Callable, Tuple, Union
 
 from src.models import FTPOperationResult
 
 # 配置日志
 logger = logging.getLogger(__name__)
-
-
 class FTPServerManager:
     """
     FTP 服务器管理器
@@ -97,6 +95,23 @@ class FTPServerManager:
                 callback(event_data)
             except Exception as e:
                 logger.debug(f"FTP事件回调失败: {type(e).__name__}: {e}")
+
+    def _isolate_incomplete_upload(self, file_path: str) -> str:
+        """Move an incomplete task temporary object out of the delivery tree."""
+        source = Path(file_path)
+        if not source.is_file():
+            return ""
+        try:
+            quarantine_dir = source.parent / ".incomplete"
+            quarantine_dir.mkdir(exist_ok=True)
+            destination = quarantine_dir / source.name
+            if destination.exists():
+                destination = quarantine_dir / f"{source.name}.{uuid.uuid4().hex[:8]}"
+            os.replace(source, destination)
+            return str(destination)
+        except OSError as exc:
+            logger.warning("FTP 不完整文件隔离失败 %s: %s", source, exc)
+            return ""
     
     def start(self) -> bool:
         """
@@ -178,13 +193,14 @@ class FTPServerManager:
                     )
 
                 def on_incomplete_file_received(self, file):
+                    isolated_path = manager._isolate_incomplete_upload(str(file))
                     manager._emit_event(
                         'upload_incomplete',
                         client_ip=getattr(self, 'remote_ip', ''),
                         username=getattr(self, 'username', ''),
-                        path=str(file),
-                        size=_file_size(str(file)),
-                        message='文件上传未完成'
+                        path=isolated_path or str(file),
+                        size=_file_size(isolated_path or str(file)),
+                        message='文件上传未完成，已隔离' if isolated_path else '文件上传未完成，隔离失败'
                     )
 
             class EventFTPHandler(EventHandlerMixin, FTPHandler):
@@ -686,6 +702,10 @@ class FTPClientUploader:
         uploaded_bytes = 0
         command_executed = False
         response_text = ""
+        temporary_remote = (
+            f"{normalized_remote}.part-{uuid.uuid4().hex[:12]}"
+        )
+        committed = False
         with self._lock:
             with self._connection_lock:
                 ftp = self.ftp
@@ -738,7 +758,7 @@ class FTPClientUploader:
                 command_executed = True
                 with open(local_file, 'rb') as stream:
                     response = ftp.storbinary(
-                        f'STOR {normalized_remote}', stream, callback=callback
+                        f'STOR {temporary_remote}', stream, callback=callback
                     )
                 response_text = str(response or "")
                 if not response_text.startswith("2"):
@@ -783,7 +803,7 @@ class FTPClientUploader:
                         response=response_text,
                     )
                 try:
-                    remote_size_value = ftp.size(normalized_remote)
+                    remote_size_value = ftp.size(temporary_remote)
                     remote_size = (
                         int(remote_size_value) if remote_size_value is not None else None
                     )
@@ -834,6 +854,37 @@ class FTPClientUploader:
                         response=response_text,
                     )
 
+                try:
+                    rename_response = ftp.rename(temporary_remote, normalized_remote)
+                except Exception as exc:
+                    message = f"FTP 最终提交失败：{type(exc).__name__}: {exc}"
+                    logger.error(message)
+                    return make_result(
+                        False,
+                        "rename_failed",
+                        message,
+                        command_executed=True,
+                        normalized_remote=normalized_remote,
+                        local_size=file_size,
+                        uploaded_bytes=uploaded_bytes,
+                        remote_size=remote_size,
+                        response=response_text,
+                    )
+                if not str(rename_response or "").startswith("2"):
+                    message = f"FTP 最终提交未确认：{rename_response}"
+                    logger.error(message)
+                    return make_result(
+                        False,
+                        "rename_unconfirmed",
+                        message,
+                        command_executed=True,
+                        normalized_remote=normalized_remote,
+                        local_size=file_size,
+                        uploaded_bytes=uploaded_bytes,
+                        remote_size=remote_size,
+                        response=str(rename_response),
+                    )
+                committed = True
                 message = (
                     f"文件上传已确认：{local_file.name} → {normalized_remote} "
                     f"({file_size} 字节)"
@@ -876,6 +927,12 @@ class FTPClientUploader:
                     uploaded_bytes=uploaded_bytes,
                     response=response_text,
                 )
+            finally:
+                if not committed and command_executed:
+                    try:
+                        ftp.delete(temporary_remote)
+                    except Exception:
+                        logger.debug("FTP 临时对象清理失败: %s", temporary_remote)
 
     def _is_current_connection(
         self,
@@ -1069,28 +1126,22 @@ class FTPClientUploader:
 
 class FTPProtocolManager:
     """
-    FTP 协议管理器（统一管理服务器和客户端）
+    FTP 服务器生命周期管理器。
     
     功能：
-    - 统一管理 FTP 服务器和客户端
-    - 支持同时运行服务器 + 多个客户端
-    - 模式切换（server / client / both / none）
-    - 添加/删除客户端
-    - 获取整体状态
-    - 全局错误处理
+    - 启动和停止内置 FTP 服务器
+    - 获取服务器运行状态
+    - 统一停止服务并处理生命周期异常
     
     工作模式：
     - 'none': 禁用 FTP（使用 SMB）
     - 'server': 仅 FTP 服务器
-    - 'client': 仅 FTP 客户端
-    - 'both': 服务器 + 客户端（同时）
     """
     
     def __init__(self):
         """初始化协议管理器"""
         self.server: Optional[FTPServerManager] = None
-        self.clients: Dict[str, FTPClientUploader] = {}
-        self.mode = 'none'  # 'server', 'client', 'both', 'none'
+        self.mode = 'none'  # 'server' or 'none'
         self._lock = threading.RLock()  # 使用可重入锁防止stop_all()中的死锁
         
         logger.info("FTP 协议管理器初始化")
@@ -1114,11 +1165,7 @@ class FTPProtocolManager:
                 self.server = FTPServerManager(config)
                 
                 if self.server.start():
-                    # 更新模式
-                    if self.mode == 'client':
-                        self.mode = 'both'
-                    else:
-                        self.mode = 'server'
+                    self.mode = 'server'
                     
                     logger.info(f"FTP 服务器已启动，当前模式：{self.mode}")
                     return True
@@ -1148,44 +1195,11 @@ class FTPProtocolManager:
             if result:
                 self.server = None
                 
-                # 更新模式
-                if self.mode == 'both':
-                    self.mode = 'client'
-                else:
-                    self.mode = 'none'
+                self.mode = 'none'
                 
                 logger.info(f"FTP 服务器已停止，当前模式：{self.mode}")
             
             return result
-    
-    def remove_client(self, name: str) -> bool:
-        """
-        移除 FTP 客户端
-        
-        Args:
-            name: 客户端名称
-        
-        Returns:
-            bool: 移除是否成功
-        """
-        with self._lock:
-            if name not in self.clients:
-                logger.warning(f"客户端不存在：{name}")
-                return False
-            
-            client = self.clients[name]
-            client.disconnect()
-            del self.clients[name]
-            
-            # 更新模式
-            if not self.clients:
-                if self.mode == 'both':
-                    self.mode = 'server'
-                else:
-                    self.mode = 'none'
-            
-            logger.info(f"FTP 客户端已移除：{name}，当前模式：{self.mode}")
-            return True
     
     def get_status(self) -> dict:
         """
@@ -1204,10 +1218,6 @@ class FTPProtocolManager:
         with self._lock:
             logger.info("正在停止所有 FTP 服务...")
             
-            # 停止所有客户端
-            for name in list(self.clients.keys()):
-                self.remove_client(name)
-            
             # 停止服务器
             if self.server:
                 self.stop_server()
@@ -1222,31 +1232,3 @@ class FTPProtocolManager:
         except Exception as e:
             # 析构时停止服务失败（可能已停止）
             logger.debug(f"FTPManager析构停止服务异常: {type(e).__name__}: {e}")
-
-
-# 模块级别的便捷函数
-
-def create_ftp_server(config: dict) -> FTPServerManager:
-    """
-    便捷函数：创建 FTP 服务器
-    
-    Args:
-        config: 服务器配置
-    
-    Returns:
-        FTPServerManager: 服务器管理器实例
-    """
-    return FTPServerManager(config)
-
-
-def create_ftp_client(config: dict) -> FTPClientUploader:
-    """
-    便捷函数：创建 FTP 客户端
-    
-    Args:
-        config: 客户端配置
-    
-    Returns:
-        FTPClientUploader: 客户端上传器实例
-    """
-    return FTPClientUploader(config)

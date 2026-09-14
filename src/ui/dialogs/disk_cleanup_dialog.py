@@ -13,9 +13,14 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 
 from src.core.i18n import t
-from src.models import CleanupDeleteRequest, CleanupFileItem, CleanupScanRequest
+from src.models import (
+    CleanupDeleteRequest,
+    CleanupFileItem,
+    CleanupScanRequest,
+    normalize_cleanup_folders,
+)
 from src.models.stability import STABILITY_FREEZE_ACTIVE, STABILITY_FREEZE_NOTICE
-from src.ui.widgets import ChipWidget, CollapsibleBox
+from src.ui.widgets import CollapsibleBox
 
 Signal = QtCore.Signal
 
@@ -292,6 +297,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.cleanup_controller.set_manual_listener(self._handle_cleanup_event)
 
         self.all_files: List[FileItem] = []
+        self._scanned_folders: Tuple[str, ...] = ()
         self._hidden_auto_cleanup_folders: List[str] = []
         self._folder_rows: List[
             Tuple[
@@ -310,7 +316,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._build_ui()
         self._apply_permission_state()
         if not self.trash_available:
-            self._append_log_line("回收站不可用，删除将为永久删除。")
+            self._append_log_line("回收站不可用，删除会被拒绝；可手动选择永久删除并二次确认。")
 
     def _read_settings_snapshot(self) -> Dict[str, Any]:
         if self.settings_gateway is None:
@@ -560,7 +566,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
 
         # 回收站提示（如果不可用）
         if not self.trash_available:
-            warning_label = QtWidgets.QLabel("警告：回收站不可用，文件将被永久删除！")
+            warning_label = QtWidgets.QLabel("警告：回收站不可用；默认不删除，永久删除需手动选择并二次确认。")
             warning_label.setProperty("class", "warning-banner")
             main_layout.addWidget(warning_label)
         
@@ -1047,16 +1053,10 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
 
     def _get_saved_auto_cleanup_folders(self) -> List[str]:
         """读取新版多目录自动清理配置。"""
-        folders: List[str] = []
         raw_folders = self._settings.get("auto_delete_folders", [])
-        if isinstance(raw_folders, list):
-            for path in raw_folders:
-                if isinstance(path, str):
-                    path = path.strip()
-                    if path and path not in folders:
-                        folders.append(path)
-
-        return folders
+        return normalize_cleanup_folders(
+            raw_folders if isinstance(raw_folders, list) else []
+        )
 
     def _collect_selected_folders(self, include_hidden: bool = False) -> List[str]:
         """收集当前勾选的目录，保持顺序并去重。"""
@@ -1080,7 +1080,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
                 cleaned = path.strip()
                 if cleaned and cleaned not in folders_to_clean:
                     folders_to_clean.append(cleaned)
-        return folders_to_clean
+        return normalize_cleanup_folders(folders_to_clean)
 
     def _update_folder_action_buttons(
         self,
@@ -1449,18 +1449,6 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         config_grid.addWidget(interval_label, 1, 0)
         config_grid.addWidget(self.spin_check_interval, 1, 1)
         
-        # 保留天数
-        keep_days_label = QtWidgets.QLabel("保留天数（不生效）")
-        self.spin_keep_days = QtWidgets.QSpinBox()
-        self.spin_keep_days.setRange(0, 365)
-        auto_keep_days = int(self._settings.get('auto_delete_keep_days', 0))
-        self.spin_keep_days.setValue(auto_keep_days)
-        self.spin_keep_days.setSuffix(" 天")
-        self.spin_keep_days.setToolTip("兼容旧配置：达到自动清理阈值后不受保留天数限制")
-        self.spin_keep_days.setEnabled(False)
-        config_grid.addWidget(keep_days_label, 1, 2)
-        config_grid.addWidget(self.spin_keep_days, 1, 3)
-        
         # 格式过滤
         formats_label = QtWidgets.QLabel("格式过滤")
         self.edit_formats = QtWidgets.QLineEdit()
@@ -1476,10 +1464,9 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         
         # v3.3.0：删除模式（回收站/永久删除）
         self.cb_auto_use_trash = QtWidgets.QCheckBox("使用回收站删除（更安全）")
-        auto_use_trash = bool(self._settings.get('auto_delete_use_trash', True))
-        self.cb_auto_use_trash.setChecked(auto_use_trash)
-        self.cb_auto_use_trash.setEnabled(auto_enabled)
-        self.cb_auto_use_trash.setToolTip("勾选后文件将移至回收站而非永久删除，可在回收站中恢复")
+        self.cb_auto_use_trash.setChecked(True)
+        self.cb_auto_use_trash.setEnabled(False)
+        self.cb_auto_use_trash.setToolTip("自动清理仅允许回收站模式；回收站不可用时自动清理会失败关闭")
         auto_layout.addWidget(self.cb_auto_use_trash)
         
         # 说明文本
@@ -1524,7 +1511,8 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         
         self.action_permanent = delete_mode_menu.addAction("永久删除")
         self.action_permanent.setCheckable(True)
-        self.action_permanent.setChecked(not self.trash_available)
+        self.action_permanent.setChecked(False)
+        self._permanent_mode_explicit = False
         
         # 确保只有一个被选中
         self.action_trash.triggered.connect(lambda: self._set_delete_mode(True))
@@ -1545,7 +1533,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         button_layout.addLayout(delete_group)
         
         # 显示当前删除模式（灰色小标签）
-        self.delete_mode_label = QtWidgets.QLabel("(回收站)" if self.trash_available else "(永久)")
+        self.delete_mode_label = QtWidgets.QLabel("(回收站)" if self.trash_available else "(回收站不可用)")
         self.delete_mode_label.setProperty("class", "hint")
         button_layout.addWidget(self.delete_mode_label)
         
@@ -1566,6 +1554,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         """设置删除模式"""
         self.action_trash.setChecked(use_trash)
         self.action_permanent.setChecked(not use_trash)
+        self._permanent_mode_explicit = not use_trash
         self.delete_mode_label.setText("(回收站)" if use_trash else "(永久)")
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
@@ -1675,12 +1664,10 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.spin_threshold.setEnabled(checked)
         self.spin_target.setEnabled(checked)
         self.spin_check_interval.setEnabled(checked)
-        if hasattr(self, 'spin_keep_days'):
-            self.spin_keep_days.setEnabled(False)
         if hasattr(self, 'edit_formats'):
             self.edit_formats.setEnabled(checked)
         if hasattr(self, 'cb_auto_use_trash'):
-            self.cb_auto_use_trash.setEnabled(checked)
+            self.cb_auto_use_trash.setEnabled(False)
         self._apply_permission_state()
     
     def _save_auto_config(self) -> bool:
@@ -1736,8 +1723,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
                 "auto_delete_threshold": self.spin_threshold.value(),
                 "auto_delete_target_percent": self.spin_target.value(),
                 "auto_delete_check_interval": self.spin_check_interval.value(),
-                "auto_delete_use_trash": self.cb_auto_use_trash.isChecked(),
-                "auto_delete_keep_days": self.spin_keep_days.value() if hasattr(self, 'spin_keep_days') else 0,
+                "auto_delete_use_trash": True,
                 "auto_delete_formats": formats_list,
             }
             
@@ -1847,16 +1833,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.stats_label.setText("扫描中...")
         self.progress_label.setText("准备扫描...")
 
-        folders_to_scan: List[str] = []
-        for checkbox, editor in (
-            (self.cb_backup, self.edit_backup),
-            (self.cb_target, self.edit_target),
-            (self.cb_monitor, self.edit_monitor),
-            (self.cb_custom, self.edit_custom),
-        ):
-            path = editor.text().strip()
-            if checkbox.isChecked() and path:
-                folders_to_scan.append(path)
+        folders_to_scan = self._collect_selected_folders()
 
         if not folders_to_scan:
             self._append_log_line("未选择任何文件夹，扫描已取消。")
@@ -1864,6 +1841,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
                 self, "错误", "请至少选择一个文件夹进行扫描！"
             )
             return
+        self._scanned_folders = tuple(folders_to_scan)
 
         formats_to_scan: List[str] = [
             ext.lower() for ext, checkbox in self.format_checkboxes.items()
@@ -1972,6 +1950,13 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         
         # 从下拉菜单获取删除模式
         use_trash = self.action_trash.isChecked()
+        if not use_trash and not self._permanent_mode_explicit:
+            QtWidgets.QMessageBox.information(
+                self,
+                "需要显式选择",
+                "回收站不可用。请先在删除模式菜单中手动选择“永久删除”。",
+            )
+            return
         action_text = "移入回收站" if use_trash else "永久删除"
         
         confirm_text = (
@@ -2016,7 +2001,12 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._append_log_line(f"开始{action_text} {len(checked_files)} 个文件。")
 
         result = self.cleanup_controller.start_delete(
-            CleanupDeleteRequest(tuple(checked_files), use_trash)
+            CleanupDeleteRequest(
+                tuple(checked_files),
+                use_trash,
+                permanent_authorized=not use_trash,
+                allowed_roots=self._scanned_folders,
+            )
         )
         if not result.success:
             self.progress_bar.setVisible(False)

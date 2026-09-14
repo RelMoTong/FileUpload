@@ -15,15 +15,14 @@ from .auth_model import (
     PasswordChangeResult,
     PermissionContext,
 )
-from .cleanup_settings import CleanupSettings
+from .cleanup_settings import CleanupSettings, normalize_cleanup_folders
 from .cleanup_task import (
     AutoCleanupRequest,
     AutoCleanupResult,
+    CleanupCandidate,
     CleanupCommandResult,
     CleanupDeleteRequest,
     CleanupFileItem,
-    CleanupIndexRecord,
-    CleanupIndexResult,
     CleanupScanRequest,
     CleanupValidationResult,
 )
@@ -37,6 +36,7 @@ from .ftp_settings import (
 )
 from .settings import ApplicationSettings
 from .runtime import LifecycleShutdownResult, RuntimeCommandResult, RuntimeInitializationResult
+from .path_probe import PathProbe, PathProbeResult
 from .upload_settings import UploadSettings
 from .upload_task import (
     UploadCommandResult,
@@ -51,13 +51,13 @@ __all__ = [
     "AuthModel",
     "ControlPermissions",
     "CleanupSettings",
+    "normalize_cleanup_folders",
     "AutoCleanupRequest",
     "AutoCleanupResult",
+    "CleanupCandidate",
     "CleanupCommandResult",
     "CleanupDeleteRequest",
     "CleanupFileItem",
-    "CleanupIndexRecord",
-    "CleanupIndexResult",
     "CleanupScanRequest",
     "CleanupValidationResult",
     "DuplicateStrategy",
@@ -72,6 +72,8 @@ __all__ = [
     "LifecycleShutdownResult",
     "PasswordChangeResult",
     "PermissionContext",
+    "PathProbe",
+    "PathProbeResult",
     "RuntimeCommandResult",
     "RuntimeInitializationResult",
     "UploadProtocol",

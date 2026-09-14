@@ -6,6 +6,8 @@ Version is sourced from src.__version__.
 import os
 import sys
 
+from PyInstaller.building.datastruct import TOC
+
 block_cipher = None
 
 project_root = os.path.dirname(os.path.abspath(SPEC))
@@ -45,7 +47,6 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
     excludes=[
         'PyQt5',
         'PyQt5.QtCore',
@@ -59,11 +60,22 @@ a = Analysis(
         'PIL',
         'cv2',
         'tkinter',
+        'sqlite3',
+        '_sqlite3',
+        'sqlalchemy',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
     noarchive=False,
+)
+
+# PySide6's Qt6Core links against Windows' unversioned ICU ABI.  Do not ship
+# Conda's version-suffixed ICU DLLs, which would shadow that system ABI.
+excluded_runtime_binaries = {"icuuc.dll", "icudt78.dll"}
+a.binaries = TOC(
+    entry for entry in a.binaries
+    if os.path.basename(entry[0]).lower() not in excluded_runtime_binaries
 )
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)

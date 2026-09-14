@@ -37,6 +37,8 @@ src/
 └── config.py                # 旧 JSON 配置格式兼容层
 ```
 
+运行期持久化仅使用 JSON/JSONL、日志和 Windows 注册表；生产代码不依赖 SQLite 或生成数据库文件。
+
 ## 3. 强制依赖规则
 
 - View 只依赖 Model 和 View 本地声明的 Gateway 协议；不导入 Controller、Service、Repository、Worker 或 Protocol 实现。
@@ -46,7 +48,7 @@ src/
 - Repository 是持久化边界；文件、日志和 Windows 注册表操作集中在这里。
 - 具体 Repository、Service、Model、Controller 和 `MainWindow` 只能在 `src/main.py` 中组成生产对象图。
 
-这些规则由 `tests/test_architecture_boundaries.py` 静态检查，新增跨层依赖会直接导致测试失败。
+这些规则在开发环境中由架构边界测试静态检查；精简源代码目录不包含测试套件。
 
 ## 4. 组合根与启动顺序
 
@@ -89,8 +91,7 @@ src/
 ## 7. 验证入口
 
 ```powershell
-python -m compileall -q src tests
-pytest -q -p no:cacheprovider
+python -m compileall -q src
 ```
 
-Qt 测试默认使用 `QT_QPA_PLATFORM=offscreen`，可在无显示器的构建环境中验证窗口、对话框和响应式布局。
+完整回归测试和 Qt 离屏测试应在独立开发检出中执行，不随精简源代码目录发布。

@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-import ctypes
 import datetime
+import ctypes
+from ctypes import wintypes
 from dataclasses import replace
+import heapq
 import logging
 import os
 from pathlib import Path
 import shutil
 import tempfile
 import time
-from ctypes import wintypes
 from typing import Any, Callable, Dict, Iterable, Optional, Protocol, Tuple
 import uuid
 
@@ -20,24 +21,23 @@ from PySide6 import QtCore
 from src.models import (
     AutoCleanupRequest,
     AutoCleanupResult,
+    CleanupCandidate,
     CleanupCommandResult,
     CleanupDeleteRequest,
     CleanupFileItem,
-    CleanupIndexRecord,
-    CleanupIndexResult,
     CleanupScanRequest,
     CleanupValidationResult,
 )
-
-try:
-    from send2trash import send2trash as _send2trash
-except ImportError:
-    _send2trash = None
+from src.core.safe_deletion import (
+    SafeDeletionPolicy,
+    SafeDeletionRequest,
+    send_to_trash,
+    trash_supported,
+)
 
 
 AUTO_CLEANUP_FAILURE_LIMIT = 20
-CLEANUP_INDEX_WRITE_BATCH = 500
-CLEANUP_INDEX_READ_LIMIT = 100
+CLEANUP_RECORD_READ_LIMIT = 100
 CleanupEventCallback = Callable[[str, Dict[str, Any]], None]
 logger = logging.getLogger(__name__)
 
@@ -60,83 +60,145 @@ def _stat_file_id(stat_result: Any) -> str:
 
 
 def _file_identity_changes(item: CleanupFileItem, stat_result: Any) -> tuple[str, ...]:
+    return _candidate_identity_changes(
+        CleanupCandidate(
+            path=item.path,
+            root_path="",
+            size=item.size,
+            mtime=item.mtime,
+            mtime_ns=item.mtime_ns,
+            file_id=item.file_id,
+        ),
+        stat_result,
+    )
+
+
+def _candidate_identity_changes(candidate: CleanupCandidate, stat_result: Any) -> tuple[str, ...]:
+    """Compare a scan snapshot with the current file without deleting it."""
     changes: list[str] = []
-    if int(stat_result.st_size) != int(item.size):
+    if int(stat_result.st_size) != int(candidate.size):
         changes.append("文件大小")
-    current_mtime_ns = _stat_mtime_ns(stat_result)
-    if item.mtime_ns:
-        if current_mtime_ns != int(item.mtime_ns):
-            changes.append("修改时间")
-    elif abs(float(stat_result.st_mtime) - float(item.mtime)) > 0.000001:
+    if candidate.mtime_ns and _stat_mtime_ns(stat_result) != int(candidate.mtime_ns):
         changes.append("修改时间")
-    current_file_id = _stat_file_id(stat_result)
-    if item.file_id and current_file_id != item.file_id:
+    if candidate.file_id and _stat_file_id(stat_result) != candidate.file_id:
         changes.append("文件标识")
     return tuple(changes)
+
+
+def iter_cleanup_candidates(
+    roots: Iterable[str],
+    formats: Iterable[str],
+    *,
+    keep_days: int = 0,
+    cancel_event: Any = None,
+    on_error: Optional[Callable[[str, BaseException], None]] = None,
+) -> Iterable[CleanupCandidate]:
+    """Stream the authoritative cleanup candidate definition for all callers."""
+    normalized_formats = {
+        str(ext).strip().lower() for ext in formats if str(ext).strip()
+    }
+    cutoff = time.time() - keep_days * 86400 if keep_days > 0 else 0
+    cancelled = cancel_event or _NeverCancelled()
+    for monitor_root in CleanupService.deduplicate_cleanup_roots(roots):
+        stack: list[Any] = []
+        try:
+            stack.append(os.scandir(monitor_root))
+            while stack and not cancelled.is_set():
+                try:
+                    entry = next(stack[-1])
+                except StopIteration:
+                    stack.pop().close()
+                    continue
+                except OSError as exc:
+                    if on_error:
+                        on_error(getattr(exc, "filename", None) or monitor_root, exc)
+                    stack.pop().close()
+                    continue
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(os.scandir(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        if normalized_formats and Path(entry.name).suffix.lower() not in normalized_formats:
+                            continue
+                        stat_result = os.stat(entry.path, follow_symlinks=False)
+                        if cutoff and stat_result.st_mtime > cutoff:
+                            continue
+                        yield CleanupCandidate(
+                            path=entry.path,
+                            root_path=monitor_root,
+                            size=int(stat_result.st_size),
+                            mtime=float(stat_result.st_mtime),
+                            mtime_ns=_stat_mtime_ns(stat_result),
+                            file_id=_stat_file_id(stat_result),
+                            created_at=CleanupService.file_created_at(stat_result),
+                        )
+                except OSError as exc:
+                    if on_error:
+                        on_error(getattr(exc, "filename", None) or entry.path, exc)
+        except OSError as exc:
+            if on_error:
+                on_error(getattr(exc, "filename", None) or monitor_root, exc)
+        finally:
+            while stack:
+                stack.pop().close()
+
+
+class _NewestCandidate:
+    """Reverse heap ordering so a fixed heap retains the oldest candidates."""
+
+    def __init__(self, candidate: CleanupCandidate) -> None:
+        self.candidate = candidate
+        self.key = (
+            int(candidate.mtime_ns),
+            os.path.normcase(os.path.abspath(candidate.path)),
+        )
+
+    def __lt__(self, other: "_NewestCandidate") -> bool:
+        return self.key > other.key
+
+
+def oldest_cleanup_candidates(
+    roots: Iterable[str], formats: Iterable[str], *, limit: int,
+    cancel_event: Any = None, on_error: Optional[Callable[[str, BaseException], None]] = None,
+) -> tuple[tuple[CleanupCandidate, ...], int]:
+    """Scan once while retaining only the oldest bounded batch in memory."""
+    capacity = max(1, int(limit))
+    heap: list[_NewestCandidate] = []
+    scanned = 0
+    for candidate in iter_cleanup_candidates(
+        roots, formats, cancel_event=cancel_event, on_error=on_error
+    ):
+        scanned += 1
+        entry = _NewestCandidate(candidate)
+        if len(heap) < capacity:
+            heapq.heappush(heap, entry)
+        elif entry.key < heap[0].key:
+            heapq.heapreplace(heap, entry)
+    return tuple(
+        entry.candidate for entry in sorted(heap, key=lambda item: item.key)
+    ), scanned
+
+
+def sort_cleanup_file_items(files: Iterable[CleanupFileItem]) -> list[CleanupFileItem]:
+    """Apply the same deterministic oldest-first order to manual previews."""
+    return sorted(
+        files,
+        key=lambda item: (
+            int(item.mtime_ns or round(item.mtime * 1_000_000_000)),
+            os.path.normcase(os.path.abspath(item.path)),
+        ),
+    )
+
+
+class _NeverCancelled:
+    def is_set(self) -> bool:
+        return False
 
 
 class CleanupAuditWriter(Protocol):
     last_error: str
 
     def write(self, event: str, run_id: str, **fields: Any) -> bool: ...
-
-
-class CleanupIndexWriter(Protocol):
-    last_error: str
-
-    @staticmethod
-    def normalize_path(path: str) -> str: ...
-    def scope_fingerprint(self, folders: Iterable[str], formats: Iterable[str]) -> str: ...
-    def ensure_schema(self) -> bool: ...
-    def prepare_scope(self, scope_fingerprint: str) -> bool: ...
-    def is_scope_current(self, scope_fingerprint: str) -> bool: ...
-    def is_ready(self, scope_fingerprint: str) -> bool: ...
-    def upsert_many(
-        self, records: Any, scope_fingerprint: str
-    ) -> bool: ...
-    def oldest(self, scope_fingerprint: str, limit: int = 100) -> Any: ...
-    def remove(self, normalized_path: str, scope_fingerprint: str) -> bool: ...
-    def count(self, scope_fingerprint: str) -> int: ...
-    def mark_ready(self, scope_fingerprint: str) -> bool: ...
-    def mark_dirty(self, clear_records: bool = False) -> bool: ...
-
-
-def trash_supported() -> bool:
-    return _send2trash is not None or os.name == "nt"
-
-
-def send_to_trash(path: str) -> None:
-    if _send2trash is not None:
-        _send2trash(path)
-        return
-    if os.name != "nt":
-        raise RuntimeError("Trash not supported without send2trash")
-
-    class SHFILEOPSTRUCTW(ctypes.Structure):
-        _fields_ = [
-            ("hwnd", wintypes.HWND),
-            ("wFunc", wintypes.UINT),
-            ("pFrom", wintypes.LPCWSTR),
-            ("pTo", wintypes.LPCWSTR),
-            ("fFlags", wintypes.UINT),
-            ("fAnyOperationsAborted", wintypes.BOOL),
-            ("hNameMappings", ctypes.c_void_p),
-            ("lpszProgressTitle", wintypes.LPCWSTR),
-        ]
-
-    op = SHFILEOPSTRUCTW(
-        0,
-        3,
-        path + "\0\0",
-        None,
-        0x40 | 0x10 | 0x4,
-        False,
-        None,
-        None,
-    )
-    rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
-    if rc != 0 or op.fAnyOperationsAborted:
-        raise OSError(rc, "Send to Recycle Bin failed", path)
 
 
 class _ScanWorker(QtCore.QObject):
@@ -151,75 +213,58 @@ class _ScanWorker(QtCore.QObject):
     def cancel(self) -> None:
         self._cancelled = True
 
+    def is_set(self) -> bool:
+        return self._cancelled
+
     @QtCore.Slot()
     def run(self) -> None:
         files: list[CleanupFileItem] = []
         total_size = 0
         file_count = 0
-        cutoff = time.time() - self.request.keep_days * 86400 if self.request.keep_days > 0 else 0
         self.event.emit("log", {"message": "开始扫描文件..."})
-        for folder in self.request.folders:
-            if self._cancelled:
-                self.event.emit("log", {"message": "扫描已取消"})
-                break
+        for folder in CleanupService.deduplicate_cleanup_roots(self.request.folders):
             self.event.emit("log", {"message": f"扫描目录: {folder}"})
-            folder_count = 0
-            folder_size = 0
-            try:
-                for root, _, names in os.walk(folder):
-                    if self._cancelled:
-                        break
-                    self.event.emit(
-                        "scan_progress",
-                        {"current_dir": root, "file_count": file_count, "total_size": total_size},
-                    )
-                    for name in names:
-                        if self._cancelled:
-                            break
-                        if not any(name.lower().endswith(ext) for ext in self.request.formats):
-                            continue
-                        path = os.path.join(root, name)
-                        try:
-                            stat = os.stat(path, follow_symlinks=False)
-                            if cutoff and stat.st_mtime > cutoff:
-                                continue
-                            files.append(
-                                CleanupFileItem(
-                                    path=path,
-                                    size=int(stat.st_size),
-                                    mtime=float(stat.st_mtime),
-                                    mtime_ns=_stat_mtime_ns(stat),
-                                    file_id=_stat_file_id(stat),
-                                )
-                            )
-                            folder_count += 1
-                            folder_size += stat.st_size
-                            file_count += 1
-                            total_size += stat.st_size
-                        except Exception as exc:
-                            self.event.emit(
-                                "log", {"message": f"无法访问文件 {name}: {exc}"}
-                            )
-                if not self._cancelled:
-                    self.event.emit(
-                        "log",
-                        {
-                            "message": f"目录中找到 {folder_count} 个文件，"
-                            f"{folder_size / (1024 * 1024):.2f} MB"
-                        },
-                    )
-            except Exception as exc:
-                self.event.emit("log", {"message": f"扫描失败: {exc}"})
-        self.finished.emit(files)
+
+        def on_error(path: str, exc: BaseException) -> None:
+            self.event.emit("log", {"message": f"无法访问文件 {path}: {exc}"})
+
+        for candidate in iter_cleanup_candidates(
+            self.request.folders,
+            self.request.formats,
+            keep_days=self.request.keep_days,
+            cancel_event=self,
+            on_error=on_error,
+        ):
+            if self._cancelled:
+                break
+            files.append(candidate.as_file_item())
+            file_count += 1
+            total_size += candidate.size
+            self.event.emit(
+                "scan_progress",
+                {
+                    "current_dir": os.path.dirname(candidate.path),
+                    "file_count": file_count,
+                    "total_size": total_size,
+                },
+            )
+        if self._cancelled:
+            self.event.emit("log", {"message": "扫描已取消"})
+        self.finished.emit(sort_cleanup_file_items(files))
 
 
 class _DeleteWorker(QtCore.QObject):
     event = QtCore.Signal(str, object)
     finished = QtCore.Signal(object)
 
-    def __init__(self, request: CleanupDeleteRequest) -> None:
+    def __init__(
+        self,
+        request: CleanupDeleteRequest,
+        audit_writer: Optional[CleanupAuditWriter] = None,
+    ) -> None:
         super().__init__()
         self.request = request
+        self._audit_writer = audit_writer
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -231,33 +276,64 @@ class _DeleteWorker(QtCore.QObject):
         deleted_size = 0
         failed_count = 0
         skipped_changed_count = 0
-        use_trash = self.request.use_trash and trash_supported()
-        if self.request.use_trash and not trash_supported():
-            self.event.emit("log", {"message": "回收站不可用，将使用永久删除。"})
+        policy = SafeDeletionPolicy(trash_supported, send_to_trash, os.remove)
+        run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
         total = len(self.request.files)
         for index, item in enumerate(self.request.files, start=1):
             if self._cancelled:
                 self.event.emit("log", {"message": "删除任务已取消"})
                 break
             try:
-                stat_result = os.stat(item.path, follow_symlinks=False)
-                changes = _file_identity_changes(item, stat_result)
-                if changes:
-                    skipped_changed_count += 1
-                    self.event.emit(
-                        "log",
-                        {
-                            "message": (
-                                f"已跳过扫描后发生变化的文件 {item.path}："
-                                f"{', '.join(changes)}"
-                            )
-                        },
+                def verify_identity() -> tuple[bool, str]:
+                    stat_result = os.stat(item.path, follow_symlinks=False)
+                    changes = _file_identity_changes(item, stat_result)
+                    return (
+                        not changes,
+                        "、".join(changes) if changes else "",
                     )
+
+                if not self.request.use_trash:
+                    identity_matches, identity_reason = verify_identity()
+                    if not identity_matches:
+                        skipped_changed_count += 1
+                        self.event.emit(
+                            "log",
+                            {"message": f"已跳过扫描后发生变化的文件 {item.path}: {identity_reason}"},
+                        )
+                        continue
+                    if self._audit_writer is None or not self._audit_writer.write(
+                        "MANUAL_PERMANENT_DELETE_INTENT",
+                        run_id,
+                        path=item.path,
+                        size_bytes=int(item.size),
+                        allowed_roots=list(self.request.allowed_roots),
+                        authorization="ui_second_confirmation",
+                    ):
+                        failed_count += 1
+                        self.event.emit(
+                            "log",
+                            {"message": f"删除失败 {item.path}: 永久删除审计日志写入失败，文件已保留"},
+                        )
+                        continue
+
+                result = policy.delete(
+                    SafeDeletionRequest(
+                        path=item.path,
+                        allowed_roots=self.request.allowed_roots,
+                        identity_verifier=verify_identity,
+                        mode="trash" if self.request.use_trash else "permanent",
+                        permanent_authorized=self.request.permanent_authorized,
+                    )
+                )
+                if not result.success:
+                    if result.status == "identity_changed":
+                        skipped_changed_count += 1
+                        message = f"已跳过扫描后发生变化的文件 {item.path}: {result.message}"
+                    else:
+                        failed_count += 1
+                        message = f"删除失败 {item.path}: {result.message}"
+                    self.event.emit("log", {"message": message})
                     continue
-                if use_trash:
-                    send_to_trash(item.path)
-                else:
-                    os.remove(item.path)
                 deleted_count += 1
                 deleted_size += item.size
             except Exception as exc:
@@ -300,10 +376,8 @@ class CleanupService:
         self,
         audit_writer: Optional[CleanupAuditWriter] = None,
         thread_factory: Callable[[], Any] = QtCore.QThread,
-        index_repository: Optional[CleanupIndexWriter] = None,
     ) -> None:
         self._audit_writer = audit_writer
-        self._index_repository = index_repository
         self._thread_factory = thread_factory
         self._scan_worker: Optional[_ScanWorker] = None
         self._scan_thread: Any = None
@@ -410,10 +484,16 @@ class CleanupService:
     ) -> CleanupCommandResult:
         if not request.files:
             return CleanupCommandResult(False, "没有选中任何文件")
+        if not request.allowed_roots:
+            return CleanupCommandResult(False, "删除请求缺少已验证的清理目录")
+        if not request.use_trash and not request.permanent_authorized:
+            return CleanupCommandResult(False, "永久删除需要显式二次授权")
+        if not request.use_trash and self._audit_writer is None:
+            return CleanupCommandResult(False, "永久删除需要可用的审计日志")
         if self._delete_worker is not None:
             return CleanupCommandResult(False, "删除任务已在运行")
         try:
-            worker = _DeleteWorker(request)
+            worker = _DeleteWorker(request, self._audit_writer)
             thread = self._thread_factory()
             bridge = _ManualEventBridge(callback)
             worker.moveToThread(thread)
@@ -570,30 +650,6 @@ class CleanupService:
         return [absolute for absolute, _ in result]
 
     @staticmethod
-    def sort_cleanup_candidates(
-        files: Iterable[Tuple[float, int, str]]
-    ) -> list[Tuple[float, int, str]]:
-        result = [(float(mtime), max(0, int(size)), path) for mtime, size, path in files]
-        result.sort(key=lambda item: (item[0], os.path.normcase(os.path.abspath(item[2]))))
-        return result
-
-    @classmethod
-    def select_cleanup_candidates(
-        cls, files: Iterable[Tuple[float, int, str]], bytes_to_free: int
-    ) -> Tuple[list[Tuple[float, int, str]], int]:
-        if bytes_to_free <= 0:
-            return [], 0
-        ordered = cls.sort_cleanup_candidates(files)
-        selected: list[Tuple[float, int, str]] = []
-        size = 0
-        for item in ordered:
-            selected.append(item)
-            size += item[1]
-            if size >= bytes_to_free:
-                break
-        return selected, len(ordered)
-
-    @staticmethod
     def file_created_at(stat_result: Any) -> float:
         birth_time = getattr(stat_result, "st_birthtime", None)
         if birth_time is not None:
@@ -607,223 +663,6 @@ class CleanupService:
     @staticmethod
     def file_identity(stat_result: Any) -> str:
         return _stat_file_id(stat_result)
-
-    def cleanup_scope_fingerprint(self, request: AutoCleanupRequest) -> str:
-        if self._index_repository is None:
-            return ""
-        return self._index_repository.scope_fingerprint(request.folders, request.formats)
-
-    def is_index_ready(self, request: AutoCleanupRequest) -> bool:
-        if self._index_repository is None:
-            return False
-        fingerprint = self.cleanup_scope_fingerprint(request)
-        return bool(fingerprint and self._index_repository.is_ready(fingerprint))
-
-    def mark_index_dirty(self, clear_records: bool = False) -> bool:
-        if self._index_repository is None:
-            return False
-        return self._index_repository.mark_dirty(clear_records=clear_records)
-
-    @property
-    def index_last_error(self) -> str:
-        if self._index_repository is None:
-            return "清理索引仓库未配置"
-        return self._index_repository.last_error
-
-    def _matching_cleanup_root(
-        self, path: str, request: AutoCleanupRequest
-    ) -> Tuple[str, str]:
-        if self._index_repository is None:
-            return "", ""
-        normalized = self._index_repository.normalize_path(path)
-        for root in self.deduplicate_cleanup_roots(request.folders):
-            normalized_root = self._index_repository.normalize_path(root)
-            try:
-                if os.path.commonpath([normalized_root, normalized]) == normalized_root:
-                    return root, normalized
-            except ValueError:
-                continue
-        return "", normalized
-
-    def _iter_index_files(
-        self,
-        roots: Iterable[str],
-        cancel_event: Any,
-        on_error: Callable[[str, BaseException], None],
-    ) -> Iterable[Tuple[str, str]]:
-        for monitor_root in roots:
-            stack: list[Any] = []
-            try:
-                try:
-                    stack.append(os.scandir(monitor_root))
-                except OSError as exc:
-                    on_error(getattr(exc, "filename", None) or monitor_root, exc)
-                    continue
-                while stack and not cancel_event.is_set():
-                    try:
-                        entry = next(stack[-1])
-                    except StopIteration:
-                        stack.pop().close()
-                        continue
-                    except OSError as exc:
-                        on_error(getattr(exc, "filename", None) or monitor_root, exc)
-                        stack.pop().close()
-                        continue
-                    try:
-                        if entry.is_dir(follow_symlinks=False):
-                            try:
-                                stack.append(os.scandir(entry.path))
-                            except OSError as exc:
-                                on_error(getattr(exc, "filename", None) or entry.path, exc)
-                        elif entry.is_file(follow_symlinks=False):
-                            yield entry.path, monitor_root
-                    except OSError as exc:
-                        on_error(getattr(exc, "filename", None) or entry.path, exc)
-            finally:
-                while stack:
-                    stack.pop().close()
-
-    def build_cleanup_index(
-        self,
-        request: AutoCleanupRequest,
-        cancel_event: Any,
-        log: Callable[[str], None],
-    ) -> CleanupIndexResult:
-        if self._index_repository is None:
-            return CleanupIndexResult("建立失败", "清理索引仓库未配置")
-        validation = self.validate_auto_request(request)
-        fingerprint = self.cleanup_scope_fingerprint(request)
-        if not validation.is_valid:
-            return CleanupIndexResult(
-                "建立失败", "；".join(validation.errors), scope_fingerprint=fingerprint
-            )
-        if self._index_repository.is_ready(fingerprint):
-            return CleanupIndexResult(
-                "已就绪",
-                indexed_count=self._index_repository.count(fingerprint),
-                scope_fingerprint=fingerprint,
-            )
-        if not self._index_repository.prepare_scope(fingerprint):
-            return CleanupIndexResult(
-                "建立失败",
-                self._index_repository.last_error or "无法初始化清理索引",
-                scope_fingerprint=fingerprint,
-            )
-
-        formats = {str(ext).strip().lower() for ext in request.formats if str(ext).strip()}
-        roots = self.deduplicate_cleanup_roots(request.folders)
-        buffer: list[CleanupIndexRecord] = []
-        indexed_count = 0
-        failed_count = 0
-
-        def scan_failure(path: str, exc: BaseException) -> None:
-            nonlocal failed_count
-            failed_count += 1
-            log(f"⚠️ 清理索引无法访问: {path}: {type(exc).__name__}: {exc}")
-
-        def flush() -> bool:
-            nonlocal buffer
-            if not buffer:
-                return True
-            snapshot = tuple(buffer)
-            buffer.clear()
-            if self._index_repository.upsert_many(snapshot, fingerprint):
-                return True
-            log(f"❌ 清理索引写入失败: {self._index_repository.last_error}")
-            return False
-
-        log("ℹ️ 开始首次建立磁盘清理数据库索引")
-        for path, root in self._iter_index_files(roots, cancel_event, scan_failure):
-            if cancel_event.is_set() or failed_count >= AUTO_CLEANUP_FAILURE_LIMIT:
-                break
-            if formats and os.path.splitext(path)[1].lower() not in formats:
-                continue
-            try:
-                stat_result = os.stat(path, follow_symlinks=False)
-                normalized = self._index_repository.normalize_path(path)
-                buffer.append(
-                    CleanupIndexRecord(
-                        normalized_path=normalized,
-                        path=path,
-                        file_name=os.path.basename(path),
-                        created_at=self.file_created_at(stat_result),
-                        size_bytes=int(stat_result.st_size),
-                        root_path=root,
-                        source="scan",
-                        modified_at_ns=self.file_modified_at_ns(stat_result),
-                        file_id=self.file_identity(stat_result),
-                    )
-                )
-                indexed_count += 1
-                if len(buffer) >= CLEANUP_INDEX_WRITE_BATCH and not flush():
-                    failed_count += 1
-                    break
-                if indexed_count % 5000 == 0:
-                    log(f"ℹ️ 清理数据库建立中：已录入 {indexed_count} 个文件")
-            except Exception as exc:
-                scan_failure(path, exc)
-
-        if cancel_event.is_set():
-            self._index_repository.mark_dirty()
-            return CleanupIndexResult(
-                "已取消", "应用正在退出，索引建立已取消", indexed_count,
-                failed_count, fingerprint,
-            )
-        if failed_count or not flush():
-            self._index_repository.mark_dirty()
-            return CleanupIndexResult(
-                "建立失败",
-                self._index_repository.last_error or f"索引遍历失败 {failed_count} 次",
-                indexed_count,
-                max(1, failed_count),
-                fingerprint,
-            )
-        if not self._index_repository.mark_ready(fingerprint):
-            return CleanupIndexResult(
-                "建立失败",
-                self._index_repository.last_error or "无法生成索引就绪标志",
-                indexed_count,
-                failed_count,
-                fingerprint,
-            )
-        log(f"✅ 磁盘清理数据库索引建立完成：共 {indexed_count} 个文件")
-        return CleanupIndexResult(
-            "建立完成", indexed_count=indexed_count, scope_fingerprint=fingerprint
-        )
-
-    def index_generated_file(
-        self, path: str, request: AutoCleanupRequest, source: str = "upload"
-    ) -> bool:
-        if self._index_repository is None or not request.enabled or not path:
-            return False
-        fingerprint = self.cleanup_scope_fingerprint(request)
-        if not self._index_repository.is_scope_current(fingerprint):
-            return False
-        root, normalized = self._matching_cleanup_root(path, request)
-        if not root:
-            return True
-        formats = {str(ext).strip().lower() for ext in request.formats if str(ext).strip()}
-        if formats and os.path.splitext(path)[1].lower() not in formats:
-            return True
-        try:
-            stat_result = os.stat(path, follow_symlinks=False)
-            record = CleanupIndexRecord(
-                normalized_path=normalized,
-                path=path,
-                file_name=os.path.basename(path),
-                created_at=self.file_created_at(stat_result),
-                size_bytes=int(stat_result.st_size),
-                root_path=root,
-                source=source,
-                modified_at_ns=self.file_modified_at_ns(stat_result),
-                file_id=self.file_identity(stat_result),
-            )
-            if self._index_repository.upsert_many((record,), fingerprint):
-                return True
-        except Exception as exc:
-            self._index_repository.last_error = f"{type(exc).__name__}: {exc}"
-        self._index_repository.mark_dirty()
-        return False
 
     def validate_auto_request(self, request: AutoCleanupRequest) -> CleanupValidationResult:
         if not request.enabled:
@@ -841,6 +680,12 @@ class CleanupService:
             return CleanupValidationResult(
                 valid_folders=request.folders,
                 errors=(error,),
+                volume_details=details,
+            )
+        if not request.use_trash:
+            return CleanupValidationResult(
+                valid_folders=request.folders,
+                errors=("自动清理仅允许回收站模式",),
                 volume_details=details,
             )
         if request.use_trash and not trash_supported():
@@ -897,6 +742,9 @@ class CleanupService:
             actual_released_bytes=0,
         )
 
+    def _write_audit(self, event: str, run_id: str, **fields: Any) -> bool:
+        return bool(self._audit_writer and self._audit_writer.write(event, run_id, **fields))
+
     def run_auto_cleanup(
         self,
         request: AutoCleanupRequest,
@@ -904,278 +752,107 @@ class CleanupService:
         log: Callable[[str], None],
         delete_mode_provider: Optional[Callable[[], bool]] = None,
     ) -> AutoCleanupResult:
-        """仅根据已就绪的 SQLite 索引执行自动清理，删除时动态读取模式。"""
+        """Delete oldest candidates in bounded scan batches; never retain a directory index."""
         run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
+        roots = self.deduplicate_cleanup_roots(request.folders)
+        scanned_count = deleted_count = failed_count = attempted_bytes = skipped_changed_count = 0
+        start_usage = final_usage = None
         audit_started = False
-        audit_finished = False
-        start_usage = None
-        final_usage = None
-        deleted_count = failed_count = attempted_bytes = 0
-        indexed_count = 0
-        result = AutoCleanupResult("任务异常", "任务未正常结束")
 
         def used_percent(usage: Any) -> Optional[float]:
-            if usage is None or usage.total <= 0:
-                return None
-            return ((usage.total - usage.free) / usage.total) * 100
-
-        def current_use_trash() -> bool:
-            if delete_mode_provider is None:
-                return bool(request.use_trash)
-            return bool(delete_mode_provider())
+            return None if usage is None or usage.total <= 0 else ((usage.total - usage.free) / usage.total) * 100
 
         def finish(status: str, error: str = "") -> AutoCleanupResult:
-            nonlocal audit_finished
-            audit_finished = True
-            released = (
-                max(0, int(final_usage.free - start_usage.free))
-                if start_usage is not None and final_usage is not None
-                else 0
-            )
-            self._write_audit(
-                "END",
-                run_id,
-                status=status,
-                error=error,
-                indexed_count=indexed_count,
-                deleted_count=deleted_count,
-                failed_count=failed_count,
-                start_used_percent=used_percent(start_usage),
-                final_used_percent=used_percent(final_usage),
-                actual_released_bytes=released,
-                attempted_delete_bytes=attempted_bytes,
-            )
+            released = max(0, int(final_usage.free - start_usage.free)) if start_usage is not None and final_usage is not None else 0
+            if audit_started:
+                self._write_audit("END", run_id, status=status, error=error, scanned_count=scanned_count, deleted_count=deleted_count, failed_count=failed_count, skipped_changed_count=skipped_changed_count, start_used_percent=used_percent(start_usage), final_used_percent=used_percent(final_usage), actual_released_bytes=released, attempted_delete_bytes=attempted_bytes)
             final = used_percent(final_usage)
-            text = f"{final:.1f}%" if final is not None else "未知"
-            log(
-                f"✅ 自动清理结束：状态={status}，索引={indexed_count}，"
-                f"删除={deleted_count}，失败={failed_count}，实际占用率={text}"
-            )
-            return AutoCleanupResult(
-                status,
-                error,
-                indexed_count,
-                deleted_count,
-                failed_count,
-                attempted_bytes,
-                released,
-            )
+            log(f"✅ 自动清理结束：状态={status}，扫描={scanned_count}，删除={deleted_count}，失败={failed_count}，实际占用率={final:.1f}%" if final is not None else f"✅ 自动清理结束：状态={status}，扫描={scanned_count}，删除={deleted_count}，失败={failed_count}，实际占用率=未知")
+            return AutoCleanupResult(status, error, scanned_count, deleted_count, failed_count, attempted_bytes, released, skipped_changed_count)
 
         try:
             if cancel_event.is_set():
                 return AutoCleanupResult("任务异常", "应用正在退出，自动清理已取消")
-            if self._index_repository is None:
-                return AutoCleanupResult("索引未就绪", "清理索引仓库未配置")
-            initial_use_trash = current_use_trash()
-            effective_request = replace(request, use_trash=initial_use_trash)
+            use_trash = bool(delete_mode_provider() if delete_mode_provider else request.use_trash)
+            effective_request = replace(request, use_trash=use_trash)
             validation = self.validate_auto_request(effective_request)
             if not validation.is_valid:
                 error = "；".join(validation.errors)
                 self.record_blocked(effective_request, "路径不可用", error)
-                log(f"⚠️ {error}")
                 return AutoCleanupResult("路径不可用", error)
-            fingerprint = self.cleanup_scope_fingerprint(request)
-            if not self._index_repository.is_ready(fingerprint):
-                return AutoCleanupResult(
-                    "索引未就绪",
-                    self._index_repository.last_error or "首次索引尚未完成",
-                )
-            roots = self.deduplicate_cleanup_roots(request.folders)
-            indexed_count = self._index_repository.count(fingerprint)
-            start_usage = shutil.disk_usage(roots[0])
-            final_usage = start_usage
-            start_percent = used_percent(start_usage)
-            if start_percent is None or start_percent < request.trigger_percent:
-                return AutoCleanupResult("未达到阈值", scanned_count=indexed_count)
-            if not self._write_audit(
-                "START",
-                run_id,
-                trigger_source=request.trigger_source,
-                folders=list(request.folders),
-                effective_roots=roots,
-                disk=validation.volume_details[0][1] if validation.volume_details else "",
-                used_percent=start_percent,
-                trigger_percent=request.trigger_percent,
-                target_percent=request.target_percent,
-                delete_mode="回收站" if initial_use_trash else "永久删除",
-                time_basis="file_modification_time",
-                format_filter=sorted(set(request.formats)),
-                ordering="sqlite_global_oldest_modified_first",
-                indexed_count=indexed_count,
-            ):
-                log("❌ 自动清理已取消：无法写入 START 审计记录")
+            start_usage = final_usage = shutil.disk_usage(roots[0])
+            if (start_percent := used_percent(start_usage)) is None or start_percent < request.trigger_percent:
+                return AutoCleanupResult("未达到阈值")
+            if not self._write_audit("START", run_id, trigger_source=request.trigger_source, folders=list(request.folders), effective_roots=roots, disk=validation.volume_details[0][1] if validation.volume_details else "", used_percent=start_percent, trigger_percent=request.trigger_percent, target_percent=request.target_percent, delete_mode="回收站", time_basis="file_modification_time", format_filter=sorted(set(request.formats)), ordering="bounded_stream_oldest_modified_first", candidate_batch_limit=CLEANUP_RECORD_READ_LIMIT):
                 return AutoCleanupResult("任务异常", "清理审计日志写入失败")
             audit_started = True
-            log(
-                f"⚠️ 磁盘使用率 {start_percent:.1f}% 达到触发阈值 "
-                f"{request.trigger_percent}%，将根据数据库按全局修改时间最旧优先清理至 "
-                f"{request.target_percent}%"
-            )
-            while not cancel_event.is_set():
-                records = self._index_repository.oldest(
-                    fingerprint, CLEANUP_INDEX_READ_LIMIT
-                )
-                if not records:
-                    final_usage = shutil.disk_usage(roots[0])
-                    current = used_percent(final_usage)
-                    if self._index_repository.last_error:
-                        self._index_repository.mark_dirty()
-                        return finish("索引异常", self._index_repository.last_error)
-                    if current is not None and current > request.target_percent:
-                        self._index_repository.mark_dirty()
-                        return finish(
-                            "索引已耗尽",
-                            "数据库已无候选文件，但磁盘仍未达到目标阈值",
-                        )
-                    return finish("达到目标")
+            log(f"⚠️ 磁盘使用率 {start_percent:.1f}% 达到触发阈值 {request.trigger_percent}%，按全局修改时间最旧优先流式清理至 {request.target_percent}%")
 
-                for record in records:
-                    if cancel_event.is_set():
-                        return finish("任务异常", "应用正在退出，自动清理已取消")
-                    if failed_count >= AUTO_CLEANUP_FAILURE_LIMIT:
-                        return finish("失败达到20次")
-                    root, normalized = self._matching_cleanup_root(record.path, request)
-                    if not root or normalized != record.normalized_path:
-                        if not self._index_repository.remove(record.normalized_path, fingerprint):
-                            self._index_repository.mark_dirty()
-                            return finish("索引异常", self._index_repository.last_error)
-                        continue
+            while not cancel_event.is_set():
+                scan_failures = 0
+                def scan_error(path: str, exc: BaseException) -> None:
+                    nonlocal scan_failures
+                    scan_failures += 1
+                    log(f"⚠️ 清理候选无法访问: {path}: {type(exc).__name__}: {exc}")
+                candidates, scanned = oldest_cleanup_candidates(roots, request.formats, limit=CLEANUP_RECORD_READ_LIMIT, cancel_event=cancel_event, on_error=scan_error)
+                scanned_count += scanned
+                if cancel_event.is_set():
+                    return finish("任务异常", "应用正在退出，自动清理已取消")
+                if scan_failures >= AUTO_CLEANUP_FAILURE_LIMIT:
+                    return finish("失败达到20次", "候选扫描连续失败")
+                if not candidates:
+                    final_usage = shutil.disk_usage(roots[0])
+                    return finish("达到目标" if used_percent(final_usage) is not None and used_percent(final_usage) <= request.target_percent else "候选已耗尽", "候选文件已耗尽，但磁盘仍未达到目标阈值")
+
+                for candidate in candidates:
+                    if cancel_event.is_set(): return finish("任务异常", "应用正在退出，自动清理已取消")
+                    if failed_count >= AUTO_CLEANUP_FAILURE_LIMIT: return finish("失败达到20次")
                     try:
-                        stat_result = os.stat(record.path, follow_symlinks=False)
+                        stat_result = os.stat(candidate.path, follow_symlinks=False)
                     except FileNotFoundError:
-                        if not self._index_repository.remove(record.normalized_path, fingerprint):
-                            self._index_repository.mark_dirty()
-                            return finish("索引异常", self._index_repository.last_error)
                         continue
                     except Exception as exc:
                         failed_count += 1
-                        if not self._write_audit(
-                            "DELETE_FAIL",
-                            run_id,
-                            path=record.path,
-                            file_name=record.file_name,
-                            error_type=type(exc).__name__,
-                            error=str(exc),
-                            failed_count=failed_count,
-                        ):
-                            return finish("任务异常", "清理审计日志写入失败")
+                        self._write_audit("DELETE_FAIL", run_id, path=candidate.path, file_name=os.path.basename(candidate.path), error_type=type(exc).__name__, error=str(exc), failed_count=failed_count)
                         continue
-
+                    changes = list(_candidate_identity_changes(candidate, stat_result))
                     created_at = self.file_created_at(stat_result)
-                    modified_at_ns = self.file_modified_at_ns(stat_result)
-                    file_id = self.file_identity(stat_result)
-                    changes: list[str] = []
-                    if abs(created_at - record.created_at) > 0.001:
-                        changes.append("创建时间")
-                    if int(stat_result.st_size) != int(record.size_bytes):
-                        changes.append("文件大小")
-                    if record.modified_at_ns and modified_at_ns != record.modified_at_ns:
-                        changes.append("修改时间")
-                    if record.file_id and file_id != record.file_id:
-                        changes.append("文件标识")
+                    if abs(created_at - candidate.created_at) > 0.001: changes.append("创建时间")
                     if changes:
-                        refreshed = CleanupIndexRecord(
-                            normalized_path=record.normalized_path,
-                            path=record.path,
-                            file_name=os.path.basename(record.path),
-                            created_at=created_at,
-                            size_bytes=int(stat_result.st_size),
-                            root_path=root,
-                            source="revalidate",
-                            modified_at_ns=modified_at_ns,
-                            file_id=file_id,
-                        )
-                        if not self._index_repository.upsert_many((refreshed,), fingerprint):
-                            self._index_repository.mark_dirty()
-                            return finish("索引异常", self._index_repository.last_error)
-                        if not self._write_audit(
-                            "DELETE_SKIP_CHANGED",
-                            run_id,
-                            path=record.path,
-                            file_name=record.file_name,
-                            changes=changes,
-                            indexed_size_bytes=record.size_bytes,
-                            current_size_bytes=int(stat_result.st_size),
-                            indexed_modified_at_ns=record.modified_at_ns,
-                            current_modified_at_ns=modified_at_ns,
-                        ):
-                            return finish("任务异常", "清理审计日志写入失败")
-                        log(f"⚠️ 已跳过索引后发生变化的文件 {record.path}：{', '.join(changes)}")
-                        return finish(
-                            "索引已刷新",
-                            "检测到同路径文件已被替换或修改，已更新索引并跳过本次删除",
-                        )
-
-                    before = final_usage or start_usage
-                    use_trash = current_use_trash()
-                    if use_trash and not trash_supported():
-                        error = "回收站不可用，自动清理已停止（避免意外永久删除）"
-                        log(f"⚠️ {error}")
-                        return finish("路径不可用", error)
+                        skipped_changed_count += 1
+                        self._write_audit("DELETE_SKIP_CHANGED", run_id, path=candidate.path, file_name=os.path.basename(candidate.path), changes=changes, scanned_size_bytes=candidate.size, current_size_bytes=int(stat_result.st_size), scanned_modified_at_ns=candidate.mtime_ns, current_modified_at_ns=self.file_modified_at_ns(stat_result))
+                        log(f"⚠️ 已跳过扫描后发生变化的文件 {candidate.path}：{', '.join(changes)}")
+                        return finish("候选已刷新", "检测到同路径文件已被替换或修改，已跳过本次删除")
+                    if not bool(delete_mode_provider() if delete_mode_provider else request.use_trash):
+                        return finish("路径不可用", "自动清理仅允许回收站模式，已停止")
+                    if not trash_supported(): return finish("路径不可用", "回收站不可用，自动清理已停止（避免意外永久删除）")
+                    def verify_identity() -> tuple[bool, str]:
+                        current = os.stat(candidate.path, follow_symlinks=False)
+                        current_changes = list(_candidate_identity_changes(candidate, current))
+                        if abs(self.file_created_at(current) - candidate.created_at) > 0.001: current_changes.append("创建时间")
+                        return not current_changes, "、".join(current_changes)
                     try:
-                        send_to_trash(record.path) if use_trash else os.remove(record.path)
+                        result = SafeDeletionPolicy(trash_supported, send_to_trash, os.remove).delete(SafeDeletionRequest(path=candidate.path, allowed_roots=tuple(roots), identity_verifier=verify_identity, mode="trash", automatic=True))
+                        if not result.success: raise OSError(result.message)
                         deleted_count += 1
                         attempted_bytes += int(stat_result.st_size)
                     except Exception as exc:
                         failed_count += 1
-                        if not self._write_audit(
-                            "DELETE_FAIL",
-                            run_id,
-                            path=record.path,
-                            file_name=record.file_name,
-                            size_bytes=int(stat_result.st_size),
-                            created_at=datetime.datetime.fromtimestamp(created_at).isoformat(timespec="seconds"),
-                            modified_at_ns=modified_at_ns,
-                            delete_mode="回收站" if use_trash else "永久删除",
-                            error_type=type(exc).__name__,
-                            error=str(exc),
-                            failed_count=failed_count,
-                        ):
-                            return finish("任务异常", "清理审计日志写入失败")
+                        if not self._write_audit("DELETE_FAIL", run_id, path=candidate.path, file_name=os.path.basename(candidate.path), size_bytes=int(stat_result.st_size), created_at=datetime.datetime.fromtimestamp(created_at).isoformat(timespec="seconds"), modified_at_ns=self.file_modified_at_ns(stat_result), delete_mode="回收站", error_type=type(exc).__name__, error=str(exc), failed_count=failed_count): return finish("任务异常", "清理审计日志写入失败")
                         continue
-
-                    usage_error = ""
-                    try:
-                        final_usage = shutil.disk_usage(roots[0])
+                    try: final_usage = shutil.disk_usage(roots[0])
                     except Exception as exc:
                         final_usage = None
                         usage_error = f"{type(exc).__name__}: {exc}"
-                    current = used_percent(final_usage)
-                    if not self._write_audit(
-                        "DELETE_OK",
-                        run_id,
-                        path=record.path,
-                        file_name=record.file_name,
-                        size_bytes=int(stat_result.st_size),
-                        created_at=datetime.datetime.fromtimestamp(created_at).isoformat(timespec="seconds"),
-                        modified_at_ns=modified_at_ns,
-                        delete_mode="回收站" if use_trash else "永久删除",
-                        disk_used_percent=current,
-                        disk_usage_error=usage_error,
-                        index_source=record.source,
-                    ):
-                        return finish("任务异常", "清理审计日志写入失败")
-                    if not self._index_repository.remove(record.normalized_path, fingerprint):
-                        self._index_repository.mark_dirty()
-                        return finish("索引异常", self._index_repository.last_error)
-                    if usage_error:
-                        return finish("路径不可用", usage_error)
-                    if use_trash and final_usage.free <= before.free:
-                        log("⚠️ 文件移入回收站后磁盘空间未增加，已停止自动清理；请清空回收站或改用永久删除")
+                    else: usage_error = ""
+                    current_percent = used_percent(final_usage)
+                    if not self._write_audit("DELETE_OK", run_id, path=candidate.path, file_name=os.path.basename(candidate.path), size_bytes=int(stat_result.st_size), created_at=datetime.datetime.fromtimestamp(created_at).isoformat(timespec="seconds"), modified_at_ns=self.file_modified_at_ns(stat_result), delete_mode="回收站", disk_used_percent=current_percent, disk_usage_error=usage_error, candidate_source="stream_scan"): return finish("任务异常", "清理审计日志写入失败")
+                    if usage_error: return finish("路径不可用", usage_error)
+                    if final_usage.free <= start_usage.free:
                         return finish("回收站未释放空间")
-                    if current is not None and current <= request.target_percent:
-                        return finish("达到目标")
+                    if current_percent is not None and current_percent <= request.target_percent: return finish("达到目标")
             return finish("任务异常", "应用正在退出，自动清理已取消")
         except Exception as exc:
-            if not audit_started:
-                self.record_blocked(request, "任务异常", str(exc))
-            elif not audit_finished:
-                result = finish("任务异常", str(exc))
+            if not audit_started: self.record_blocked(request, "任务异常", str(exc))
             log(f"⚠️ 自动清理任务异常: {exc}")
-            return result
-        finally:
-            if audit_started and not audit_finished:
-                finish("任务异常", "任务未正常结束")
-
-    def _write_audit(self, event: str, run_id: str, **fields: Any) -> bool:
-        return bool(self._audit_writer and self._audit_writer.write(event, run_id, **fields))
+            return finish("任务异常", str(exc))

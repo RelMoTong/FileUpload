@@ -13,6 +13,7 @@ from src.models import (
     UploadTaskRequest,
     UploadValidationResult,
 )
+from src.models.path_probe import PathProbeResult
 
 
 class UploadLifecycleService(Protocol):
@@ -31,6 +32,14 @@ class UploadLifecycleService(Protocol):
     def ftp_client_status(self) -> Dict[str, Any]: ...
     def archive_queue_size(self) -> int: ...
     def request_stop_all(self) -> UploadCommandResult: ...
+    def probe_request_async(
+        self,
+        request: UploadTaskRequest,
+        callback: Callable[[PathProbeResult], None],
+        *,
+        timeout: float = 2.0,
+    ) -> int: ...
+    def cancel_path_probes(self) -> int: ...
     @property
     def has_running_workers(self) -> bool: ...
     def shutdown(self, timeout_ms: int = 3000) -> None: ...
@@ -61,6 +70,18 @@ class UploadController:
 
     def validate_request(self, request: UploadTaskRequest) -> UploadValidationResult:
         return self._service.validate_request(request)
+
+    def probe_request_async(
+        self,
+        request: UploadTaskRequest,
+        callback: Callable[[PathProbeResult], None],
+        *,
+        timeout: float = 2.0,
+    ) -> int:
+        return self._service.probe_request_async(request, callback, timeout=timeout)
+
+    def cancel_path_probes(self) -> int:
+        return self._service.cancel_path_probes()
 
     def start(self, request: UploadTaskRequest) -> UploadCommandResult:
         if self._state.status is not UploadStatus.STOPPED:
@@ -96,7 +117,9 @@ class UploadController:
             return UploadCommandResult(False, "只有暂停的任务可以恢复")
         result = self._service.resume()
         if result.success:
-            self._transition(UploadStatus.RUNNING)
+            reasons = getattr(self._service, "worker_pause_reasons", frozenset())
+            if not reasons:
+                self._transition(UploadStatus.RUNNING)
         return result
 
     def stop(self) -> UploadCommandResult:

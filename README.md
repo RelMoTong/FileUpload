@@ -1,6 +1,6 @@
 # 图片异步上传工具 v3.0.0
 
-> **v3.5.1 稳定性改造门禁（2026-09-11）**：当前版本保持 **NO-GO**，仅允许有人值守试运行。SQLite 移除完成前，自动清理与跨文件持久化去重由配置和界面双重强制关闭；优先使用 SMB 单通道、开启备份，并确保源、目标、备份目录完全分离。实施状态以仓库根目录的 `v3.5.1_无数据库稳定性改造实施方案.html` 为唯一清单。
+> **v3.5.1 稳定性改造门禁（2026-09-12）**：当前版本保持 **NO-GO**，仅允许有人值守试运行。SQLite 已移除；自动清理与跨文件持久化去重在最终验证完成前仍由配置和界面双重强制关闭。优先使用 SMB 单通道、开启备份，并确保源、目标、备份目录完全分离。当前运行限制见 [v3.5.1 运行手册](docs/V351_OPERATIONS_MANUAL.md) 和 [发布验证记录](docs/V351_RELEASE_VERIFICATION.md)。
 
 ## 软件简介
 
@@ -76,7 +76,7 @@ src/
 
 ### 打包版（推荐）
 
-详见 [打包说明文档](docs/历史版本/打包说明_v1.8.md)
+打包命令和运行环境要求见 `scripts/打包程序.bat` 与 `ImageUploadTool.spec`。
 
 1. 下载 `.exe` 可执行文件（无需安装 Python 环境）
 2. 双击运行 `图片异步上传工具_v2.1.exe`
@@ -104,10 +104,7 @@ src/
    scripts\启动程序.bat
    ```
 
-4. 运行自动化测试：
-   ```powershell
-   pytest -q -p no:cacheprovider
-   ```
+4. 自动化测试不随精简源代码目录发布；发布前请按 [运行手册](docs/V351_OPERATIONS_MANUAL.md) 完成现场验证。
 
 ## 配置参数说明
 
@@ -154,7 +151,7 @@ src/
 
 **测试结论**: v2.1性能达到卓越级别，所有指标远超预期！
 
-详细测试报告请查看：[v2.1性能测试报告](docs/v2.1_性能测试报告.md)
+上述性能数据为历史版本基准，仅供参考；精简源代码目录不包含历史测试报告。
 
 ## 实际应用场景性能预估
 
@@ -305,7 +302,7 @@ A: 性能测试在本地回环（127.0.0.1）进行，实际速度取决于网�
 - 百兆局域网: 约11-12 MB/s
 - 公网: 取决于带宽（通常1-10 MB/s）
 
-详见：[v2.1性能测试报告](docs/v2.1_性能测试报告.md)
+历史性能报告不随精简源代码目录发布。
 
 **Q: 普通用户可以修改路径吗**
 A: 可以！普通用户可以修改源/目标/备份文件夹路径和选择文件类型，但无法修改高级设置（监控模式、间隔等）
@@ -323,8 +320,8 @@ A: 不会，日志采用独立线程异步写入，不会阻塞主界面
 
 - **仓库文档总览**: [docs/README.md](docs/README.md)
 - **版本变更摘要**: [docs/CHANGELOG.md](docs/CHANGELOG.md)
-- **GitHub 发布说明**: [docs/GITHUB_RELEASE_v3.2.0.md](docs/GITHUB_RELEASE_v3.2.0.md)
-- **详细发布说明**: [RELEASE_NOTES_v3.2.0.md](RELEASE_NOTES_v3.2.0.md)
+- **运行手册**: [docs/V351_OPERATIONS_MANUAL.md](docs/V351_OPERATIONS_MANUAL.md)
+- **发布验证记录**: [docs/V351_RELEASE_VERIFICATION.md](docs/V351_RELEASE_VERIFICATION.md)
 
 ## 技术规格
 
@@ -393,7 +390,6 @@ A: 不会，日志采用独立线程异步写入，不会阻塞主界面
   "target_folder": "目标文件夹路径", 
   "backup_folder": "备份文件夹路径",
   "upload_interval": 30,
-  "monitor_mode": "periodic",
   "disk_threshold_percent": 10,
   "retry_count": 3,
   "filter_jpg": true,

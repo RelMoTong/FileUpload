@@ -9,6 +9,15 @@ from typing import Any, Dict, Iterable, Mapping, Type, TypeVar
 
 EnumT = TypeVar("EnumT", bound=Enum)
 
+SHARED_RETIRED_CONFIG_KEYS = frozenset(
+    {
+        "monitor_mode",
+        "enable_resume",
+        "resume_min_size_mb",
+        "auto_delete_keep_days",
+    }
+)
+
 
 def as_bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
@@ -58,4 +67,3 @@ def as_enum(enum_type: Type[EnumT], value: Any, default: EnumT) -> EnumT:
 def unknown_fields(data: Mapping[str, Any], known_fields: Iterable[str]) -> Dict[str, Any]:
     known = set(known_fields)
     return {key: deepcopy(value) for key, value in data.items() if key not in known}
-

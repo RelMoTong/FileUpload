@@ -29,6 +29,7 @@ class ApplicationSettings:
             *UploadSettings.CONFIG_KEYS,
             *UploadSettings.RETIRED_CONFIG_KEYS,
             *CleanupSettings.CONFIG_KEYS,
+            *CleanupSettings.RETIRED_CONFIG_KEYS,
             "enable_ftp_server",
             "ftp_server",
             "ftp_client",

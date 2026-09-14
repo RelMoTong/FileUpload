@@ -1,0 +1,8 @@
+# v3.5.1 no-database release lock (Windows, Python 3.13.5)
+PySide6==6.10.0
+pyftpdlib==2.1.0
+pyOpenSSL==26.4.0
+Send2Trash==2.1.0
+PyInstaller==6.12.0
+pytest==9.0.2
+pyright==1.1.411

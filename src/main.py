@@ -10,11 +10,7 @@ import os
 import time
 import json
 from pathlib import Path
-from typing import Any, List, Tuple, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from PySide6 import QtCore, QtWidgets  # type: ignore[import-not-found]
-    from PySide6.QtNetwork import QLocalServer, QLocalSocket  # type: ignore[import-not-found]
+from typing import Any, List, Tuple
 
 # 添加项目根目录到 Python 路径
 project_root = Path(__file__).parent.parent
@@ -36,11 +32,6 @@ def check_dependencies() -> Tuple[bool, List[str], List[str]]:
     """
     missing_required: List[str] = []
     missing_optional: List[str] = []
-    
-    # 必需依赖
-    required_packages = [
-        ('PySide6', 'pip install PySide6'),
-    ]
     
     # 可选依赖
     optional_packages = [
@@ -68,14 +59,14 @@ def show_dependency_warning(missing_required: List[str], missing_optional: List[
     """显示依赖缺失警告"""
     if missing_required:
         print("\n" + "=" * 60)
-        print("❌ 缺少必需依赖，程序无法启动：")
+        print("缺少必需依赖，程序无法启动：")
         for dep in missing_required:
             print(f"   - {dep}")
         print("=" * 60 + "\n")
     
     if missing_optional:
         print("\n" + "-" * 60)
-        print("ℹ️ 缺少可选依赖，部分功能不可用：")
+        print("缺少可选依赖，部分功能不可用：")
         for dep in missing_optional:
             print(f"   - {dep}")
         print("-" * 60 + "\n")
@@ -83,19 +74,16 @@ def show_dependency_warning(missing_required: List[str], missing_optional: List[
 
 def run_packaged_release_probe(
     app_dir: Path,
-    cleanup_index_repository: Any,
 ) -> tuple[bool, dict[str, Any]]:
     """Exercise packaged resources and writable stores used at the site.
 
-    The probe is only called when ``IMAGE_UPLOAD_SMOKE_TEST=1``.  Keeping it
-    behind that explicit release-test switch prevents normal startup from
-    creating lazy databases before their features are used.
+    The probe is only called when ``IMAGE_UPLOAD_SMOKE_TEST=1``.
     """
     from src.core import ResumeManager, get_resource_path
     from src.core.file_identity import FileIdentity
     from src.core.i18n import LANG_EN_US, LANG_ZH_CN, TRANSLATIONS
     from src.protocols.ftp import FTPServerManager, TLS_FTPHandler
-    from src.repositories import DedupIndexRepository, PendingArchiveRepository
+    from src.repositories import PendingArchiveRepository
 
     checks: dict[str, bool] = {}
     errors: list[str] = []
@@ -134,30 +122,10 @@ def run_packaged_release_probe(
     )
 
     try:
-        record(
-            "cleanup_index",
-            bool(cleanup_index_repository.ensure_schema()),
-            getattr(cleanup_index_repository, "last_error", "schema initialization failed"),
-        )
-    except Exception as exc:
-        record("cleanup_index", False, f"{type(exc).__name__}: {exc}")
-
-    try:
         ResumeManager(app_dir)
         record("resume_store", (app_dir / "resume_data").is_dir(), "resume_data not created")
     except Exception as exc:
         record("resume_store", False, f"{type(exc).__name__}: {exc}")
-
-    try:
-        dedup_repository = DedupIndexRepository(app_dir)
-        dedup_repository.candidates(str(app_dir), "sha256", -1)
-        record(
-            "dedup_index",
-            dedup_repository.path.is_file() and not dedup_repository.last_error,
-            dedup_repository.last_error or "dedup database not created",
-        )
-    except Exception as exc:
-        record("dedup_index", False, f"{type(exc).__name__}: {exc}")
 
     try:
         archive_repository = PendingArchiveRepository(app_dir)
@@ -357,7 +325,14 @@ def main():
     try:
         from PySide6 import QtCore, QtWidgets  # type: ignore
         from PySide6.QtNetwork import QLocalServer, QLocalSocket  # type: ignore
-    except ImportError:
+    except ImportError as exc:
+        if getattr(sys, "frozen", False):
+            try:
+                (Path(sys.executable).parent / "startup-error.log").write_text(
+                    f"PySide6 import failed: {exc}\n", encoding="utf-8"
+                )
+            except OSError:
+                pass
         show_dependency_warning(["PySide6: pip install PySide6"], [])
         return 1
 
@@ -374,7 +349,6 @@ def main():
     from src.models import AuthModel, UploadRuntimeState
     from src.repositories import (
         CleanupAuditRepository,
-        CleanupIndexRepository,
         ConfigRepository,
         DailyLogRepository,
         FTPEventLogRepository,
@@ -422,7 +396,6 @@ def main():
     settings_repository = ConfigRepository(app_dir / 'config.json')
     ftp_event_repository = FTPEventLogRepository(app_dir)
     cleanup_audit_repository = CleanupAuditRepository(app_dir)
-    cleanup_index_repository = CleanupIndexRepository(app_dir)
     daily_log_repository = DailyLogRepository(app_dir)
     startup_repository = WindowsStartupRepository()
 
@@ -431,7 +404,6 @@ def main():
     upload_service = UploadService()
     cleanup_service = CleanupService(
         cleanup_audit_repository,
-        index_repository=cleanup_index_repository,
     )
     runtime_service = RuntimeService(
         app_dir,
@@ -475,10 +447,7 @@ def main():
 
     release_smoke = os.environ.get("IMAGE_UPLOAD_SMOKE_TEST") == "1"
     if release_smoke:
-        probe_ok, _probe_report = run_packaged_release_probe(
-            app_dir,
-            cleanup_index_repository,
-        )
+        probe_ok, _probe_report = run_packaged_release_probe(app_dir)
         if not probe_ok:
             return 2
 

@@ -10,7 +10,7 @@ v3.0.2 新增功能：
 """
 
 import os
-import json
+from os import replace as _atomic_replace
 import hashlib
 import time
 import logging
@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta
 import threading
+
+from src.core.atomic_json_store import AtomicJsonStore
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,9 @@ class ResumeManager:
     
     # 续传记录过期时间（7天）
     RECORD_EXPIRE_DAYS = 7
+    MAX_RESUME_RECORDS = 1_000
+    CHECKPOINT_MIN_BYTES = 4 * 1024 * 1024
+    CHECKPOINT_MIN_SECONDS = 2.0
     
     def __init__(self, app_dir: Path):
         """初始化续传管理器
@@ -47,6 +52,7 @@ class ResumeManager:
         
         self._lock = threading.Lock()
         self._active_uploads: Dict[str, Dict[str, Any]] = {}
+        self._checkpoint_state: Dict[str, tuple[int, float]] = {}
         
         # 启动时清理过期记录
         self._cleanup_expired_records()
@@ -75,6 +81,23 @@ class ResumeManager:
     def _get_record_path(self, file_id: str) -> Path:
         """获取续传记录文件路径"""
         return self.resume_dir / f"{file_id}.resume"
+
+    def _store_for(self, file_id: str) -> AtomicJsonStore:
+        return AtomicJsonStore(
+            self._get_record_path(file_id),
+            max_bytes=128 * 1024,
+            max_records=32,
+            replace_func=_atomic_replace,
+        )
+
+    def _read_record(self, file_id: str) -> Optional[Dict[str, Any]]:
+        record = self._store_for(file_id).read(
+            validator=lambda value: isinstance(value, dict), default=None
+        )
+        return record if isinstance(record, dict) else None
+
+    def _write_record(self, file_id: str, record: Dict[str, Any]) -> bool:
+        return self._store_for(file_id).write(record)
     
     def get_resume_info(self, file_path: str, target_path: str) -> Optional[Dict[str, Any]]:
         """获取续传信息
@@ -102,8 +125,10 @@ class ResumeManager:
                 return None
             
             try:
-                with open(record_path, 'r', encoding='utf-8') as f:
-                    record = json.load(f)
+                record = self._read_record(file_id)
+                if record is None:
+                    logger.warning("续传记录损坏或不可恢复: %s", record_path)
+                    return None
                 
                 # 验证记录有效性
                 if record.get('source_path') != file_path:
@@ -135,6 +160,8 @@ class ResumeManager:
                     if actual_size != uploaded_bytes:
                         logger.info(f"临时文件大小不匹配: 记录={uploaded_bytes}, 实际={actual_size}")
                         record['uploaded_bytes'] = actual_size
+                        record['last_update'] = datetime.now().isoformat()
+                        self._write_record(file_id, record)
                 
                 logger.info(f"找到续传记录: {file_path}, 已上传 {record['uploaded_bytes']}/{record['total_bytes']} 字节")
                 return record
@@ -182,10 +209,8 @@ class ResumeManager:
                 'checksum_md5': '',  # 可选：完成后验证
             }
             
-            # 保存记录
-            record_path = self._get_record_path(file_id)
-            with open(record_path, 'w', encoding='utf-8') as f:
-                json.dump(record, f, indent=2, ensure_ascii=False)
+            if not self._write_record(file_id, record):
+                raise OSError("无法原子保存续传记录")
             
             # 添加到活跃上传列表
             self._active_uploads[file_id] = record
@@ -211,14 +236,21 @@ class ResumeManager:
                 return False
             
             try:
-                with open(record_path, 'r', encoding='utf-8') as f:
-                    record = json.load(f)
+                record = self._read_record(file_id)
+                if record is None:
+                    return False
                 
                 record['uploaded_bytes'] = uploaded_bytes
                 record['last_update'] = datetime.now().isoformat()
-                
-                with open(record_path, 'w', encoding='utf-8') as f:
-                    json.dump(record, f, indent=2, ensure_ascii=False)
+                previous_bytes, previous_at = self._checkpoint_state.get(file_id, (-1, 0.0))
+                now = time.monotonic()
+                if (
+                    uploaded_bytes - previous_bytes >= self.CHECKPOINT_MIN_BYTES
+                    or now - previous_at >= self.CHECKPOINT_MIN_SECONDS
+                ):
+                    if not self._write_record(file_id, record):
+                        return False
+                    self._checkpoint_state[file_id] = (uploaded_bytes, now)
                 
                 # 更新内存中的记录
                 if file_id in self._active_uploads:
@@ -253,6 +285,7 @@ class ResumeManager:
             
             # 从活跃列表移除
             self._active_uploads.pop(file_id, None)
+            self._checkpoint_state.pop(file_id, None)
             
             return True
     
@@ -264,8 +297,9 @@ class ResumeManager:
             if record_path.exists():
                 # 先读取记录获取临时文件路径
                 try:
-                    with open(record_path, 'r', encoding='utf-8') as f:
-                        record = json.load(f)
+                    record = self._read_record(file_id)
+                    if record is None:
+                        return
                     
                     # 删除临时文件（如果上传成功则不需要）
                     temp_file = record.get('temp_file', '')
@@ -292,8 +326,9 @@ class ResumeManager:
             
             for record_file in self.resume_dir.glob("*.resume"):
                 try:
-                    with open(record_file, 'r', encoding='utf-8') as f:
-                        record = json.load(f)
+                    record = self._read_record(record_file.stem)
+                    if record is None:
+                        continue
                     
                     last_update = datetime.fromisoformat(record.get('last_update', ''))
                     if last_update < expire_time:
@@ -301,8 +336,8 @@ class ResumeManager:
                         self._delete_record(file_id)
                         cleaned += 1
                 except Exception:
-                    # 无法解析的记录直接删除
-                    record_file.unlink(missing_ok=True)
+                    # AtomicJsonStore isolates corrupt files. Do not delete
+                    # evidence or a recoverable backup during startup cleanup.
                     cleaned += 1
             
             if cleaned > 0:
@@ -331,8 +366,9 @@ class ResumeManager:
         try:
             for record_file in self.resume_dir.glob("*.resume"):
                 try:
-                    with open(record_file, 'r', encoding='utf-8') as f:
-                        record = json.load(f)
+                    record = self._read_record(record_file.stem)
+                    if record is None:
+                        continue
                     
                     # 检查源文件是否仍然存在
                     source_path = record.get('source_path', '')
@@ -348,6 +384,25 @@ class ResumeManager:
             logger.warning(f"获取待续传记录失败: {e}")
         
         return pending
+
+    def cleanup_orphan_part_files(self) -> tuple[Path, ...]:
+        """Remove only local ``.part`` files that no valid resume record owns."""
+        referenced: set[str] = set()
+        for record in self.get_pending_resumes():
+            temp_file = record.get("temp_file")
+            if isinstance(temp_file, str) and temp_file:
+                referenced.add(os.path.normcase(os.path.abspath(temp_file)))
+        removed: list[Path] = []
+        for part_file in self.app_dir.rglob("*.part"):
+            try:
+                normalized = os.path.normcase(os.path.abspath(part_file))
+                if normalized in referenced or not part_file.is_file():
+                    continue
+                part_file.unlink()
+                removed.append(part_file)
+            except OSError as exc:
+                logger.warning("清理孤立分片失败 %s: %s", part_file, exc)
+        return tuple(removed)
 
 
 class ResumableFileUploader:
@@ -488,51 +543,4 @@ class ResumableFileUploader:
         except Exception as e:
             logger.error(f"上传失败: {e}")
             self.resume_manager.complete_upload(source_path, success=False)
-            return False, str(e)
-    
-    def _simple_copy(
-        self,
-        source_path: str,
-        target_path: str,
-        rate_limit_bytes: int = 0
-    ) -> Tuple[bool, str]:
-        """简单复制（不启用续传）"""
-        try:
-            file_size = os.path.getsize(source_path)
-            filename = os.path.basename(source_path)
-            uploaded_bytes = 0
-            
-            os.makedirs(os.path.dirname(target_path), exist_ok=True)
-            
-            with open(source_path, 'rb') as src, open(target_path, 'wb') as dst:
-                while not self._stop_flag:
-                    chunk_start = time.time()
-                    
-                    chunk = src.read(self.buffer_size)
-                    if not chunk:
-                        break
-                    
-                    dst.write(chunk)
-                    uploaded_bytes += len(chunk)
-                    
-                    if self.progress_callback:
-                        self.progress_callback(uploaded_bytes, file_size, filename)
-                    
-                    if rate_limit_bytes > 0:
-                        expected_time = len(chunk) / rate_limit_bytes
-                        elapsed_time = time.time() - chunk_start
-                        if elapsed_time < expected_time:
-                            time.sleep(expected_time - elapsed_time)
-            
-            if self._stop_flag:
-                if os.path.exists(target_path):
-                    os.remove(target_path)
-                return False, "上传被用户中断"
-            
-            import shutil
-            shutil.copystat(source_path, target_path)
-            
-            return True, ""
-            
-        except Exception as e:
             return False, str(e)

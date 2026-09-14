@@ -6,8 +6,9 @@ from copy import deepcopy
 from typing import Any, Dict
 
 
-# GATE-00: these database-backed features remain hard-disabled until P2-01
-# removes their SQLite implementations.
+# Cross-file persistent indexes were removed in P2-01.  These flags remain
+# disabled during final validation because the product supports only
+# session-scoped deduplication.
 STABILITY_FREEZE_ACTIVE = True
 STABILITY_FREEZE_NOTICE = "无数据库改造中不可启用"
 STABILITY_FROZEN_BOOLEAN_KEYS = (
