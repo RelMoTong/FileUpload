@@ -5,6 +5,11 @@
 模块关系：由 src.main 组装；仅通过抽象约定与服务协作，不直接承担界面或底层 IO。
 阅读重点：先读公开 Gateway 方法、状态转换与异步回调，再追踪注入的服务。
 
+退出文字流程图：
+界面停止新请求 → 请求上传/清理/FTP 停止 → Qt 事件循环轮询 Worker →
+确认退出事件 → 清理任务、上传任务、FTP、运行时参与者依次 shutdown → 释放窗口资源；
+任一参与者失败只记录错误，不跳过后续释放。
+
 Application shutdown orchestration with explicit dependency order.
 """
 

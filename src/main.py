@@ -338,7 +338,7 @@ def main():
     if missing_optional:
         show_dependency_warning([], missing_optional)
 
-    # 第二步：依赖确认后才导入 Qt，避免缺包时产生难以理解的 ImportError。
+    # 第 2 步：加载 Qt；缺包时保留控制台提示，避免在图形层报出难以理解的 ImportError。
     global QtCore, QtWidgets, QLocalServer, QLocalSocket  # type: ignore
     try:
         from PySide6 import QtCore, QtWidgets  # type: ignore
@@ -354,7 +354,7 @@ def main():
         show_dependency_warning(["PySide6: pip install PySide6"], [])
         return 1
 
-    # 第三步：依赖检查成功后再组装 MVC 组件，避免提前加载平台相关实现。
+    # 组件类型在此延迟导入；真正的 MVC 对象装配在单实例检查之后进行。
     from src.controllers import (
         AuthController,
         CleanupController,
@@ -381,20 +381,21 @@ def main():
     )
     from src.ui import MainWindow  # type: ignore
 
+    # 第 3 步：创建 QApplication，后续单实例提示和窗口均依赖该事件对象。
     app = QtWidgets.QApplication(sys.argv)
 
-    # 第四步：设置应用元数据，供系统任务栏、设置和日志展示。
+    # 第 3 步（续）：设置应用元数据，供系统任务栏、设置和日志展示。
     app.setApplicationName("图片异步上传工具")
     app.setApplicationVersion(get_app_version())
     app.setOrganizationName("RelMoTong")
 
-    # 第五步：先检查本机是否已有实例，避免两个进程同时处理同一批源文件。
+    # 第 4 步：检查单实例，避免两个进程同时处理同一批源文件。
     server_name = "ImageUploadTool_SingleInstance_Server"
     if wakeup_existing_instance(server_name, attempts=1, wait_ms=0, connect_ms=200):
         # 已有实例运行且已发送唤醒消息，本进程无需继续创建第二套 Worker。
         return 0
 
-    # 第六步：使用共享内存作为辅助锁，缩小 LocalServer 建立前的极端竞态窗口。
+    # 第 4 步（续）：共享内存作为辅助锁，缩小 LocalServer 建立前的极端竞态窗口。
     shared_mem = QtCore.QSharedMemory("ImageUploadTool_SingleInstance")
     if not shared_mem.create(1):
         if wakeup_existing_instance(server_name):
@@ -409,7 +410,7 @@ def main():
         msg.exec() if hasattr(msg, 'exec') else msg.exec_()
         return 1
 
-    # 第七步：所有 Controller、Service、Repository 都在组合根创建，再注入主窗口。
+    # 第 5 步：装配 MVC；所有 Controller、Service、Repository 均只在组合根创建，再注入主窗口。
     app_dir = get_app_dir()
     settings_repository = ConfigRepository(app_dir / 'config.json')
     ftp_event_repository = FTPEventLogRepository(app_dir)
@@ -463,12 +464,14 @@ def main():
     )
     window._setup_single_instance_server()
 
+    # 第 6 步：仅在发布验证环境执行冒烟探针，正常启动绝不创建探针文件。
     release_smoke = os.environ.get("IMAGE_UPLOAD_SMOKE_TEST") == "1"
     if release_smoke:
         probe_ok, _probe_report = run_packaged_release_probe(app_dir)
         if not probe_ok:
             return 2
 
+    # 第 7 步：显示窗口；这之前所有依赖、单实例与可选探针均已完成。
     window.show()
 
     # 打包版冒烟测试：不做界面自动化，而是运行真实组合根、Qt 事件循环和协作式退出流程。
@@ -483,7 +486,7 @@ def main():
         smoke_duration_ms = min(max(1000, smoke_duration_ms), 72 * 60 * 60 * 1000)
         QtCore.QTimer.singleShot(smoke_duration_ms, window.app_exit_requested.emit)
 
-    # 最后进入事件循环；之后的用户操作、定时器和后台信号均由 Qt 分发。
+    # 第 8 步：进入事件循环；之后的用户操作、定时器和后台信号均由 Qt 分发。
     return app.exec()
 
 
