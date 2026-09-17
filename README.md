@@ -63,6 +63,7 @@ python -m venv .p4_02_clean_venv
 
 ## 文档
 
+- [新手阅读指南](README_新手阅读指南.md)
 - [运维手册](docs/V351_OPERATIONS_MANUAL.md)
 - [发布验证报告](docs/V351_RELEASE_VERIFICATION.md)
 - [现场验收表](docs/V351_FIELD_ACCEPTANCE.md)

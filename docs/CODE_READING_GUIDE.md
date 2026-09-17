@@ -35,7 +35,7 @@
 
 辅助目录：
 
-- `tests/` — 23 个测试文件，其中 `test_architecture_boundaries.py` 是**分层依赖规则的静态守卫**。
+- 历史测试源码已从精简仓库移除；需要回归时从删除测试前的提交临时提取到隔离目录，绝不放回仓库。
 - `tools/` — 打包与验收工具：`build_v351_release_candidate.py`、`validate_v351_field_acceptance.py`、`release_soak_test.py`。
 - `docs/` — 架构与验收文档，**`MVC_ARCHITECTURE.md` 是权威架构说明**。
 - `release_candidate/`、`dist/`、`build/` — 产物目录，**阅读代码时直接跳过**。
@@ -175,9 +175,9 @@
 |---|---|---|
 | 6.1 | `src/controllers/lifecycle_controller.py` (381) | `request_shutdown` 的固定顺序：View 停止定时器 → cleanup → upload → ftp → runtime → View 释放 |
 | 6.2 | `src/controllers/lifecycle_controller.py` | 参与方失败不中断整体释放；`LifecycleShutdownResult` 汇总 |
-| 6.3 | `tests/test_architecture_boundaries.py` | **分层规则的可执行版本** —— 比读文档更精确 |
-| 6.4 | `tests/test_upload_mvc.py`、`test_lifecycle_mvc.py` | 用 Fake Gateway 看清各层如何被隔离测试 |
-| 6.5 | `tests/conftest.py` | 测试夹具与离屏 Qt 配置 |
+| 6.3 | 历史 `test_architecture_boundaries.py` | 隔离提取后可执行的分层依赖静态守卫 |
+| 6.4 | 历史上传/生命周期 MVC 测试 | 隔离提取后用 Fake Gateway 理解层间隔离 |
+| 6.5 | 历史 `conftest.py` | 隔离提取后的离屏 Qt 测试夹具 |
 | 6.6 | `tools/build_v351_release_candidate.py` | 打包、哈希侧车、`--verify-only` 校验流程 |
 
 ---
