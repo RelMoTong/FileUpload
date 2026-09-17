@@ -27,7 +27,13 @@ logger = logging.getLogger(__name__)
 
 
 def _normalize_windows_path_for_check(path: str) -> str:
-    """Normalize Windows filesystem paths before passing them to shell/API checks."""
+    """在交给 Windows Shell/API 检查前统一路径分隔符。
+
+    用途：避免配置中使用 ``/`` 的路径传入 PowerShell、盘符判断或 Windows API 后出现误判。
+    输入：任意路径字符串。
+    输出：Windows 下返回反斜杠路径；其他平台原样返回。
+    风险点：这里只做表示层规范化，不能调用 ``realpath``，否则失联网络盘可能发生阻塞 I/O。
+    """
     if os.name == 'nt' and isinstance(path, str):
         return path.replace('/', '\\')
     return path
@@ -56,26 +62,30 @@ from src.core.pause_state import PauseState
 
 
 class UploadWorker(QtCore.QObject):  # type: ignore[misc]
-    """文件上传 Worker
-    
-    后台线程执行文件上传任务，支持多种协议和高级功能。
-    
-    Signals:
-        log: 日志消息
-        stats: 统计信息 (uploaded, failed, skipped, rate)
-        progress: 进度信息 (current, total, filename)
-        file_progress: 单文件进度 (filename, percent)
-        network_status: 网络状态 ('good'|'unstable'|'disconnected')
-        finished: 任务完成
-        status: 运行状态 ('running'|'paused'|'stopped')
-        ask_user_duplicate: 请求用户处理重复文件
-        upload_error: 上传错误 (filename, error_message)
-        disk_warning: 磁盘空间警告 (target_percent, backup_percent, threshold)
-    
-    Note: type: ignore[misc] - Qt 动态导入导致的 Pylance 误报
+    """上传会话的后台 Worker：扫描、上传、重试、归档和网络监控的协调中心。
+
+    用途：在后台运行文件上传主循环，避免目录扫描、网络 I/O 和归档阻塞 GUI 线程。
+    输入：源/目标/备份路径、协议、过滤器、重试与网络策略等会话配置。
+    输出：通过 Qt 信号发送日志、统计、进度、网络状态、重复文件询问与完成通知。
+    关键步骤：冻结文件身份、上传各协议、确认成功后持久化归档意图、由独立归档线程处理源文件。
+    风险点：源文件可能随时被替换；网络盘可能阻塞；上传成功不等于归档成功，三者必须分开处理。
+
+    信号说明：
+        log：日志文本。
+        stats：累计上传、失败、跳过数与速率。
+        progress：本轮文件序号、当前总数和文件名。
+        file_progress：单文件百分比。
+        network_status：网络状态（good、unstable、disconnected）。
+        finished：主运行循环结束。
+        status：运行状态（running、paused、stopped）。
+        ask_user_duplicate：请求 UI 决定重复文件策略。
+        upload_error：单文件上传错误。
+        disk_warning：磁盘空间告警。
+
+    说明：``type: ignore[misc]`` 是 Qt 动态导入导致的 Pylance 误报抑制标记。
     """
     
-    # Signals
+    # Qt 信号只传递轻量数据；真正的文件操作始终留在 Worker 或其内部线程中。
     log = Signal(str)
     stats = Signal(int, int, int, str)   # uploaded, failed, skipped, rate
     progress = Signal(int, int, str)     # current, total, filename
@@ -116,33 +126,36 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         max_upload_rate_mbps: float = 10.0,
         file_upload_delay_seconds: float = 1.5
     ):
-        """初始化上传 Worker
-        
-        Args:
-            source: 源文件夹路径
-            target: 目标文件夹路径
-            backup: 备份文件夹路径
-            interval: 上传间隔（秒）
-            mode: 运行模式 ('periodic' | 'once')
-            disk_threshold_percent: 磁盘空间阈值（百分比）
-            retry_count: 失败重试次数
-            filters: 文件扩展名过滤器列表
-            app_dir: 应用程序目录
-            enable_deduplication: 是否启用去重
-            hash_algorithm: 哈希算法 ('md5' | 'sha256')
-            duplicate_strategy: 重复处理策略 ('skip'|'rename'|'overwrite'|'ask')
-            network_check_interval: 网络检查间隔（秒）
-            network_auto_pause: 网络中断时自动暂停
-            network_auto_resume: 网络恢复时自动恢复
-            enable_auto_delete: 启用自动删除（磁盘不足时通知主窗口清理）
-            auto_delete_threshold: 自动删除磁盘阈值（使用率触发值）
-            auto_delete_target_percent: 自动删除目标阈值（清理后回落到此值）
-            upload_protocol: 上传协议 ('smb'|'ftp_client'|'both')
-            ftp_client_config: FTP客户端配置
-            enable_backup: 是否启用备份
-            limit_upload_rate: 是否限制上传速率
-            max_upload_rate_mbps: 最大上传速率（MB/s）
-            file_upload_delay_seconds: 扫描到文件后、开始上传前的延迟秒数
+        """保存一次上传会话的配置、状态机依赖对象和后台线程控制字段。
+
+        用途：构造阶段只准备内存状态，绝不访问网络目录或启动线程。
+        输入：源/目标/备份路径、上传策略、协议配置、磁盘策略和应用数据目录。
+        输出：一个尚未运行的 Worker；真正启动由 Qt 线程调用 ``start``。
+        关键步骤：规范化安全边界值、创建任务注册表/归档仓库/暂停状态、初始化停止事件。
+        风险点：不能在构造函数扫描路径；窗口创建时网络盘可能不可达，I/O 必须留到后台阶段。
+
+        参数：
+            source：源文件夹路径。
+            target：SMB 目标文件夹，FTP 模式下仍作为远端相对路径基准。
+            backup：上传成功后移动到的备份目录。
+            interval：周期模式下两轮扫描的间隔秒数。
+            mode：``periodic`` 或 ``once``。
+            disk_threshold_percent：低于该可用空间百分比时暂停上传。
+            retry_count：单文件允许的失败重试次数。
+            filters：允许上传的扩展名列表。
+            app_dir：日志、断点续传和归档日志的应用目录。
+            enable_deduplication：是否启用 SMB 去重。
+            hash_algorithm：``md5`` 或 ``sha256``。
+            duplicate_strategy：``skip``、``rename``、``overwrite`` 或 ``ask``。
+            network_check_interval：网络健康检查间隔秒数。
+            network_auto_pause/network_auto_resume：网络断开/恢复后的自动暂停策略。
+            enable_auto_delete：是否向主窗口发出自动清理需求通知。
+            auto_delete_threshold/auto_delete_target_percent：自动清理阈值参数。
+            upload_protocol：``smb``、``ftp_client`` 或 ``both``。
+            ftp_client_config：FTP/FTPS 客户端连接参数。
+            enable_backup：是否归档到备份目录；关闭时只允许移入回收站。
+            limit_upload_rate/max_upload_rate_mbps：可选的 SMB 限速参数。
+            file_upload_delay_seconds：发现第一文件后开始上传前的等待秒数。
         """
         super().__init__()
         self.source = source
@@ -159,27 +172,27 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self.filters = [ext.lower() for ext in filters]
         self.app_dir = app_dir
         
-        # 去重配置
+        # 去重只在 SMB 目标上支持；FTP/FTPS 不共享本地文件系统索引，不能假装支持。
         self.enable_deduplication = enable_deduplication
         self.hash_algorithm = hash_algorithm.lower()
         self.duplicate_strategy = duplicate_strategy
         
-        # 网络监控配置
+        # 网络监控独立于上传主循环，发布网络暂停原因而不是直接修改“是否暂停”布尔值。
         self.network_check_interval = network_check_interval
         self.network_auto_pause = network_auto_pause
         self.network_auto_resume = network_auto_resume
         
-        # 自动删除配置（Worker 仅做磁盘检测，实际清理由主窗口统一执行）
+        # Worker 仅检测磁盘并通知主窗口；实际删除统一由 CleanupController/Service 处理。
         self.enable_auto_delete = enable_auto_delete
         self.auto_delete_threshold = auto_delete_threshold
         self.auto_delete_target_percent = max(0, min(auto_delete_target_percent, auto_delete_threshold - 5))
         
-        # 协议配置
+        # 协议配置与 FTP 客户端对象分开保存，客户端只在真正上传时按需连接。
         self.upload_protocol = upload_protocol
         self.ftp_client_config = ftp_client_config or {}
         self.ftp_client = None
         
-        # 运行状态
+        # 三类后台工作各用独立线程和停止事件：上传主循环、归档、网络监控。
         self._running = False
         self._pause_state = PauseState()
         self._thread = None
@@ -188,7 +201,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self._net_thread = None
         self._net_stop_event = threading.Event()
         
-        # 统计数据
+        # 统计只反映当前会话；控制器会通过信号维护 UI 可读取的快照。
         self.uploaded_count = 0
         self.failed_count = 0
         self.skipped_count = 0
@@ -197,12 +210,12 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self.current = 0
         self.start_time = None
         
-        # 当前文件信息
+        # 当前文件字段只用于进度展示和诊断，不作为身份或删除授权依据。
         self.current_file_name = ""
         self.current_file_size = 0
         self.current_file_uploaded = 0
         
-        # 队列
+        # 重试队列在内存中；归档队列前必须先写入可恢复的持久化记录。
         self.retry_queue: Dict[str, Dict[str, Any]] = {}
         self._task_registry = FileTaskRegistry()
         self.archive_queue: queue.Queue = queue.Queue()
@@ -215,7 +228,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self._archive_persist_retry_base_seconds = 1.0
         self._archive_persist_retry_max_seconds = 30.0
         
-        # 网络状态
+        # 网络状态采用连续好/坏样本，避免一次抖动就频繁暂停和恢复。
         self.network_retry_count = 0
         self.network_auto_retry = True
         self.last_network_check = 0.0
@@ -227,7 +240,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self._last_backup_path_ok = False
         self._last_space_warn = 0.0
         
-        # 失败日志
+        # 达到重试上限后把失败原因追加到应用目录，方便现场排障。
         self.failed_log_path = self.app_dir / "failed_files.log"
         
         # 网络路径元数据操作使用可终止子进程，禁止超时后遗弃 FileOp 线程。
@@ -242,34 +255,49 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self._dedup_cache_root = ""
         self._dedup_generation = 0
         
-        # 去重询问模式的全局选择
+        # “询问”策略可由用户选择应用到后续重复文件，避免每个文件都阻塞等待 UI。
         self._duplicate_ask_choice: Optional[str] = None
         
-        # 断点续传管理器
+        # 断点续传记录独立于主进程内存，异常停止后下次会话仍可读取。
         self.resume_manager = ResumeManager(self.app_dir)
         self.resumable_uploader: Optional[ResumableFileUploader] = None
 
     @property
     def _paused(self) -> bool:
-        """Compatibility view of the unified pause state."""
+        """兼容旧调用方的暂停视图；真实状态由多个暂停原因共同决定。"""
         return self._pause_state.is_paused
 
     @_paused.setter
     def _paused(self, value: bool) -> None:
-        # Legacy callers can still force a manual pause in tests/integrations.
+        # 旧测试或集成仍可写入该属性；它只会设置 manual 原因，不会清除网络/磁盘暂停。
         self._pause_state.set("manual", bool(value))
 
     @property
     def pause_reasons(self) -> frozenset[str]:
+        """返回当前所有暂停原因，如 manual、network、disk、stopping。"""
         return self._pause_state.reasons
 
     def _set_pause_reason(self, reason: str, active: bool) -> None:
+        """增减一个暂停原因，若有效暂停状态改变则向控制器发布状态事件。
+
+        用途：让人工暂停、网络中断、磁盘不足和停止请求可以叠加，而非相互覆盖。
+        输入：暂停原因文本和是否启用。
+        输出：状态实际从暂停/非暂停切换时发送 paused 或 running 信号。
+        风险点：不能直接写单一布尔值；网络恢复不应意外解除人工暂停或磁盘暂停。
+        """
         changed = self._pause_state.set(reason, active)
         if changed and self._running:
             self.status.emit('paused' if self._pause_state.is_paused else 'running')
 
     def start(self) -> None:
-        """启动上传任务"""
+        """完成启动前校验后，启动上传主线程、归档恢复和可选网络监控。
+
+        用途：作为 QThread 启动信号连接的入口，不能由 UI 线程直接调用。
+        输入：构造阶段已保存的会话配置。
+        输出：校验通过后发出 running 状态，并创建 Python 上传主线程；失败则结束会话。
+        关键步骤：防重复启动、验证路径/FTP、重置状态、恢复归档日志、检查续传、启动线程。
+        风险点：启动失败必须发送 stopped 和 finished；否则服务层会永久持有无法工作的会话。
+        """
         if self._running:
             return
         self._duplicate_ask_choice = None
@@ -308,13 +336,13 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self._restore_pending_archives()
         self._restore_archive_persist_failures()
         
-        # 检查待续传的文件
+        # 只提示待续传记录；实际上传仍由主循环按统一的身份和网络规则处理。
         self._check_pending_resumes()
         
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         
-        # 启动网络监控线程（FTP-only 跳过网络路径监控）
+        # FTP-only 没有 SMB 目录可探测，跳过网络路径监控，FTP 连接错误会由上传分支报告。
         if self.upload_protocol != 'ftp_client':
             self._net_running = True
             self._net_thread = threading.Thread(target=self._network_monitor_loop, daemon=True)
@@ -323,7 +351,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self.status.emit('running')
     
     def _check_pending_resumes(self) -> None:
-        """检查并提示待续传的文件"""
+        """读取并提示可续传记录，帮助用户理解启动后优先处理的文件。"""
         try:
             pending = self.resume_manager.get_pending_resumes()
             if pending:
@@ -340,10 +368,10 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             self.log.emit(f"⚠️ 检查续传记录失败: {e}")
 
     def get_health_status(self) -> dict:
-        """获取运行健康状态（用于监控和排障）
-        
-        Returns:
-            健康状态字典，包含各项指标
+        """生成不修改状态的健康快照，供监控、日志和现场排障读取。
+
+        输出包含线程/进程数量、暂停原因、网络状态、统计数、协议和续传状态；它不触发
+        网络访问，因此可在出现问题时安全调用。
         """
         status = {
             'running': self._running,
@@ -364,42 +392,44 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         return status
 
     def log_health_status(self) -> None:
-        """记录当前健康状态到日志"""
+        """将当前健康快照压缩成一行日志，便于长期运行时定位异常趋势。"""
         status = self.get_health_status()
         self.log.emit(f"📊 健康检查: 运行={status['running']}, "
                      f"网络={status['network_status']}, "
                      f"上传/失败/跳过={status['uploaded_count']}/{status['failed_count']}/{status['skipped_count']}")
 
     def pause(self) -> None:
-        """暂停上传任务"""
+        """增加人工暂停原因；上传主循环会在安全检查点等待。"""
         if not self._running:
             return
         self._set_pause_reason("manual", True)
 
     def resume(self) -> None:
-        """恢复上传任务"""
+        """移除人工暂停原因；其他暂停原因仍然保留。"""
         if not self._running:
             return
         self._set_pause_reason("manual", False)
 
     def stop(self, wait: bool = False, timeout: float = 5.0) -> None:
-        """停止上传任务
-        
-        Args:
-            wait: 是否等待正在执行的任务完成（安全停止）
-            timeout: 等待超时时间（秒），仅在 wait=True 时有效
+        """请求停止上传、网络检查、远程文件操作和归档线程。
+
+        用途：让服务层/应用退出可以统一关闭 Worker 内的所有后台工作。
+        输入：保留的历史 ``wait`` 和 ``timeout`` 参数；当前停止请求本身保持非阻塞。
+        输出：运行标记和停止事件被设置，FTP 连接被断开，状态发布为 stopped。
+        关键步骤：停止续传器以保存进度、断开 FTP、终止可杀子进程、设置归档/网络停止事件。
+        风险点：不能因为等待网络 I/O 而卡住 UI；实际有限等待由服务层的 shutdown 路径负责。
         """
         self.log.emit(f"🛑 正在停止上传任务 ({'安全模式' if wait else '快速模式'})...")
         self._running = False
         self._set_pause_reason("stopping", True)
         
-        # 停止断点续传上传器（保存进度）
+        # 先通知续传上传器停止，它会保留当前进度以供下次启动继续。
         if self.resumable_uploader:
             self.resumable_uploader.stop()
             self.resumable_uploader = None
             self.log.emit("💾 上传进度已保存，下次启动可继续")
         
-        # 关闭FTP客户端
+        # FTP 客户端可能持有网络 socket，停止时主动断开以缩短后台收尾时间。
         if self.ftp_client:
             try:
                 self.ftp_client.disconnect()
@@ -411,7 +441,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self._terminate_fileop_processes()
         self._archive_stop_event.set()
         
-        # 停止网络监控
+        # 网络监控使用 Event.wait，设置事件可立即打断长检查间隔。
         self._net_running = False
         self._net_stop_event.set()
 
@@ -419,7 +449,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self.status.emit('stopped')
 
     def _apply_network_status(self, status: str) -> None:
-        """Apply a published network event to the sole pause state."""
+        """将网络采样结果映射为 network 暂停原因，并使用连续样本抑制抖动。
+
+        用途：网络短暂抖动时不反复暂停/恢复；真正断开时快速阻止新上传。
+        输入：good、unstable 或 disconnected。
+        输出：可能更新 network 暂停原因并发送状态日志。
+        关键步骤：坏样本清零好样本并暂停；连续两个好样本后才自动恢复。
+        风险点：自动恢复只能清除 network 原因，不能清除 manual、disk 或 stopping 原因。
+        """
         if status == "disconnected":
             self._network_bad_streak += 1
             self._network_good_streak = 0
@@ -443,7 +480,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             self._network_good_streak = 0
 
     def _record_network_status(self, status: str) -> None:
-        """Publish one network sample and let the pause state consume it."""
+        """记录一次网络采样，并仅在状态改变时向 UI 发送日志和信号。"""
         previous = self.current_network_status
         self.current_network_status = status
         if status != previous:
@@ -457,7 +494,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self._apply_network_status(status)
 
     def has_running_tasks(self) -> bool:
-        """返回 Worker 内部是否仍有 Python 线程或线程池任务活动。"""
+        """返回 Worker 内部是否仍有 Python 线程或网络文件操作子进程活动。"""
         threads = [self._thread, self._archive_thread, self._net_thread]
         return self._fileop_active_count() > 0 or any(
             thread is not None
@@ -467,7 +504,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         )
 
     def _network_monitor_loop(self) -> None:
-        """网络监控循环（独立线程）"""
+        """在独立线程循环检测 SMB 目标/备份可写性，并发布网络状态。
+
+        用途：避免上传主循环每次只处理一个文件时才发现共享目录已经离线。
+        输入：构造时保存的目标路径、备份开关和监控间隔。
+        输出：网络状态、暂停原因、周期统计心跳和断线提示。
+        关键步骤：有超时地检查目录、记录状态、按状态调整下次检查间隔、等待停止事件。
+        风险点：网络检查不能直接在此线程无限阻塞，所以共享目录探测使用有超时的子进程。
+        """
         while getattr(self, '_net_running', False):
             try:
                 # 只有所有必需的 SMB 路径均可写时才显示“正常”。
@@ -490,7 +534,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             try:
                 self.stats.emit(self.uploaded_count, self.failed_count, self.skipped_count, self.rate)
             except Exception:
-                # Signal发送失败静默忽略（UI可能已关闭，避免循环错误）
+                # 信号发送失败通常表示 UI 已关闭；忽略它以免监控循环因日志失败反复报错。
                 pass
 
             # 自适应间隔
@@ -499,7 +543,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 break
 
     def _evaluate_smb_network_status(self, timeout: float = 1.5) -> str:
-        """Return SMB path health, including every required writable path."""
+        """检查所有必需 SMB 路径的可写性，给出 good/unstable/disconnected。
+
+        用途：区分“目标可写但备份不可写”的不稳定状态和全部不可访问的断开状态。
+        输入：单次目录探测允许的最长秒数。
+        输出：三个网络状态之一，同时缓存备份路径结果。
+        关键步骤：检查目标、按需检查备份、根据两个布尔结果分类。
+        风险点：主机能 ping 通不等于共享目录可写，必须验证实际目录和写入权限。
+        """
         target_ok = self._safe_net_check(
             self.target, timeout=timeout, default=False, require_write=True
         )
@@ -526,20 +577,25 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         default: bool = False,
         require_write: bool = True,
     ) -> bool:
-        """安全检查网络路径可达性
-        
-        UNC/映射盘必须通过带超时的目录访问或写入探测，主机能被 ping
-        通不再被视为共享目录可用。写入探测在独立 PowerShell 子进程中
-        执行，避免失联的网络路径阻塞网络监控线程。
+        """在有限时间内验证 UNC 或映射盘目录的实际可读/可写性。
+
+        用途：判断共享目录是否真的可用于上传，而不是只判断网络主机是否在线。
+        输入：路径、超时秒数、失败时的默认值及是否要求写入权限。
+        输出：在时间内完成目录/探针文件操作时返回布尔结果；超时或异常返回默认值。
+        关键步骤：识别 UNC/映射盘、映射盘转换为 UNC、在 PowerShell 子进程中执行目录探测。
+        风险点：不能在 Python 线程直接对失联 SMB 路径执行无超时 ``scandir/stat``，否则线程会假死。
         """
         def is_unc(p: str) -> bool:
+            """识别 UNC 格式路径（以两个反斜杠开头）。"""
             return isinstance(p, str) and p.startswith('\\\\')
 
         def get_drive_root(p: str) -> str:
+            """从盘符路径取得盘根，供 Windows DriveType API 使用。"""
             drive, _ = os.path.splitdrive(p)
             return drive + '\\' if drive else ''
 
         def is_mapped_drive(p: str) -> bool:
+            """通过 Windows DriveType 判断盘符是否映射到远程共享。"""
             try:
                 root = get_drive_root(p)
                 if not root:
@@ -556,6 +612,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 return False
 
         def mapped_to_unc(p: str) -> str:
+            """将已映射盘符转换为 UNC 路径，以便探测真正的共享目录。"""
             try:
                 import ctypes
                 from ctypes import wintypes
@@ -580,6 +637,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         def path_access_with_timeout(
             p: str, seconds: float, write_required: bool
         ) -> bool:
+            """在独立 PowerShell 进程探测目录，超时时由 subprocess 终止等待。"""
             try:
                 create_flag = 0
                 if os.name == 'nt' and hasattr(subprocess, 'CREATE_NO_WINDOW'):
@@ -648,10 +706,12 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             return bool(default)
 
     def _fileop_active_count(self) -> int:
+        """在线程锁保护下读取仍在执行的网络文件操作子进程数量。"""
         with self._fileop_lock:
             return len(self._fileop_processes)
 
     def _terminate_fileop_processes(self) -> None:
+        """终止当前网络文件操作子进程，供停止上传时快速打断失联路径操作。"""
         with self._fileop_lock:
             processes = tuple(self._fileop_processes)
         for process in processes:
@@ -662,6 +722,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
 
     @staticmethod
     def _is_remote_path(path: str) -> bool:
+        """判断 UNC 或映射网络盘路径；API 异常时宁可按本地路径处理并由后续操作失败。"""
         if not isinstance(path, str) or not path:
             return False
         normalized = _normalize_windows_path_for_check(path)
@@ -686,9 +747,15 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         default: Any,
         filters: Optional[List[str]] = None,
     ) -> Any:
-        """Run network-path metadata work in a bounded, killable subprocess."""
-        # Local paths do not need a PowerShell hop.  Besides avoiding needless
-        # process creation, direct APIs preserve Unicode paths reliably.
+        """在可超时、可终止的子进程中执行网络路径元数据操作。
+
+        用途：为存在性、目录判断、建目录、磁盘容量和网络目录扫描提供可控的 I/O 边界。
+        输入：操作名称、路径、超时、失败默认值，以及扫描时的扩展名过滤器。
+        输出：根据操作返回布尔值、容量元组、路径列表或默认值。
+        关键步骤：本地路径直接调用 Python API；网络路径使用槽位限制的 PowerShell 进程；超时后杀进程。
+        风险点：绝不能让网络路径操作在线程超时后继续“遗留运行”；连续超时会暂时熔断以保护系统。
+        """
+        # 本地路径不需要 PowerShell：减少进程创建，也能可靠保留中文路径。
         if not self._is_remote_path(path):
             try:
                 if operation == "exists":
@@ -714,6 +781,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                     ]
             except (OSError, ValueError):
                 return default
+        # 熔断期间直接返回默认值，避免网络持续异常时不断创建新的 PowerShell 进程。
         if time.monotonic() < self._fileop_circuit_until:
             return default
         if not self._fileop_slots.acquire(blocking=False):
@@ -725,6 +793,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 "$OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); "
                 "$p=$env:IMAGE_UPLOAD_FILEOP_PATH; "
             )
+            # 每种操作的脚本都只从环境变量读取路径，避免把用户路径拼接进 PowerShell 命令文本。
             commands = {
                 "exists": "if (Test-Path -LiteralPath $p) { exit 0 } else { exit 1 }",
                 "isdir": (
@@ -767,6 +836,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 creationflags=create_flag,
                 env=env,
             )
+            # 停止上传时需要找到并终止进程，因此启动后立即登记到锁保护集合。
             with self._fileop_lock:
                 self._fileop_processes.add(process)
             stdout, stderr = process.communicate(timeout=max(0.5, timeout))
@@ -794,6 +864,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 ]
             return default
         except subprocess.TimeoutExpired:
+            # 超时必须终止子进程；只返回默认值而不杀进程会造成进程和句柄持续累积。
             if process is not None:
                 try:
                     process.kill()
@@ -801,6 +872,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 except Exception:
                     pass
             self._fileop_timeout_count += 1
+            # 三次连续超时后短暂熔断，给 SMB 重连和系统资源恢复留出时间。
             if self._fileop_timeout_count >= 3:
                 self._fileop_circuit_until = time.monotonic() + 30.0
                 self.log.emit("⛔ 网络文件操作连续超时，熔断30秒")
@@ -817,6 +889,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             self._fileop_slots.release()
 
     def _safe_path_exists(self, path: str, timeout: float = 2.0) -> bool:
+        """在本地直接、在网络路径有超时地检查路径是否存在。"""
         if self._is_remote_path(path):
             return bool(self._run_remote_fileop("exists", path, timeout, False))
         try:
@@ -825,6 +898,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             return False
 
     def _safe_path_isdir(self, path: str, timeout: float = 2.0) -> bool:
+        """在本地直接、在网络路径有超时地检查路径是否为目录。"""
         if self._is_remote_path(path):
             return bool(self._run_remote_fileop("isdir", path, timeout, False))
         try:
@@ -833,6 +907,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             return False
 
     def _safe_make_dirs(self, path: str, timeout: float = 3.0) -> bool:
+        """在本地直接、在网络路径有超时地确保目录存在。"""
         if self._is_remote_path(path):
             return bool(self._run_remote_fileop("mkdir", path, timeout, False))
         try:
@@ -842,6 +917,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             return False
 
     def _log_event(self, level: str, code: str, message: str, **fields) -> None:
+        """将结构化诊断字段压缩为一行用户日志；日志发送失败不会影响上传流程。"""
         try:
             suffix = ""
             if fields:
@@ -853,6 +929,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             pass
 
     def _ensure_dir(self, path: str, label: str, create: bool = True) -> bool:
+        """验证目录存在且为文件夹，必要时尝试安全创建。
+
+        用途：启动前和上传前统一处理本地/网络路径目录规则。
+        输入：路径、面向用户的目录名称以及是否允许创建。
+        输出：目录可用时返回 ``True``；失败时写入具体日志并返回 ``False``。
+        关键步骤：先存在性检查，再确认目录类型，最后按配置决定是否创建。
+        风险点：源目录绝不自动创建，避免拼写错误后悄悄扫描一个空目录；目标/备份可按配置创建。
+        """
         if not path:
             self._log_event("❌", "PATH_EMPTY", f"{label}路径未设置")
             return False
@@ -875,6 +959,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         return True
 
     def _validate_ftp_config(self) -> bool:
+        """验证 FTP/FTPS 上传所需依赖和最小连接配置。"""
         if self.upload_protocol in ('ftp_client', 'both'):
             if not FTP_AVAILABLE or FTPClientUploader is None:
                 self._log_event("❌", "FTP_UNAVAILABLE", "FTP 功能不可用，无法启动上传")
@@ -886,6 +971,10 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         return True
 
     def _validate_paths(self) -> bool:
+        """按当前协议验证源、目标和备份路径。
+
+        FTP-only 模式不要求本地 SMB 目标目录存在，但仍需要目标基准路径用于生成远端相对路径。
+        """
         ok = True
         ok = self._ensure_dir(self.source, "源", create=False) and ok
         if self.upload_protocol == 'ftp_client':
@@ -899,7 +988,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         return ok
 
     def _is_backup_path_ready(self) -> bool:
-        """Check whether backup path is enabled and reachable."""
+        """判断备份是否启用且路径目前可写，优先复用最近一次网络探测结果。"""
         if not self.enable_backup or not self.backup:
             return False
         cache_age = time.monotonic() - self._last_network_path_probe
@@ -913,10 +1002,11 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         return ready
 
     def _check_network_connection(self) -> Optional[str]:
-        """检查网络连接状态
-        
-        Returns:
-            'good' | 'unstable' | 'disconnected' | None (未检测)
+        """获取当前网络状态；网络监控线程运行时读取其结果，否则按间隔主动探测。
+
+        用途：上传每个新文件前确认 SMB 目标和备份是否仍可用。
+        输出：good、unstable、disconnected 或尚未检测时的 ``None``。
+        风险点：FTP-only 不用 SMB 路径健康检查；目录探测仍必须有超时。
         """
         if self.upload_protocol == 'ftp_client':
             return 'good'
@@ -945,6 +1035,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
     def _log_task_transition(
         self, identity: FileIdentity, state: FileTaskState, reason: str
     ) -> None:
+        """记录文件任务状态机的转换，供恢复、重试和现场审计定位。"""
         self._log_event(
             "ℹ️" if state not in {FileTaskState.FAILED, FileTaskState.STALE} else "⚠️",
             "TASK_STATE",
@@ -961,7 +1052,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         protocol_state: Optional[Dict[str, bool]] = None,
         identity: Optional[FileIdentity] = None,
     ) -> None:
-        """处理上传失败（带重试调度）"""
+        """记录一次上传失败，并按退避时间将同一文件代际加入重试队列。
+
+        用途：避免网络瞬断立即永久失败，同时防止无限重试占满会话。
+        输入：失败文件、已成功协议状态以及可选已冻结文件身份。
+        输出：未超过上限时更新重试队列/状态机；超过上限时写失败日志并标记 FAILED。
+        关键步骤：捕获或复用身份、合并多协议成功状态、计算退避时间、写状态机转换。
+        风险点：重试必须绑定 ``FileIdentity``；同路径换成新文件后不能把旧任务继续上传或归档。
+        """
         try:
             task_identity = identity or FileIdentity.capture(file_path)
         except OSError:
@@ -1013,7 +1111,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         self.log.emit(f"⚠ 文件将在稍后重试 ({retry_count}/{self.retry_count})，等待{wait_time}秒: {os.path.basename(file_path)}")
 
     def _process_retry_queue(self) -> None:
-        """处理重试队列"""
+        """处理到期的重试任务，并在每个关键点复核文件代际。
+
+        用途：在不重新上传已成功协议的前提下，恢复暂时失败的文件。
+        输入：内存重试队列与当前 Worker 状态。
+        输出：成功则上传并排队归档；失败则退避重排；过期/变化文件标记 STALE。
+        关键步骤：检查运行/暂停、重捕获身份、到期判断、领取任务、上传、持久化归档、重新排队。
+        风险点：不能直接按路径重试；源文件缺失或身份改变时必须丢弃旧任务，留给新扫描重新发现。
+        """
         if not self.retry_queue:
             return
         
@@ -1071,8 +1176,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             bkp = os.path.join(self.backup, rel)
             
             try:
-                # Freeze the exact generation before this retry starts.  The
-                # archive action may only operate on this same identity.
+                # 重试开始前固定本次文件代际；后续归档只能处理这一份相同身份的源文件。
                 archive_identity = identity
                 protocol_state = item.get('protocol_state', {})
                 if self.upload_protocol in ('smb', 'both'):
@@ -1141,7 +1245,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                     self.log.emit(f"⚠ 重试失败，已重新排队 ({item['count']}/{self.retry_count})，等待{wait_time}秒: {os.path.basename(file_path)}")
 
     def _log_failed_file(self, file_path: str, reason: str) -> None:
-        """记录失败文件到日志"""
+        """将达到重试上限的文件和原因追加到失败日志，便于人工补传。"""
         try:
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             with open(self.failed_log_path, 'a', encoding='utf-8') as f:
@@ -1155,7 +1259,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         dst: str,
         protocol_state: Optional[Dict[str, bool]] = None
     ) -> Tuple[bool, Dict[str, bool]]:
-        """根据协议上传文件，支持记录已成功的协议。"""
+        """按 SMB、FTP/FTPS 或双协议执行上传，并保留每个协议已成功的状态。
+
+        用途：双协议重试时只重传失败的那一侧，避免已成功的目标被重复写入。
+        输入：源路径、目标基准路径和此前重试保存的协议成功字典。
+        输出：整体是否成功，以及最新的 ``smb``/``ftp`` 成功状态。
+        关键步骤：按协议分支调用具体上传函数；双协议分别检查并短路已成功的一侧。
+        风险点：双协议只有两侧都成功才算提交成功；不能因为一侧成功就归档源文件。
+        """
         state = dict(protocol_state or {})
         if self.upload_protocol == 'smb':
             smb_ok = state.get('smb', False) or self._upload_via_smb(src, dst)
@@ -1176,7 +1287,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             return False, state
 
     def _upload_via_smb(self, src: str, dst: str) -> bool:
-        """通过 SMB 上传文件，所有文件均支持断点续传。"""
+        """通过 SMB 执行可续传上传，并把异常转换为可重试的失败结果。"""
         try:
             return self._upload_with_resume(src, dst)
         except Exception as e:
@@ -1190,9 +1301,16 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             return False
     
     def _upload_with_resume(self, src: str, dst: str) -> bool:
-        """使用断点续传上传文件。"""
+        """使用断点续传组件向 SMB 目标复制文件，并持续保存可恢复进度。
+
+        用途：网络中断、暂停或应用关闭后，可从已上传位置继续而非从零开始。
+        输入：源路径、SMB 目标路径和可选限速配置。
+        输出：完整传输并提交时返回 ``True``；暂停或失败返回 ``False``，续传记录按策略保留。
+        关键步骤：读取旧进度、创建进度回调、构造上传器、执行上传、最终清空内存上传器引用。
+        风险点：异常时必须标记本次未完成但不能删除续传记录，否则会丢失已传字节的恢复依据。
+        """
         try:
-            # 检查是否有续传记录
+            # 先读取旧进度只用于提示和上传器恢复；不把旧数字当作当前文件身份依据。
             resume_info = self.resume_manager.get_resume_info(src, dst)
             if resume_info:
                 uploaded = resume_info.get('uploaded_bytes', 0)
@@ -1200,7 +1318,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 percent = int(100 * uploaded / total) if total > 0 else 0
                 self.log.emit(f"📂 发现续传记录: {os.path.basename(src)} ({percent}% 已完成)")
             
-            # 创建进度回调
+            # 回调只发送轻量 UI 进度；实际读写仍由 ResumableFileUploader 执行。
             def progress_callback(uploaded: int, total: int, filename: str):
                 if total > 0:
                     progress = int(100 * uploaded / total)
@@ -1212,17 +1330,17 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                             f"({uploaded/(1024*1024):.1f}MB/{total/(1024*1024):.1f}MB)"
                         )
             
-            # 创建可续传上传器
+            # 保存当前上传器引用，使 stop() 能请求中止并保留进度。
             self.resumable_uploader = ResumableFileUploader(
                 resume_manager=self.resume_manager,
                 buffer_size=1024 * 1024,  # 1MB
                 progress_callback=progress_callback
             )
             
-            # 计算速率限制
+            # 限速值使用字节/秒；未启用限速时传 0 表示上传器不节流。
             rate_limit = self.max_upload_rate_bytes if self.limit_upload_rate else 0
             
-            # 执行上传
+            # 上传器内部负责原子续传记录和文件分块复制。
             success, error_msg = self.resumable_uploader.upload_with_resume(
                 source_path=src,
                 target_path=dst,
@@ -1248,12 +1366,20 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             self.resumable_uploader = None
 
     def _upload_via_ftp(self, src: str, dst: str) -> bool:
-        """通过 FTP 上传文件"""
+        """通过 FTP/FTPS 客户端上传，并以客户端的提交结果作为唯一成功依据。
+
+        用途：支持不共享本地文件系统的远端 FTP/FTPS 目标。
+        输入：本地源文件和用于计算远端相对路径的目标基准路径。
+        输出：客户端确认成功时返回 ``True``；连接、配置或传输失败返回 ``False``。
+        关键步骤：按需创建并连接客户端、计算远端路径、调用带结果对象的上传接口、记录状态码。
+        风险点：不能只看 socket 未报错就判定成功；客户端必须完成远端大小验证和最终 rename 后才返回成功。
+        """
         try:
             if not FTP_AVAILABLE or FTPClientUploader is None:
                 self._log_event("❌", "FTP_UNAVAILABLE", "FTP 功能不可用")
                 return False
             
+            # FTP 连接延迟到第一文件才创建，避免仅打开设置窗口就占用远端会话。
             if not self.ftp_client and self.ftp_client_config:
                 self.ftp_client = FTPClientUploader(self.ftp_client_config)
                 if not self.ftp_client.connect(cancel_event=self._net_stop_event):
@@ -1267,6 +1393,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 self._log_event("❌", "FTP_INIT", "FTP 客户端未初始化")
                 return False
             
+            # 远端目录来自 FTP 配置；使用本地目标基准只为了复用与 SMB 相同的目录层级。
             rel_path = os.path.relpath(dst, self.target)
             remote_path = self.ftp_client_config.get('remote_path', '/upload')
             remote_file = f"{remote_path}/{rel_path}".replace('\\', '/')
@@ -1305,7 +1432,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             return False
 
     def _calculate_file_hash(self, file_path: str, buffer_size: int = 8192) -> str:
-        """计算文件哈希值"""
+        """分块计算文件哈希，供 SMB 去重比较使用。
+
+        用途：识别同名或不同名但内容相同的 SMB 目标文件。
+        输入：文件路径和读取缓冲区大小。
+        输出：成功返回十六进制摘要；暂停、停止或读取失败返回空字符串。
+        关键步骤：按配置选择算法、分块读取、在每个循环检查运行/暂停状态、报告大文件进度。
+        风险点：哈希是耗时 I/O；停止/暂停时必须尽快返回，且空摘要不能被误判成“内容相同”。
+        """
         try:
             if self.hash_algorithm == 'sha256':
                 hasher = hashlib.sha256()
@@ -1337,7 +1471,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             return ""
 
     def _ensure_dedup_cache(self, target_dir: str) -> bool:
-        """每次运行只流式同步一次目标目录元数据。"""
+        """每个目标根目录在一次会话内只流式建立一次有限去重缓存。
+
+        用途：减少对 SMB 目标目录反复全量扫描，同时不把所有目标文件完整加载进复杂对象树。
+        输入：SMB 目标根目录。
+        输出：缓存可用时返回 ``True``；被暂停、停止或扫描异常时返回 ``False``。
+        关键步骤：根目录变化时清空旧缓存、流式遍历目标、按批写入大小索引、记录当前代次。
+        风险点：缓存只是性能优化；每次真正比较仍会重新 stat/hash，不能把缓存视为删除或覆盖授权。
+        """
         normalized_root = normalize_file_path(target_dir)
         if (
             self._dedup_cache_ready
@@ -1372,7 +1513,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
     def _find_duplicate_by_hash(
         self, file_hash: str, target_dir: str, file_size: Optional[int] = None
     ) -> str:
-        """先按大小查索引，再仅对候选文件计算或复用哈希。"""
+        """先按大小筛选，再对少量候选计算/复用哈希以寻找重复文件。
+
+        用途：避免为整个目标目录计算哈希，降低 SMB 去重的 I/O 成本。
+        输入：源文件哈希、目标目录和源文件大小。
+        输出：找到内容一致文件时返回其路径，否则返回空字符串。
+        关键步骤：保证缓存、按大小取候选、重新 stat、必要时计算目标哈希、比较摘要。
+        风险点：目标文件可能被外部修改；大小或修改时间不一致时必须废弃缓存条目而非信任旧哈希。
+        """
         if not file_hash or file_size is None or file_size < 0:
             return ""
         if not self._ensure_dedup_cache(target_dir):
@@ -1409,6 +1557,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             return ""
 
     def _record_dedup_target(self, target_path: str, digest: str) -> None:
+        """把刚成功上传的 SMB 目标补入当前会话去重缓存。"""
         if not self._dedup_cache_ready or not digest:
             return
         try:
@@ -1419,15 +1568,17 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
 
     @staticmethod
     def _stat_dedup_file(path: str) -> os.stat_result:
+        """集中保留去重文件的 stat 调用，便于测试替换和明确其 I/O 边界。"""
         return os.stat(path)
 
     def _get_unique_filename(self, base_path: str) -> str:
-        """生成唯一文件名
-        
-        Returns:
-            str: 唯一的文件路径
-            
-        注意：如果尝试9999次仍未找到唯一名称，将使用时间戳后缀强制生成唯一名
+        """为“重命名上传”策略寻找不会覆盖现有文件的目标路径。
+
+        用途：重复文件策略选择 rename 时保留旧文件并生成新名称。
+        输入：原始目标路径。
+        输出：不存在的候选路径；极端冲突时返回带微秒时间戳的路径。
+        关键步骤：依次尝试 ``文件名 (序号).扩展名``，达到上限后使用时间戳后缀。
+        风险点：这是命名冲突缓解措施，不替代最终上传时的原子提交和远端冲突处理。
         """
         if not os.path.exists(base_path):
             return base_path
@@ -1454,6 +1605,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         return new_path
 
     def _resolve_duplicate_choice(self, src_path: str, dup_path: str) -> str:
+        """解析重复文件策略；ask 模式通过 Qt 信号请求 UI 并有超时保护。
+
+        用途：让后台 Worker 不直接显示对话框，而由主线程收集用户选择。
+        输入：源文件路径和检测到的目标重复路径。
+        输出：skip、rename、overwrite 或缓存的“应用全部”选择；超时默认 skip。
+        关键步骤：非 ask 直接返回策略；ask 时创建 Event/结果字典、发信号、轮询等待、读取选择。
+        风险点：UI 已关闭或无人响应时绝不能无限等待；默认 skip 比覆盖或删除更安全。
+        """
         if self.duplicate_strategy != 'ask':
             return self.duplicate_strategy
         if self._duplicate_ask_choice:
@@ -1469,7 +1628,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         try:
             self.ask_user_duplicate.emit(payload)
         except Exception as e:
-            # Signal发送失败（UI可能已关闭）
+            # 信号发送失败通常表示 UI 已关闭，安全降级为跳过重复文件。
             logger.debug(f"发送重复文件询问失败: {type(e).__name__}")
             return 'skip'
         wait_start = time.time()
@@ -1491,7 +1650,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         return choice
 
     def _archive_worker(self) -> None:
-        """归档 Worker（独立线程）"""
+        """在独立线程消费已持久化归档任务，避免上传主循环被移动/回收站操作阻塞。
+
+        用途：把“远端上传成功后如何处置源文件”与上传提交解耦。
+        输入：``archive_queue`` 中已先写入归档仓库的任务。
+        输出：成功后清除归档记录；失败时保留记录以供后续恢复。
+        关键步骤：阻塞取队列、取消重复排队标记、处理单项、无论结果都调用 task_done。
+        风险点：绝不能先删除归档记录再移动源文件；进程崩溃会导致源文件丢失且无法恢复。
+        """
         while not self._archive_stop_event.is_set():
             src_path = ""
             item_received = False
@@ -1521,10 +1687,13 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                         pass
 
     def _process_archive_item(self, item: Dict[str, Any]) -> None:
-        """执行一条已持久化的归档任务。
+        """执行一条已持久化的归档任务，并在真正完成后才删除其日志记录。
 
-        仅在移动/删除真正完成后删除日志记录；任何异常都由调用者
-        记录，记录本身保留到下次启动重试。
+        用途：在上传提交后安全移动源文件到备份目录，或在禁用备份时移入回收站。
+        输入：包含源路径、目标路径、动作、文件身份及协议结果的持久化任务字典。
+        输出：成功时完成归档并清理记录；不安全或失败时保留记录供恢复。
+        关键步骤：读取身份、删除前匹配路径、根据动作移动/回收站、最后完成记录。
+        风险点：身份无法复核时必须 fail-closed（不做破坏性操作）；永久删除动作永远拒绝。
         """
         src_path = str(item.get("source", ""))
         bkp_path = str(item.get("destination", ""))
@@ -1535,6 +1704,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         if expected_identity is None:
             return
         try:
+            # 在移动或回收站之前确认“当前路径仍是上传成功时那一代文件”。
             if not expected_identity.matches_path(src_path):
                 self._mark_archive_stale(src_path, "source_identity_changed")
                 return
@@ -1542,10 +1712,10 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             self._mark_archive_stale(src_path, "source_missing_or_recreated")
             return
         except OSError as exc:
-            # Identity could not be verified.  Keep the durable pending record
-            # and do not take a destructive archive action.
+            # 身份无法验证时保留持久化记录，并且不执行任何破坏性归档动作。
             raise OSError(f"归档前无法确认源文件身份: {type(exc).__name__}: {exc}") from exc
         if action == "move":
+            # 备份模式只在目标父目录可确定时移动，避免把源文件移动到不受控位置。
             parent = os.path.dirname(bkp_path)
             if not bkp_path or not parent:
                 raise OSError("备份路径无效，待归档记录已保留")
@@ -1554,6 +1724,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             self.log.emit(f"📦 已归档: {os.path.basename(bkp_path)}")
             self.local_file_generated.emit(bkp_path, "archive")
         elif action == "trash":
+            # 不启用备份时只允许回收站；安全策略会再次检查源目录范围与身份。
             delete_result = SafeDeletionPolicy().delete(
                 SafeDeletionRequest(
                     path=src_path,
@@ -1577,6 +1748,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             raise OSError("归档永久删除已禁止，待归档记录已保留")
         else:
             raise ValueError(f"未知归档动作: {action}")
+        # 文件动作已成功完成后才删除日志记录，这保证崩溃恢复时不会丢失待处理源文件。
         self._complete_archive_record(src_path)
 
     def _archive_identity_from_item(
@@ -1584,7 +1756,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         item: Dict[str, Any],
         source: str,
     ) -> Optional[FileIdentity]:
-        """Read an actionable v2 identity; legacy records are fail-closed."""
+        """读取可执行的 v2 文件身份；旧格式或不完整记录按 fail-closed 处理。
+
+        用途：确保磁盘上恢复的归档任务仍绑定到正确源文件，而不是仅保存一个路径字符串。
+        输入：归档记录字典与预期源路径。
+        输出：可验证身份时返回 ``FileIdentity``；记录不安全时标记 stale 并返回 ``None``。
+        关键步骤：检查 identity 字典、反序列化、比较规范化路径、失败时写 stale 状态。
+        风险点：兼容旧记录时不能“猜测”身份；宁可保留源文件让用户处理，也不能错归档新文件。
+        """
         try:
             identity_data = item.get("identity")
             if not isinstance(identity_data, dict):
@@ -1598,7 +1777,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             return None
 
     def _mark_archive_stale(self, source: str, reason: str) -> None:
-        """Make an unsafe record auditable and allow a new generation to scan."""
+        """将不安全的归档记录标记为 stale，并允许同路径新代际重新被扫描。
+
+        用途：源文件被替换、缺失或身份记录异常时阻止旧归档任务继续动作。
+        输入：源路径和可审计的原因代码。
+        输出：仓库和任务注册表更新为 stale，或记录无法写入 stale 的严重错误。
+        关键步骤：先写仓库状态、移除待归档门禁、同步更新同路径任务状态、输出日志。
+        风险点：不移除门禁会使后来创建的新文件永远不再上传；过早移除则可能重试旧记录。
+        """
         if self._archive_repository.mark_stale(source, reason):
             self._pending_archive_sources.discard(
                 self._archive_repository.normalize(source)
@@ -1630,7 +1816,16 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         identity: FileIdentity,
         protocol_results: Optional[Dict[str, bool]] = None,
     ) -> bool:
+        """先持久化归档意图，再把任务放入内存队列。
+
+        用途：把“上传已成功”和“源文件可安全归档”之间建立可崩溃恢复的事务边界。
+        输入：源/备份路径、已经冻结的文件身份和各协议提交结果。
+        输出：意图记录写入成功并已入队时返回 ``True``；写入失败时安排持久化重试并返回 ``False``。
+        关键步骤：选择 move/trash、先写仓库、更新任务状态、避免重复入队、最后 queue.put。
+        风险点：绝不能反过来先入队再写日志；进程崩溃会留下已经上传但没有归档保护的源文件。
+        """
         action = "move" if self.enable_backup else "trash"
+        # 归档日志先落盘，成功后才允许后台线程对源文件执行移动或回收站操作。
         if not self._archive_repository.add(
             source,
             destination,
@@ -1683,7 +1878,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         identity: FileIdentity,
         protocol_results: Optional[Dict[str, bool]] = None,
     ) -> None:
-        """Retain an uploaded generation until its archive journal is durable."""
+        """在归档日志无法写入时保留已上传源文件，并以退避策略重试持久化。
+
+        用途：避免“远端成功后立即删除源文件，但归档恢复记录没写入”的不可恢复风险。
+        输入：归档任务全部字段和已经冻结的源文件身份。
+        输出：内存重试记录、持久化失败 outbox 记录和任务状态更新。
+        关键步骤：计算指数退避、保存内存记录、尽力写失败 outbox、设置待归档门禁、记录状态。
+        风险点：达到重试上限后仍必须保留源文件并等待人工处理，不能为了清空队列而归档它。
+        """
         normalized = self._archive_repository.normalize(source)
         existing = self._archive_persist_retries.get(normalized)
         attempts = int(existing.get("attempts", 0)) + 1 if existing else 1
@@ -1744,7 +1946,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             )
 
     def _process_archive_persist_retries(self) -> None:
-        """Retry journal writes only; successful uploads are never replayed."""
+        """只重试归档日志写入，绝不因为日志失败而重放已经成功的上传。
+
+        用途：恢复临时磁盘写入问题，同时保持远端对象幂等。
+        输入：内存中的待持久化归档记录。
+        输出：日志恢复成功则进入归档队列；源身份改变/记录失效则标记 stale；未到期记录保留。
+        关键步骤：筛选到期记录、复核身份、再次写仓库、成功后入队，失败后更新退避状态。
+        风险点：上传已经提交，重放上传可能覆盖或重复远端文件；此处只修复本地归档日志。
+        """
         now = time.time()
         for normalized, record in list(self._archive_persist_retries.items()):
             if record.get("exhausted") or now < float(record.get("next_retry_at", 0.0)):
@@ -1777,9 +1986,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 )
                 continue
             except OSError:
-                # The file may be temporarily unavailable.  Preserve both the
-                # source reservation and retry record until the normal retry
-                # limit can make the need for operator action explicit.
+                # 文件可能暂时不可访问。保留源文件门禁和重试记录，直到正常重试上限
+                # 明确表明需要操作员介入，期间不能把同一路径的新代际误当成旧任务。
                 self._schedule_archive_persist_retry(
                     source,
                     str(record.get("destination", "")),
@@ -1833,7 +2041,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             )
 
     def retry_archive_persistence(self, source: str) -> bool:
-        """Request an immediate operator-triggered retry of a failed journal write."""
+        """请求立即重试指定源文件的归档日志写入，供操作员人工介入后使用。"""
         normalized = self._archive_repository.normalize(source)
         record = self._archive_persist_retries.get(normalized)
         if record is None:
@@ -1845,6 +2053,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         return normalized not in self._archive_persist_retries
 
     def _restore_archive_persist_failures(self) -> None:
+        """启动时恢复失败 outbox，重新建立待归档门禁和会话内重试记录。"""
         for persisted in self._archive_repository.load_failures():
             source = str(persisted.get("source", ""))
             try:
@@ -1869,6 +2078,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             )
 
     def _complete_archive_record(self, source: str) -> None:
+        """归档动作成功后删除对应持久化记录、失败 outbox 与内存门禁。"""
         identities = self._task_registry.for_path(source)
         if self._archive_repository.remove(source):
             self._pending_archive_sources.discard(
@@ -1889,6 +2099,11 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             )
 
     def _restore_pending_archives(self) -> None:
+        """启动时把上次中断遗留的持久化归档记录重新放入归档队列。
+
+        用途：进程异常退出后，上传已提交但尚未移动/回收站的源文件不会被遗忘。
+        风险点：恢复的每条记录仍会在归档线程中复核身份，不能因为来自本地日志就直接信任。
+        """
         restored = 0
         for record in self._archive_repository.load():
             source = str(record.get("source", ""))
@@ -1911,14 +2126,13 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             self.log.emit(f"📦 已恢复 {restored} 个待归档任务，源文件不会重复上传")
 
     def _disk_ok(self, path: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-        """检查磁盘空间
-        
-        Returns:
-            (free_percent, total_gb, free_gb) 元组
-            - 成功: 返回实际的空闲百分比（0-100）、总容量GB、剩余空间GB
-            - 失败: 返回 (None, None, None) 表示检查失败，调用方应区别对待
-            
-        注意：0.0% 表示磁盘真的满了，None 表示检查失败（网络盘离线等）
+        """读取目标或备份磁盘空间，并明确区分“磁盘满”与“无法读取”。
+
+        用途：上传前判断是否需要暂停，并在需要时通知主窗口统一自动清理。
+        输入：本地或网络路径。
+        输出：``(空闲百分比, 总 GB, 空闲 GB)``；读取失败时三个值均为 ``None``。
+        关键步骤：网络盘通过可终止子进程读取容量，本地盘直接使用 ``shutil.disk_usage``。
+        风险点：``0.0`` 表示磁盘确实没有空间，``None`` 才表示检查失败；两者不能混为一谈。
         """
         try:
             parent = os.path.dirname(path) or path
@@ -1943,8 +2157,11 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
     def _ensure_disk_space(self) -> bool:
         """检查磁盘空间，不足时通知主窗口执行清理。
 
-        Worker 不再自行删除文件，仅发射 disk_cleanup_needed 信号，
-        由主窗口的统一清理引擎执行。
+        用途：上传前确保目标/备份至少保留最小空闲空间，并按配置请求统一自动清理。
+        输入：当前目标、备份、协议和磁盘阈值配置。
+        输出：可继续上传时返回 ``True``；空间不足时设置 disk 暂停原因并返回 ``False``。
+        关键步骤：读取空间、判断是否请求自动清理、判断最小空闲阈值、更新暂停原因和告警频率。
+        风险点：Worker 不再自行删除文件，仅发射 disk_cleanup_needed 信号，由主窗口统一清理引擎执行。
         """
         if self.upload_protocol == 'ftp_client':
             tf_ok = 100.0
@@ -1973,7 +2190,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         )
 
         if should_cleanup:
-            # 通知主窗口执行清理（由主窗口统一引擎处理）
+            # 只发通知，不在上传线程删除文件，避免上传和清理同时改动源/备份目录。
             self.disk_cleanup_needed.emit()
 
         if tf_ok < self.disk_threshold_percent or (backup_check and bf_ok < self.disk_threshold_percent):
@@ -1997,6 +2214,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
     def _stream_remote_files(
         self, root_path: str, filters: Optional[List[str]] = None
     ) -> Iterator[str]:
+        """通过可终止 PowerShell 子进程逐行流式读取网络目录文件路径。
+
+        用途：网络源目录扫描不在 Python 线程中直接阻塞，也不构造全量路径列表。
+        输入：网络根目录和可选扩展名过滤。
+        输出：逐个产生符合过滤条件的文件路径。
+        关键步骤：受槽位限制地启动子进程、逐行读取 stdout、每项检查运行标记、finally 清理进程。
+        风险点：停止时必须 kill 子进程；否则失联 SMB 扫描会遗留后台进程并阻碍应用退出。
+        """
         if time.monotonic() < self._fileop_circuit_until:
             return
         if not self._fileop_slots.acquire(blocking=False):
@@ -2057,17 +2282,19 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             self._fileop_slots.release()
 
     def _stream_remote_image_files(self) -> Iterator[str]:
+        """在网络流式枚举基础上应用统一的文件身份与待归档门禁。"""
         for path in self._stream_remote_files(self.source, self.filters):
             if self._should_yield_source_path(path):
                 yield path
 
     def _should_yield_source_path(self, path: str) -> bool:
-        """Apply the shared identity and pending-archive gate for source scans.
+        """为本地和网络源扫描统一应用文件身份与待归档门禁。
 
-        Enumeration remains protocol-specific, while this method owns the
-        generation check used by both local and network-backed streams. A file
-        whose identity cannot be captured is skipped by both paths; uploading an
-        unverified generation would otherwise create divergent behavior.
+        用途：确保同一文件代际不会在上传成功但归档未完成期间被重复上传。
+        输入：枚举器得到的源文件路径。
+        输出：可安全交给上传主循环时返回 ``True``，否则返回 ``False``。
+        关键步骤：检查是否已有待归档记录、捕获当前身份、交给任务注册表判断是否应跳过。
+        风险点：无法捕获身份的文件必须跳过；上传未经验证的代际会让本地/网络扫描行为不一致。
         """
         normalized = self._archive_repository.normalize(path)
         if normalized in self._pending_archive_sources:
@@ -2079,6 +2306,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         return not self._task_registry.should_skip_scan(identity)
 
     def _iter_target_files(self, target_dir: str) -> Iterator[str]:
+        """按目标路径类型枚举目标文件，供 SMB 去重缓存使用。"""
         if self._is_remote_path(target_dir):
             yield from self._stream_remote_files(target_dir)
             return
@@ -2087,7 +2315,14 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 yield os.path.join(root, name)
 
     def _get_image_files(self) -> Iterable[str]:
-        """流式遍历图片文件，不构造全量路径列表。"""
+        """流式遍历源文件，不构造全量路径列表，并在每项应用扩展名和身份过滤。
+
+        用途：支持海量本地/网络源目录，同时避免一次扫描把所有路径占满内存。
+        输入：Worker 源目录、过滤器与运行状态。
+        输出：逐个可上传源文件路径。
+        关键步骤：网络目录委托可终止子进程；本地目录使用 os.walk；每项调用统一门禁。
+        风险点：枚举仅决定候选，真正上传前仍会再次捕获身份，防止扫描期间文件变化。
+        """
         if self._is_remote_path(self.source):
             yield from self._stream_remote_image_files()
             return
@@ -2106,12 +2341,23 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                         yield path
 
     def _wait_before_upload(self, images: List[str]) -> None:
-        """发现待上传文件后，按配置延迟本轮上传。"""
+        """发现第一候选文件后按配置等待，给仍在写入的相机文件一个稳定窗口。
+
+        风险点：该等待发生在后台上传主线程，不阻塞 GUI；它不替代上传前的文件身份捕获。
+        """
         if images and self.file_upload_delay_seconds > 0:
             time.sleep(self.file_upload_delay_seconds)
 
     def _run(self) -> None:
-        """主运行循环"""
+        """执行上传主循环：恢复归档、处理暂停/网络/磁盘、流式扫描、上传并排队归档。
+
+        用途：将一次上传会话的完整业务顺序固定在单个后台线程中。
+        输入：构造时保存的会话配置以及其他线程发布的暂停/停止事件。
+        输出：连续发送日志、进度、统计；循环停止后一定发送 ``finished``。
+        关键步骤：启动归档线程、恢复日志、处理暂停/重试、流式取首项延迟、逐文件冻结身份、
+        上传各协议、写归档意图、根据运行模式等待下一轮。
+        风险点：源文件在任意步骤都可能变化；上传成功后必须先持久化归档任务，不能立即删除源文件。
+        """
         self.log.emit("🚀 开始图片上传服务（上传与归档已分离）")
         self.log.emit(f"📡 上传协议: {self.upload_protocol}")
         self._log_event(
@@ -2138,8 +2384,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
         
         try:
             while self._running:
-                # Archive-journal recovery is local state work and must not be
-                # blocked by upload network or disk eligibility checks.
+                # 归档日志恢复只访问本地状态，不能被网络或磁盘资格检查阻断。
                 self._process_archive_persist_retries()
                 # 定期健康检查（每 60 次循环，约每 30 秒）
                 self._health_check_counter += 1
@@ -2182,7 +2427,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                 # 处理重试队列
                 self._process_retry_queue()
 
-                # 扫描文件
+                # 只预取第一项，用于在“发现文件”与“开始上传”之间执行配置的稳定等待；
+                # 不把完整迭代器转换为列表，避免大目录占用大量内存。
                 images = iter(self._get_image_files())
                 try:
                     first_image = next(images)
@@ -2293,10 +2539,8 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                                 logger.debug(f"获取文件大小失败 {fname}: {type(e).__name__}")
                                 self.current_file_size = 0
 
-                            # This snapshot is bound to the upload (or the
-                            # duplicate-skip decision) and checked again by
-                            # the separate archive thread before it mutates
-                            # the source path.
+                            # 该快照绑定本次上传（或重复文件跳过）决定；独立归档线程在
+                            # 改动源路径前还会再次核验，防止同一路径新文件被误归档。
                             archive_identity = task_identity
                             
                             self.file_progress.emit(fname, 0)
@@ -2361,7 +2605,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                                         self._log_event("⚠️", "DUP_OVERWRITE", "重复文件将覆盖上传", file=fname)
                                         final_target = tgt
                             
-                            # 执行上传
+                            # 只有通过重复策略后才真正上传；双协议全部成功才会进入归档队列。
                             if should_upload:
                                 if self.upload_protocol in ('smb', 'both'):
                                     dir_created = self._safe_make_dirs(
@@ -2392,7 +2636,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                                 
                                 self.uploaded_count += 1
                                 
-                                # 计算速率
+                                # 速率仅用于界面显示和诊断，失败不影响上传已提交的事实。
                                 try:
                                     rate_path = final_target if self.upload_protocol in ('smb', 'both') else path
                                     size_mb = os.path.getsize(rate_path) / (1024*1024)
@@ -2441,7 +2685,7 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
                     self.current += 1
                     self.progress.emit(self.current, self.total_files, fname)
 
-                # 间隔控制
+                # 周期模式使用短 sleep 循环，便于停止/暂停请求在最长 0.2 秒内被观察到。
                 if self.mode == 'periodic':
                     for _ in range(max(1, self.interval*5)):
                         if not self._running or self._paused:
