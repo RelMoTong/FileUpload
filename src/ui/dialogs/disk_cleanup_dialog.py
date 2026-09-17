@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Disk cleanup dialog and its presentation-only helper widgets."""
+"""磁盘清理对话框及其纯展示层辅助组件。
+
+本模块只负责收集用户输入、显示进度和展示扫描结果。真正的目录遍历与删除都由
+控制器、服务层和后台 Worker 执行，因此这里不能直接调用 ``os.remove`` 或在 UI
+线程中扫描网络盘。
+"""
 
 from __future__ import annotations
 
@@ -25,7 +30,7 @@ Signal = QtCore.Signal
 
 
 def tr(key: str, **kwargs: Any) -> str:
-    """Translate a cleanup-view label and apply formatting values."""
+    """读取清理界面的本地化文本，并填入动态参数。"""
     return t(key, key).format(**kwargs)
 
 
@@ -56,7 +61,14 @@ class CleanupSettingsGateway(Protocol):
 def calculate_dialog_responsive_metrics(
     available_width: int, available_height: int
 ) -> Dict[str, int]:
-    """Return screen-clamped sizing values for the cleanup dialog."""
+    """按当前屏幕可用区域计算清理窗口的安全尺寸。
+
+    用途：保证现场电脑分辨率较小时窗口仍能显示核心按钮和结果表格。
+    输入：屏幕可用宽度、高度。
+    输出：最小尺寸和初始尺寸组成的字典。
+    关键步骤：先设置可用下限，再按屏幕比例计算，最后使用上下限夹住结果。
+    风险点：不能简单写死窗口大小，否则低分辨率设备会把确认和关闭按钮挤出屏幕。
+    """
     width = max(int(available_width or 0), 800)
     height = max(int(available_height or 0), 600)
     max_width = max(760, int(width * 0.94))
@@ -73,7 +85,14 @@ FileItem = CleanupFileItem
 
 
 def format_cleanup_size(size: int) -> str:
-    """把任意精度字节数转换为面向界面的容量文本。"""
+    """把任意精度字节数转换为面向界面的容量文本。
+
+    用途：统一显示单个文件和扫描总量，并支持 100 TB 以上容量。
+    输入：Python 整数类型的字节数。
+    输出：带 B、KB、MB、GB 或 TB 单位的文本。
+    关键步骤：仅在展示时逐级换算；原始整数始终保存在模型或扫描统计中。
+    风险点：此函数不能参与业务计算，浮点换算只适合显示，不能作为删除或阈值判断依据。
+    """
     size_float = float(size)
     for unit in ["B", "KB", "MB", "GB"]:
         if size_float < 1024.0:
@@ -124,6 +143,14 @@ class CleanupFileListModel(QtCore.QAbstractTableModel):  # type: ignore[misc]
         index: QtCore.QModelIndex,
         role: int = int(Qt.ItemDataRole.DisplayRole),
     ) -> Any:
+        """按 Qt 请求的角色提供单元格数据，而不是提前创建所有可视控件。
+
+        用途：支持数十万条扫描结果滚动显示。
+        输入：代理模型给出的行列索引和所需数据角色。
+        输出：显示文本、勾选状态或供排序使用的原始 ``CleanupFileItem``。
+        关键步骤：先校验索引，再只读取该行的 Python 对象，按列/角色返回所需内容。
+        风险点：不要在这里遍历全部候选或做耗时格式化，否则滚动表格会再次卡顿。
+        """
         if not index.isValid() or not 0 <= index.row() < len(self.file_items):
             return None
         file_item = self.file_items[index.row()]
@@ -158,6 +185,14 @@ class CleanupFileListModel(QtCore.QAbstractTableModel):  # type: ignore[misc]
         value: Any,
         role: int = int(Qt.ItemDataRole.EditRole),
     ) -> bool:
+        """处理第一列复选框的状态变更，并通知依赖勾选状态的界面。
+
+        用途：把用户勾选结果写回候选对象，供“仅看已选”和删除请求读取。
+        输入：Qt 编辑索引、目标状态和数据角色。
+        输出：本次请求被处理时返回 ``True``，非复选框编辑返回 ``False``。
+        关键步骤：限定首列和 CheckStateRole、更新对象、发出最小范围 dataChanged 信号。
+        风险点：不能只更新视图文本而不更新对象，否则删除时会得到过期的勾选结果。
+        """
         if (
             not index.isValid()
             or index.column() != 0
@@ -165,7 +200,9 @@ class CleanupFileListModel(QtCore.QAbstractTableModel):  # type: ignore[misc]
         ):
             return False
         file_item = self.file_items[index.row()]
-        checked = int(value) == int(Qt.CheckState.Checked)
+        # ``.value`` 是枚举的整数值；它与 Qt 发来的状态值比较，既保持原有行为，
+        # 也避免静态检查把 PySide6 枚举对象误判为不能传给 int。
+        checked = int(value) == Qt.CheckState.Checked.value
         if file_item.checked == checked:
             return True
         file_item.checked = checked
@@ -174,13 +211,21 @@ class CleanupFileListModel(QtCore.QAbstractTableModel):  # type: ignore[misc]
         return True
 
     def replace_files(self, file_items: List[FileItem]) -> None:
-        """一次替换列表引用，用于新扫描或删除完成后重置数据源。"""
+        """一次替换列表引用，用于新扫描或删除完成后重置数据源。
+
+        这样做会触发 Qt 的完整模型重置，仅适用于“开始新扫描”或“删除完成”这类
+        数据集整体变化的时刻；扫描进行中必须改用 ``append_files``。
+        """
         self.beginResetModel()
         self.file_items = file_items
         self.endResetModel()
 
     def append_files(self, file_items: List[FileItem]) -> None:
-        """把扫描到的小批次插入模型，使界面立即显示而不重建已有可见行。"""
+        """把扫描到的小批次插入模型，使界面立即显示而不重建已有可见行。
+
+        ``beginInsertRows/endInsertRows`` 告知 Qt 只更新新增行；这比反复重置整个
+        表格更适合海量扫描结果，也让取消按钮继续获得主线程事件循环的处理机会。
+        """
         if not file_items:
             return
         first_row = len(self.file_items)
@@ -189,7 +234,11 @@ class CleanupFileListModel(QtCore.QAbstractTableModel):  # type: ignore[misc]
         self.endInsertRows()
 
     def set_all_checked(self, checked: bool) -> None:
-        """批量更新勾选状态，只通知一次视图和删除按钮。"""
+        """批量更新勾选状态，只通知一次视图和删除按钮。
+
+        虽然此处必须遍历全部候选以修改业务状态，但只发出一个连续范围的 Qt 信号，
+        避免为每个文件创建一次 UI 事件。
+        """
         if not self.file_items:
             return
         changed = any(file_item.checked != checked for file_item in self.file_items)
@@ -204,7 +253,14 @@ class CleanupFileListModel(QtCore.QAbstractTableModel):  # type: ignore[misc]
 
 
 class CleanupFileFilterProxyModel(QtCore.QSortFilterProxyModel):  # type: ignore[misc]
-    """把搜索和快捷筛选放在代理模型中，避免逐行隐藏大量 Qt 控件。"""
+    """把搜索和快捷筛选放在代理模型中，避免逐行隐藏大量 Qt 控件。
+
+    用途：在不复制候选列表、不创建单元格控件的前提下筛选当前显示内容。
+    输入：源模型和搜索/勾选/大小/时间四类筛选条件。
+    输出：QTableView 看到的只是符合条件的代理行，源模型仍保留所有候选。
+    关键步骤：每次条件改变后让 Qt 重新计算行可见性；排序时比较原始文件字段。
+    风险点：删除必须从源模型中的已勾选文件获取，不能只读取当前筛选后的可见行。
+    """
 
     def __init__(self, parent: Optional[QtCore.QObject] = None) -> None:
         super().__init__(parent)
@@ -239,6 +295,7 @@ class CleanupFileFilterProxyModel(QtCore.QSortFilterProxyModel):  # type: ignore
     def filterAcceptsRow(  # noqa: N802
         self, source_row: int, source_parent: QtCore.QModelIndex
     ) -> bool:
+        """判断源模型的一行是否满足全部当前筛选条件。"""
         source_model = self.sourceModel()
         if not isinstance(source_model, CleanupFileListModel):
             return True
@@ -259,6 +316,7 @@ class CleanupFileFilterProxyModel(QtCore.QSortFilterProxyModel):  # type: ignore
     def lessThan(  # noqa: N802
         self, left: QtCore.QModelIndex, right: QtCore.QModelIndex
     ) -> bool:
+        """按原始大小、时间和文本排序，避免按“1.0 GB”之类展示文本排序。"""
         left_item = left.data(int(Qt.ItemDataRole.UserRole))
         right_item = right.data(int(Qt.ItemDataRole.UserRole))
         if not isinstance(left_item, CleanupFileItem) or not isinstance(right_item, CleanupFileItem):
@@ -275,11 +333,19 @@ class CleanupFileFilterProxyModel(QtCore.QSortFilterProxyModel):  # type: ignore
 
 
 class FileListTable(QtWidgets.QTableView):  # type: ignore[misc]
-    """采用模型/视图虚拟化的清理结果表格，不使用固定分页上限。"""
+    """采用模型/视图虚拟化的清理结果表格，不使用固定分页上限。
+
+    用途：显示全部已发现文件，但只由 Qt 为当前视口绘制必要的行。
+    输入：扫描 Worker 持续发来的小批 ``CleanupFileItem``。
+    输出：筛选、排序、勾选和右键菜单操作所需的表格视图。
+    关键步骤：源模型保存数据、代理模型筛选排序、视图按需请求可见单元格。
+    风险点：不能退回 QTableWidget 的“每个文件五个对象”模式，海量文件会耗尽 UI 内存。
+    """
 
     check_state_changed = Signal()
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
+        """创建源模型、代理模型和视图，并连接勾选状态变化。"""
         super().__init__(parent)
         self._source_model = CleanupFileListModel(self)
         self._proxy_model = CleanupFileFilterProxyModel(self)
@@ -381,7 +447,11 @@ class FileListTable(QtWidgets.QTableView):  # type: ignore[misc]
             QtWidgets.QMessageBox.warning(self, "错误", f"无法打开文件夹：{exc}")
 
     def load_files(self, file_items: List[FileItem]) -> None:
-        """替换当前结果列表；Qt 只按滚动区域请求实际需要显示的行。"""
+        """替换当前结果列表；Qt 只按滚动区域请求实际需要显示的行。
+
+        在替换前暂停动态排序，避免模型重置过程中对每个新索引重新比较；用户点击
+        表头后仍可按需要排序。
+        """
         self._proxy_model.setDynamicSortFilter(False)
         self._source_model.replace_files(file_items)
 
@@ -423,16 +493,18 @@ class FileListTable(QtWidgets.QTableView):  # type: ignore[misc]
         self._source_model.set_all_checked(False)
 
 class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
-    """文件清理对话框 - 按目录和扩展名清理文件
+    """按目录与扩展名执行手动清理，并提供自动清理配置入口。
 
-    本工具用于清理指定目录中的特定格式文件，不是系统级磁盘清理工具。
-    支持选择文件夹路径和文件格式进行清理，可查看、筛选和确认删除文件。
-    整合自动清理配置功能。
+    用途：给管理员提供扫描、筛选、二次确认删除和自动清理配置界面。
+    输入：清理控制器、设置网关以及可选父窗口。
+    输出：通过控制器启动异步任务，并把异步事件呈现为进度、日志和结果。
+    关键步骤：收集设置、先校验再启动、接收增量事件、删除前二次确认、关闭时非阻塞取消。
+    风险点：此窗口只展示和发命令；网络扫描和删除必须留在后台线程，永久删除必须二次授权。
     
-    Args:
-        parent: 仅用于 Qt 窗口所有权
-    
-    Note: type: ignore[misc] - Qt 动态导入导致的 Pylance 误报
+    参数：
+        parent：仅用于 Qt 窗口所有权。
+
+    说明：``type: ignore[misc]`` 是 Qt 动态导入导致的 Pylance 误报抑制标记。
     """
     
     def __init__(
@@ -441,6 +513,14 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         cleanup_controller: Optional[CleanupGateway] = None,
         settings_gateway: Optional[CleanupSettingsGateway] = None,
     ):
+        """创建窗口并绑定控制器事件监听器。
+
+        用途：初始化界面状态、读取当前设置快照，并确保所有手动事件回到本窗口。
+        输入：可选父窗口、必填清理控制器、可选设置网关。
+        输出：已构建但未启动扫描的清理对话框。
+        关键步骤：先读取快照，再登记监听器，最后构建控件和权限状态。
+        风险点：控制器不能为空；如果未登记监听器，后台扫描完成后界面不会恢复按钮状态。
+        """
         super().__init__(parent)
         self.setWindowTitle("文件清理工具 - 按目录和扩展名清理")
         self.setModal(True)
@@ -478,6 +558,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             self._append_log_line("回收站不可用，删除会被拒绝；可手动选择永久删除并二次确认。")
 
     def _read_settings_snapshot(self) -> Dict[str, Any]:
+        """安全读取设置快照；设置网关异常时返回空字典，让窗口仍可打开。"""
         if self.settings_gateway is None:
             return {}
         try:
@@ -510,7 +591,14 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         return False
 
     def _apply_permission_state(self) -> None:
-        """根据主窗口角色和运行状态更新对话框操作权限。"""
+        """根据主窗口角色和运行状态更新对话框操作权限。
+
+        用途：统一处理管理员、普通用户和未登录状态，避免只禁用部分危险按钮。
+        输入：当前设置网关暴露的角色，以及已创建的控件。
+        输出：可操作控件按权限启用/禁用，删除按钮还会检查是否确实勾选了文件。
+        关键步骤：枚举业务控件、更新目录行、更新阈值控件、更新删除模式菜单。
+        风险点：权限控制不能只依赖 UI 禁用；后续控制器/服务层仍会执行业务校验。
+        """
         can_manage = self._can_manage_cleanup()
         editable_names = [
             "cb_backup", "cb_target", "cb_monitor", "cb_custom",
@@ -547,7 +635,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             self.progress_label.setText(self._get_cleanup_block_reason())
 
     def _on_file_check_changed(self) -> None:
-        """v3.3.0：复选框状态变化时刷新删除按钮"""
+        """复选框状态变化时刷新删除按钮。"""
         if hasattr(self, 'btn_delete'):
             can_manage = self._can_manage_cleanup()
             self.btn_delete.setEnabled(can_manage and bool(self.file_table.get_checked_files()))
@@ -679,7 +767,14 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         
 
     def _build_ui(self) -> None:
-        """构建 UI - 左右分割布局"""
+        """构建左右分栏的主界面，并按屏幕大小设置安全初始尺寸。
+
+        用途：将扫描设置与结果表格同时展示，减少现场人员在多个窗口之间切换。
+        输入：当前显示器可用区域；无显示器对象时使用保守默认尺寸。
+        输出：包含设置区、结果区和底部操作区的完整窗口布局。
+        关键步骤：应用样式、计算尺寸、创建左右 Splitter、设置伸缩比例、放入底部按钮。
+        风险点：不能在此处启动扫描；构造期间启动后台任务会导致控件尚未创建就收到事件。
+        """
         # 应用统一样式表
         self._apply_unified_stylesheet()
         
@@ -1056,7 +1151,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         return filter_group
     
     def _on_tab_changed(self, index: int) -> None:
-        """Tab切换处理 - 延迟构建高级页 + 性能优化"""
+        """处理标签页切换：首次打开时才构建高级设置页，减少初始创建成本。"""
         # 如果切换到高级页且未创建，则创建
         if index == 1 and not self._advanced_tab_created:
             # 禁用更新减少重排
@@ -1643,7 +1738,14 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         return button_layout
     
     def _set_delete_mode(self, use_trash: bool) -> None:
-        """设置删除模式"""
+        """更新删除模式菜单与显示标签，但不在这里执行删除。
+
+        用途：让用户明确选择“移入回收站”或“永久删除”。
+        输入：是否使用回收站。
+        输出：两个菜单项、显式永久删除标记和提示标签保持一致。
+        关键步骤：始终互斥设置两个选项，再记录永久模式是否由用户主动选择。
+        风险点：回收站不可用时不能自动改成永久删除，必须由用户显式选择并二次确认。
+        """
         self.action_trash.setChecked(use_trash)
         self.action_permanent.setChecked(not use_trash)
         self._permanent_mode_explicit = not use_trash
@@ -1728,7 +1830,14 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             cb.setChecked(ext in image_formats)
     
     def _open_auto_cleanup_config(self) -> None:
-        """打开自动清理配置独立窗口"""
+        """打开自动清理配置窗口，并复用当前窗口的配置控件。
+
+        用途：把可能不常用的自动策略配置从手动扫描主界面中分离出来。
+        输入：无；从当前内存设置和目录控件读取默认值。
+        输出：用户保存时由设置网关写入配置，取消时不修改任何配置。
+        关键步骤：先校验管理员权限、创建模态窗口、连接保存/取消、关闭后刷新摘要。
+        风险点：这里不能直接写 ``config.json``，所有持久化必须经过设置网关以统一校验和报错。
+        """
         if not self._ensure_cleanup_permission("打开自动清理配置"):
             return
 
@@ -1772,13 +1881,21 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._apply_permission_state()
     
     def _save_auto_config(self) -> bool:
-        """通过显式网关保存自动清理配置。"""
+        """通过显式设置网关校验并保存自动清理配置。
+
+        用途：把 UI 控件值转换为最小配置字典，并请求主流程持久化。
+        输入：当前目录、阈值、格式和启用状态控件的值。
+        输出：保存成功返回 ``True``；任何校验/写入失败返回 ``False`` 并提示用户。
+        关键步骤：权限校验、收集目录、验证阈值、首次启用二次确认、调用网关、读回快照。
+        风险点：手动清理扫描配置不写入 ``config.json``；这里只保存自动清理策略，且固定回收站模式。
+        """
         if self.settings_gateway is None:
             return False
         if not self._ensure_cleanup_permission("保存自动清理配置"):
             return False
         
         try:
+            # 自动清理必须保留隐藏的已保存目录，避免用户尚未展开高级区域时意外丢失配置。
             folders_to_clean = self._collect_selected_folders(include_hidden=True)
 
             if self.cb_enable_auto.isChecked():
@@ -1796,6 +1913,8 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
                         "目标阈值必须小于触发阈值，请调整配置。",
                     )
                     return False
+                # 只有从“未启用”切换到“启用”时才弹出二次确认，
+                # 这样既强调风险，也不会让正常的后续参数调整反复打断操作。
                 previously_enabled = bool(
                     self._settings.get("enable_auto_delete", False)
                 )
@@ -1814,7 +1933,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
                     if confirmation != QtWidgets.QMessageBox.StandardButton.Yes:
                         return False
 
-            # 解析格式过滤输入
+            # 将逗号分隔的扩展名输入转换为配置列表；具体格式规范化由服务层统一处理。
             formats_text = self.edit_formats.text().strip() if hasattr(self, 'edit_formats') else ''
             formats_list = [f.strip() for f in formats_text.split(',') if f.strip()] if formats_text else []
 
@@ -1828,6 +1947,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
                 "auto_delete_formats": formats_list,
             }
             
+            # 通过网关持久化，不直接触碰 config.json，保证主窗口的配置与运行时状态同步。
             save_result = bool(
                 self.settings_gateway.save_auto_cleanup_settings(cleanup_config)
             )
@@ -1875,7 +1995,14 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             return False
     
     def _filter_files(self) -> None:
-        """根据搜索框和快捷条件更新代理模型，不逐行操作大量视图控件。"""
+        """根据搜索框和快捷条件更新代理模型，不逐行操作大量视图控件。
+
+        用途：在海量扫描结果中快速缩小显示范围。
+        输入：搜索框和四个快捷筛选控件的当前状态。
+        输出：代理模型重新决定哪些行可见；源候选列表不会丢失。
+        关键步骤：计算“最近七天”的临界时间，再一次性提交全部筛选条件。
+        风险点：不能调用逐行 ``setRowHidden``，那会为大列表制造大量同步 UI 操作。
+        """
         search_text = self.search_edit.text()
         import time
         cutoff_time_7days = time.time() - (7 * 24 * 3600)
@@ -1888,7 +2015,14 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         )
     
     def _cancel_scan(self) -> None:
-        """请求后台扫描在下一个可取消点停止，界面保持可操作。"""
+        """请求后台扫描在下一个可取消点停止，界面保持可操作。
+
+        用途：允许用户中止大目录或网络盘扫描，而不冻结窗口。
+        输入：无；当前 Worker 由控制器持有。
+        输出：取消标记被设置，取消按钮隐藏，状态文本说明仍在等待系统 I/O 返回。
+        关键步骤：只发出协作取消请求，不等待线程，再更新界面提示。
+        风险点：``stat/scandir`` 可能被 SMB 阻塞，Python 无法强制打断，不能在这里调用 ``wait``。
+        """
         self.cleanup_controller.cancel_scan()
         self._scan_cancel_requested = True
         self.btn_cancel_scan.setVisible(False)
@@ -1896,13 +2030,21 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._append_log_line("已请求取消扫描；网络盘当前 I/O 返回后将结束。")
 
     def _scan_files(self) -> None:
-        """Collect scan input and delegate filesystem work to the controller."""
+        """收集扫描输入并委托控制器启动后台文件系统任务。
+
+        用途：将目录、扩展名和保留天数组装为请求，同时把耗时扫描留在 Worker 中。
+        输入：目录行、格式复选框、自定义扩展名和可选保留天数。
+        输出：扫描成功启动后显示不确定进度；校验失败时显示原因且不创建 Worker。
+        关键步骤：权限检查、清空旧结果、收集/校验目录与格式、构建请求、交给控制器启动。
+        风险点：不能在 UI 线程使用 ``os.scandir``；新扫描必须先清空旧候选，防止删除到上次结果。
+        """
         if not self._ensure_cleanup_permission("扫描文件"):
             return
 
         self._update_summary()
         self._clear_log()
         self._append_log_line("准备扫描...")
+        # 先让源模型整体重置，再把 all_files 指向新列表；后续 Worker 结果会增量追加到它。
         self.file_table.clear_files()
         self.all_files = self.file_table.file_items
         self._scan_file_count = 0
@@ -1921,6 +2063,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             return
         self._scanned_folders = tuple(folders_to_scan)
 
+        # 基础复选框和自定义文本框共同构成格式过滤；服务层最终还会进行格式规范化。
         formats_to_scan: List[str] = [
             ext.lower() for ext, checkbox in self.format_checkboxes.items()
             if checkbox.isChecked()
@@ -1949,6 +2092,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         request = CleanupScanRequest(
             tuple(folders_to_scan), tuple(formats_to_scan), keep_days
         )
+        # 在启动线程前先做同步轻量校验，避免 Worker 运行后才发现目录不存在或无权限。
         validation = self.cleanup_controller.validate_scan_request(request)
         if validation.invalid_reasons:
             self._append_log_line("以下路径不可用，将被跳过：")
@@ -1965,6 +2109,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             QtWidgets.QMessageBox.warning(self, "错误", message)
             return
 
+        # 目录总数未知，使用不确定进度条；实际文件数和容量由异步进度事件更新。
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
         self.btn_cancel_scan.setVisible(True)
@@ -1980,6 +2125,14 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             )
 
     def _handle_cleanup_event(self, event: dict) -> None:
+        """按事件类型把 Worker/服务层消息分发给对应的纯 UI 更新方法。
+
+        用途：将跨线程桥接后的统一字典事件还原为界面动作。
+        输入：至少带有 ``type`` 字段的事件字典。
+        输出：日志、扫描进度、增量文件、完成状态或删除进度被更新到相应控件。
+        关键步骤：每种事件只调用一个专门方法；新旧扫描汇总字段同时兼容。
+        风险点：这里绝不能重新扫描、排序全部文件或执行删除，否则队列事件会阻塞主线程。
+        """
         event_type = event.get("type", "")
         if event_type == "log":
             self._append_log_line(str(event.get("message", "")))
@@ -2012,7 +2165,10 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             )
 
     def _on_scan_progress(self, current_dir: str, file_count: int, total_size: int) -> None:
-        """更新不受 32 位限制的扫描计数、容量和当前目录提示。"""
+        """更新不受 32 位限制的扫描计数、容量和当前目录提示。
+
+        总量使用 ``max`` 是为了容忍队列中较早的进度事件晚到；统计值不会因为事件乱序而倒退。
+        """
         self._scan_file_count = max(self._scan_file_count, file_count)
         self._scan_total_size_bytes = max(self._scan_total_size_bytes, total_size)
         # 简化显示路径
@@ -2045,7 +2201,14 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         )
     
     def _delete_files(self) -> None:
-        """删除选中的文件（异步线程，支持回收站）"""
+        """经摘要与二次确认后，提交已勾选文件的异步删除请求。
+
+        用途：将用户当前选择转交给后台删除 Worker，并在启动前充分提示不可恢复风险。
+        输入：源模型中已勾选的候选、当前删除模式和已扫描的允许根目录。
+        输出：删除任务启动后显示进度；用户取消确认或校验失败时不改变任何文件。
+        关键步骤：权限校验、读取全部已选项、展示摘要、永久删除口令确认、构建安全请求、启动 Worker。
+        风险点：不能只删除筛选后可见行；永久删除必须由用户主动选模式并输入 DELETE。
+        """
         if not self._ensure_cleanup_permission("删除文件"):
             return
 
@@ -2054,6 +2217,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             QtWidgets.QMessageBox.information(self, "提示", "没有选中任何文件！")
             return
 
+        # 文件大小是 Python 整数相加，不使用 Qt 控件数值，避免超大容量发生溢出。
         total_size = sum(f.size for f in checked_files)
         
         # 生成清理清单摘要
@@ -2090,6 +2254,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         if reply != QtWidgets.QMessageBox.StandardButton.Yes:
             return
 
+        # “菜单选中永久删除”与“输入 DELETE”是两次独立确认，避免误点造成不可恢复删除。
         if not use_trash:
             text, ok = QtWidgets.QInputDialog.getText(
                 self,
@@ -2111,6 +2276,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.progress_label.setText(f"正在删除: 0 / {len(checked_files)}")
         self._append_log_line(f"开始{action_text} {len(checked_files)} 个文件。")
 
+        # allowed_roots 来自本轮已校验扫描目录；Worker/策略会再次验证路径不越界。
         result = self.cleanup_controller.start_delete(
             CleanupDeleteRequest(
                 tuple(checked_files),
@@ -2126,7 +2292,14 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             QtWidgets.QMessageBox.warning(self, "删除失败", result.message)
 
     def _generate_delete_summary(self, files: List[FileItem]) -> str:
-        """生成删除摘要（Top 5 最大文件）"""
+        """生成删除前摘要，只展示最大的五个文件以便用户快速复核。
+
+        用途：在确认框中提供具体文件示例，而不是只有抽象数量。
+        输入：全部已勾选候选。
+        输出：包含最大五项和剩余数量的多行文本。
+        关键步骤：按大小降序排序、截取前五项、追加其余数量说明。
+        风险点：摘要用于人工复核，不是删除依据；真正删除仍以完整 ``files`` 列表为准。
+        """
         sorted_files = sorted(files, key=lambda x: x.size, reverse=True)
         top_files = sorted_files[:5]
         
@@ -2184,7 +2357,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.btn_delete.setEnabled(can_manage and bool(self.file_table.get_checked_files()))
 
     def _on_delete_progress_value(self, current: int, total: int) -> None:
-        """删除进度更新"""
+        """仅更新删除进度控件；文件系统操作已经在后台 Worker 完成。"""
         self.progress_bar.setValue(current)
         self.progress_label.setText(f"正在删除: {current} / {total}")
 
@@ -2195,7 +2368,14 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         failed_count: int,
         remaining_files: List[FileItem],
     ) -> None:
-        """Render a completed delete result supplied by the service."""
+        """展示服务层返回的删除汇总，并用剩余候选重置表格。
+
+        用途：让用户知道成功、失败和仍可继续处理的文件，而不是假设全部删除成功。
+        输入：删除数量、删除字节数、失败数量和仍存在的候选列表。
+        输出：进度隐藏、结果提示、表格/统计/按钮恢复为新的稳定状态。
+        关键步骤：先生成结果文本，再替换源模型，最后基于剩余文件重新计算界面统计。
+        风险点：失败文件必须保留在表格；不能仅按“请求数量”从界面删除，避免掩盖失败或身份变更。
+        """
         self.progress_bar.setVisible(False)
         size_mb = deleted_size / (1024 * 1024)
         size_gb = deleted_size / (1024 * 1024 * 1024)
