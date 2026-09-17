@@ -35,7 +35,10 @@ from src.models import (
     UserRole,
     normalize_cleanup_folders,
 )
-from src.models.stability import STABILITY_FREEZE_ACTIVE, STABILITY_FREEZE_NOTICE
+from src.models.stability import (
+    DEDUPLICATION_FREEZE_ACTIVE,
+    DEDUPLICATION_FREEZE_NOTICE,
+)
 from src.ui.dialogs import ChangePasswordDialog, DiskCleanupDialog, LoginDialog
 from src.ui.panels import UploadFoldersPanel, UploadLogPanel, UploadSettingsPanel, UploadStatusPanel
 from src.ui.widgets import Toast
@@ -102,6 +105,9 @@ class AuthGateway(Protocol):
         ...
 
     def is_authenticated(self) -> bool:
+        ...
+
+    def users_mapping(self) -> dict:
         ...
 
     def can_manage_ftp(self) -> bool:
@@ -364,9 +370,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.cleanup_controller.configure_auto_cleanup(
             self._collect_auto_cleanup_request("startup")
         )
-        if STABILITY_FREEZE_ACTIVE:
+        if DEDUPLICATION_FREEZE_ACTIVE:
             self._append_log(
-                f"⚠️ {STABILITY_FREEZE_NOTICE}：自动清理与跨文件持久化去重已强制关闭。"
+                f"⚠️ {DEDUPLICATION_FREEZE_NOTICE}；自动磁盘清理已独立开放。"
             )
         self._apply_theme()
         self._update_ui_permissions()
@@ -1251,10 +1257,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         # 智能去重和网络监控
         if hasattr(self, 'cb_dedup_enable'):
             self.cb_dedup_enable.setEnabled(
-                states['cb_dedup_enable'] and not STABILITY_FREEZE_ACTIVE
+                states['cb_dedup_enable'] and not DEDUPLICATION_FREEZE_ACTIVE
             )
-            if STABILITY_FREEZE_ACTIVE:
-                self.cb_dedup_enable.setToolTip(STABILITY_FREEZE_NOTICE)
+            if DEDUPLICATION_FREEZE_ACTIVE:
+                self.cb_dedup_enable.setToolTip(DEDUPLICATION_FREEZE_NOTICE)
         if hasattr(self, 'combo_hash'):
             self.combo_hash.setEnabled(states['combo_hash'])
         if hasattr(self, 'combo_strategy'):
@@ -1417,14 +1423,19 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.auth_controller.load_users(cfg.get('users', {}))
 
     def _warn_if_default_password_in_use(self, role: str) -> None:
-        """登录成功后明确告知强制改密状态。"""
+        """登录成功后提示默认口令风险（现场版不强制改密）。"""
         weak_roles = set(self.auth_controller.default_password_roles)
         if role == 'user' and UserRole.USER in weak_roles:
-            self._append_log("⚠️ 用户角色仍在使用默认口令，修改密码前已禁用业务操作。")
-            self._toast('当前使用默认口令，必须先修改密码', 'warning')
+            self._append_log(f"⚠️ {t('msg_default_password_hint')}")
         elif role == 'admin' and UserRole.ADMIN in weak_roles:
-            self._append_log("⚠️ 管理员仍在使用默认口令，修改密码前已禁用业务操作。")
-            self._toast('管理员使用默认口令，必须先修改密码', 'warning')
+            self._append_log(f"⚠️ 管理员：{t('msg_default_password_hint')}")
+
+    def _sync_auth_snapshot(self) -> None:
+        """Keep the non-authoritative UI snapshot aligned with auth's source of truth."""
+        try:
+            self.saved_settings.auth.users = self.auth_controller.users_mapping()
+        except Exception as exc:
+            logger.debug("同步凭据快照失败: %s", exc)
 
     def _write_settings(self, settings: ApplicationSettings) -> bool:
         """Persist the canonical settings object at the repository boundary."""
@@ -1432,7 +1443,8 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         if self.settings_controller is None:
             self.last_config_save_error = '配置控制器未初始化'
             return False
-        success = self.settings_controller.save(settings, preserve_users=False)
+        # P0-04：常规配置保存不能覆盖 AuthController 已持久化的凭据。
+        success = self.settings_controller.save(settings, preserve_users=True)
         if not success:
             self.last_config_save_error = self.settings_controller.last_error or '配置保存失败'
         return success
@@ -1465,7 +1477,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         if hasattr(self, "cb_limit_rate"):
             self.cb_limit_rate.setChecked(upload.limit_upload_rate)
             self.spin_max_rate.setValue(upload.max_upload_rate_mbps)
-        self.enable_deduplication = upload.enable_deduplication and not STABILITY_FREEZE_ACTIVE
+        self.enable_deduplication = (
+            upload.enable_deduplication and not DEDUPLICATION_FREEZE_ACTIVE
+        )
         self.hash_algorithm = upload.hash_algorithm
         self.duplicate_strategy = upload.duplicate_strategy.value
         self.cb_dedup_enable.setChecked(self.enable_deduplication)
@@ -1505,9 +1519,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
 
     def _apply_cleanup_settings(self, cleanup: CleanupSettings) -> None:
         """Apply the one typed cleanup policy to every cleanup-facing view."""
-        self.enable_auto_delete = (
-            cleanup.enable_auto_delete and not STABILITY_FREEZE_ACTIVE
-        )
+        self.enable_auto_delete = cleanup.enable_auto_delete
         self.auto_delete_folder = cleanup.auto_delete_folder
         self.auto_delete_folders = list(cleanup.auto_delete_folders)
         self.auto_delete_threshold = cleanup.auto_delete_threshold
@@ -1605,8 +1617,8 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self._update_ui_permissions()
         self._warn_if_default_password_in_use(result.role.value)
         dialog.render_authenticated()
-        if result.uses_default_password:
-            QtCore.QTimer.singleShot(0, self._show_change_password)
+        # P0-04：现场版仅提示默认口令风险，不自动弹出改密框。
+        self._sync_auth_snapshot()
 
     def render_authenticated_role(self, role: UserRole) -> None:
         if role is UserRole.USER:
@@ -1677,6 +1689,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         )
         self._toast(success_text, 'success')
         self._append_log(f"✓ 密码已保存: {target_role.value}")
+        self._sync_auth_snapshot()
         self._update_ui_permissions()
         dialog.render_changed()
 
@@ -1684,12 +1697,12 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
     
     def _on_dedup_toggled(self, checked: bool):
         """切换智能去重开关"""
-        if STABILITY_FREEZE_ACTIVE and checked:
+        if DEDUPLICATION_FREEZE_ACTIVE and checked:
             self.cb_dedup_enable.blockSignals(True)
             self.cb_dedup_enable.setChecked(False)
             self.cb_dedup_enable.blockSignals(False)
             self.enable_deduplication = False
-            self._append_log(f"⚠️ {STABILITY_FREEZE_NOTICE}：智能去重保持关闭。")
+            self._append_log(f"⚠️ {DEDUPLICATION_FREEZE_NOTICE}。")
             return
         self.enable_deduplication = checked
         self._mark_config_modified()
@@ -2229,16 +2242,15 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             filters=filters,
             app_dir=self.app_dir,
             enable_deduplication=(
-                self.cb_dedup_enable.isChecked() and not STABILITY_FREEZE_ACTIVE
+                self.cb_dedup_enable.isChecked()
+                and not DEDUPLICATION_FREEZE_ACTIVE
             ),
             hash_algorithm=self.combo_hash.currentText().lower(),
             duplicate_strategy=duplicate_strategy,
             network_check_interval=self.spin_network_check.value(),
             network_auto_pause=self.cb_network_auto_pause.isChecked(),
             network_auto_resume=self.cb_network_auto_resume.isChecked(),
-            enable_auto_delete=(
-                self.enable_auto_delete and not STABILITY_FREEZE_ACTIVE
-            ),
+            enable_auto_delete=self.enable_auto_delete,
             auto_delete_threshold=self.auto_delete_threshold,
             auto_delete_target_percent=self.auto_delete_target_percent,
             upload_protocol=self.current_protocol,
@@ -2331,9 +2343,6 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self._toast('FTP配置验证失败，请检查配置', 'danger')
                 return False
         
-        # 保留现有用户密码
-        users = self.saved_settings.auth.to_mapping()
-
         try:
             ftp_server_password, ftp_server_password_encrypted = self.settings_controller.encode_ftp_password(
                 self.ftp_server_pass.text(),
@@ -2376,7 +2385,8 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             'max_upload_rate_mbps': self.spin_max_rate.value() if hasattr(self, 'spin_max_rate') else 10.0,
             # v1.9 新增：去重
             'enable_deduplication': (
-                self.cb_dedup_enable.isChecked() and not STABILITY_FREEZE_ACTIVE
+                self.cb_dedup_enable.isChecked()
+                and not DEDUPLICATION_FREEZE_ACTIVE
             ),
             'hash_algorithm': self.combo_hash.currentText().lower(),
             'duplicate_strategy': strategy_map.get(self.combo_strategy.currentText(), 'ask'),
@@ -2385,9 +2395,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             'network_auto_pause': self.cb_network_auto_pause.isChecked(),
             'network_auto_resume': self.cb_network_auto_resume.isChecked(),
             # v1.9 新增：自动删除
-            'enable_auto_delete': (
-                self.enable_auto_delete and not STABILITY_FREEZE_ACTIVE
-            ),
+            'enable_auto_delete': self.enable_auto_delete,
             'auto_delete_folder': self.auto_delete_folder,
             'auto_delete_folders': self.auto_delete_folders,
             'auto_delete_threshold': self.auto_delete_threshold,
@@ -2429,7 +2437,8 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 'passive_mode': self.cb_client_passive.isChecked(),
                 'enable_tls': self.cb_client_tls.isChecked(),
             },
-            'users': users,
+            # 用户凭据只来自 AuthController，不能使用启动时的旧配置快照。
+            'users': self.auth_controller.users_mapping(),
         }
         settings = ApplicationSettings.from_config(cfg)
         if self._write_settings(settings):
@@ -2452,10 +2461,6 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
     def _save_auto_cleanup_config(self, cleanup_config: dict) -> bool:
         """Persist automatic cleanup through the canonical settings model."""
         self.last_config_save_error = ''
-        if STABILITY_FREEZE_ACTIVE and cleanup_config.get('enable_auto_delete'):
-            self.last_config_save_error = STABILITY_FREEZE_NOTICE
-            self._append_log(f"❌ 自动清理配置保存已阻止: {STABILITY_FREEZE_NOTICE}")
-            return False
         reason = self._get_disk_cleanup_block_reason()
         if reason:
             self.last_config_save_error = reason
@@ -2527,6 +2532,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self._append_log("✓ 配置文件加载成功")
             self.auth_controller.load_users(settings.auth.to_mapping())
             self.saved_settings = copy.deepcopy(settings)
+            self._sync_auth_snapshot()
             self.config_modified = False
             self._append_log(f"✓ 已加载配置: 源={settings.upload.source_folder or '未设置'}")
             self._append_log(f"✓ 已加载配置: 目标={settings.upload.target_folder or '未设置'}")

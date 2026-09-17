@@ -8,7 +8,10 @@ from typing import Any
 from PySide6 import QtCore, QtWidgets
 
 from src.core.i18n import t
-from src.models.stability import STABILITY_FREEZE_ACTIVE, STABILITY_FREEZE_NOTICE
+from src.models.stability import (
+    DEDUPLICATION_FREEZE_ACTIVE,
+    DEDUPLICATION_FREEZE_NOTICE,
+)
 from src.ui.widgets import ChipWidget, CollapsibleBox
 
 
@@ -495,9 +498,9 @@ def _build_upload_settings(host: Any) -> QtWidgets.QFrame:
     host.cb_dedup_enable = QtWidgets.QCheckBox(t('enable_dedup'))
     host.cb_dedup_enable.setProperty('orig_text', t('enable_dedup'))
     host.cb_dedup_enable.setChecked(False)
-    if STABILITY_FREEZE_ACTIVE:
+    if DEDUPLICATION_FREEZE_ACTIVE:
         host.cb_dedup_enable.setEnabled(False)
-        host.cb_dedup_enable.setToolTip(STABILITY_FREEZE_NOTICE)
+        host.cb_dedup_enable.setToolTip(DEDUPLICATION_FREEZE_NOTICE)
     host.cb_dedup_enable.toggled.connect(host._on_dedup_toggled)
     host.cb_dedup_enable.toggled.connect(lambda checked: host._set_checkbox_mark(host.cb_dedup_enable, checked))
     host._set_checkbox_mark(host.cb_dedup_enable, host.cb_dedup_enable.isChecked())

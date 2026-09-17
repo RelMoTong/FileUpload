@@ -12,8 +12,9 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import threading
 import time
-from typing import Any, Callable, Dict, Iterable, Optional, Protocol, Tuple
+from typing import Any, Callable, Dict, Iterable, Optional, Protocol, Tuple, cast
 import uuid
 
 from PySide6 import QtCore
@@ -38,6 +39,11 @@ from src.core.safe_deletion import (
 
 AUTO_CLEANUP_FAILURE_LIMIT = 20
 CLEANUP_RECORD_READ_LIMIT = 100
+# A scan can encounter tens of thousands of files.  Posting an event for every
+# file floods the GUI event queue, which in turn makes a cancellation appear to
+# hang even after the worker has stopped.  The payload is an object, so the byte
+# total remains a Python integer rather than a Qt 32-bit integer.
+SCAN_PROGRESS_INTERVAL_SECONDS = 0.2
 CleanupEventCallback = Callable[[str, Dict[str, Any]], None]
 logger = logging.getLogger(__name__)
 
@@ -202,31 +208,32 @@ class CleanupAuditWriter(Protocol):
 
 
 class _ScanWorker(QtCore.QObject):
-    event = QtCore.Signal(str, object)
+    worker_event = QtCore.Signal(str, object)
     finished = QtCore.Signal(object)
 
     def __init__(self, request: CleanupScanRequest) -> None:
         super().__init__()
         self.request = request
-        self._cancelled = False
+        self._cancel_event = threading.Event()
 
     def cancel(self) -> None:
-        self._cancelled = True
+        self._cancel_event.set()
 
     def is_set(self) -> bool:
-        return self._cancelled
+        return self._cancel_event.is_set()
 
     @QtCore.Slot()
     def run(self) -> None:
         files: list[CleanupFileItem] = []
-        total_size = 0
+        total_size_bytes = 0
         file_count = 0
-        self.event.emit("log", {"message": "开始扫描文件..."})
+        last_progress_at = 0.0
+        self.worker_event.emit("log", {"message": "开始扫描文件..."})
         for folder in CleanupService.deduplicate_cleanup_roots(self.request.folders):
-            self.event.emit("log", {"message": f"扫描目录: {folder}"})
+            self.worker_event.emit("log", {"message": f"扫描目录: {folder}"})
 
         def on_error(path: str, exc: BaseException) -> None:
-            self.event.emit("log", {"message": f"无法访问文件 {path}: {exc}"})
+            self.worker_event.emit("log", {"message": f"无法访问文件 {path}: {exc}"})
 
         for candidate in iter_cleanup_candidates(
             self.request.folders,
@@ -235,26 +242,32 @@ class _ScanWorker(QtCore.QObject):
             cancel_event=self,
             on_error=on_error,
         ):
-            if self._cancelled:
+            if self.is_set():
                 break
             files.append(candidate.as_file_item())
             file_count += 1
-            total_size += candidate.size
-            self.event.emit(
-                "scan_progress",
-                {
-                    "current_dir": os.path.dirname(candidate.path),
-                    "file_count": file_count,
-                    "total_size": total_size,
-                },
-            )
-        if self._cancelled:
-            self.event.emit("log", {"message": "扫描已取消"})
+            # Keep this in Python's arbitrary-precision integer domain.  This
+            # must never traverse a Qt `int`, because real deployments can
+            # scan well beyond 100 TB in aggregate.
+            total_size_bytes += int(candidate.size)
+            now = time.monotonic()
+            if file_count == 1 or now - last_progress_at >= SCAN_PROGRESS_INTERVAL_SECONDS:
+                last_progress_at = now
+                self.worker_event.emit(
+                    "scan_progress",
+                    {
+                        "current_dir": os.path.dirname(candidate.path),
+                        "file_count": file_count,
+                        "total_size_bytes": total_size_bytes,
+                    },
+                )
+        if self.is_set():
+            self.worker_event.emit("log", {"message": "扫描已取消"})
         self.finished.emit(sort_cleanup_file_items(files))
 
 
 class _DeleteWorker(QtCore.QObject):
-    event = QtCore.Signal(str, object)
+    worker_event = QtCore.Signal(str, object)
     finished = QtCore.Signal(object)
 
     def __init__(
@@ -281,7 +294,7 @@ class _DeleteWorker(QtCore.QObject):
         total = len(self.request.files)
         for index, item in enumerate(self.request.files, start=1):
             if self._cancelled:
-                self.event.emit("log", {"message": "删除任务已取消"})
+                self.worker_event.emit("log", {"message": "删除任务已取消"})
                 break
             try:
                 def verify_identity() -> tuple[bool, str]:
@@ -296,7 +309,7 @@ class _DeleteWorker(QtCore.QObject):
                     identity_matches, identity_reason = verify_identity()
                     if not identity_matches:
                         skipped_changed_count += 1
-                        self.event.emit(
+                        self.worker_event.emit(
                             "log",
                             {"message": f"已跳过扫描后发生变化的文件 {item.path}: {identity_reason}"},
                         )
@@ -310,7 +323,7 @@ class _DeleteWorker(QtCore.QObject):
                         authorization="ui_second_confirmation",
                     ):
                         failed_count += 1
-                        self.event.emit(
+                        self.worker_event.emit(
                             "log",
                             {"message": f"删除失败 {item.path}: 永久删除审计日志写入失败，文件已保留"},
                         )
@@ -326,21 +339,55 @@ class _DeleteWorker(QtCore.QObject):
                     )
                 )
                 if not result.success:
+                    if not self.request.use_trash and self._audit_writer is not None:
+                        self._audit_writer.write(
+                            "MANUAL_PERMANENT_DELETE_FAIL",
+                            run_id,
+                            path=item.path,
+                            size_bytes=int(item.size),
+                            status=result.status,
+                            error=result.message,
+                        )
                     if result.status == "identity_changed":
                         skipped_changed_count += 1
                         message = f"已跳过扫描后发生变化的文件 {item.path}: {result.message}"
                     else:
                         failed_count += 1
                         message = f"删除失败 {item.path}: {result.message}"
-                    self.event.emit("log", {"message": message})
+                    self.worker_event.emit("log", {"message": message})
                     continue
                 deleted_count += 1
                 deleted_size += item.size
+                if not self.request.use_trash and self._audit_writer is not None:
+                    if not self._audit_writer.write(
+                        "MANUAL_PERMANENT_DELETE_OK",
+                        run_id,
+                        path=item.path,
+                        size_bytes=int(item.size),
+                    ):
+                        self.worker_event.emit(
+                            "log",
+                            {
+                                "message": (
+                                    f"审计告警 {item.path}: 文件已永久删除，"
+                                    "但结果审计写入失败，请立即保留当前日志"
+                                )
+                            },
+                        )
             except Exception as exc:
                 failed_count += 1
-                self.event.emit("log", {"message": f"删除失败 {item.path}: {exc}"})
+                if not self.request.use_trash and self._audit_writer is not None:
+                    self._audit_writer.write(
+                        "MANUAL_PERMANENT_DELETE_FAIL",
+                        run_id,
+                        path=item.path,
+                        size_bytes=int(item.size),
+                        status="exception",
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                self.worker_event.emit("log", {"message": f"删除失败 {item.path}: {exc}"})
             finally:
-                self.event.emit("delete_progress", {"current": index, "total": total})
+                self.worker_event.emit("delete_progress", {"current": index, "total": total})
         remaining = tuple(item for item in self.request.files if os.path.exists(item.path))
         self.finished.emit(
             {
@@ -364,7 +411,10 @@ class _ManualEventBridge(QtCore.QObject):
 
     @QtCore.Slot(object)
     def on_scan_finished(self, files: object) -> None:
-        self._callback("scan_finished", {"files": list(files)})
+        self._callback(
+            "scan_finished",
+            {"files": list(cast(Iterable[CleanupFileItem], files))},
+        )
 
     @QtCore.Slot(object)
     def on_delete_finished(self, result: object) -> None:
@@ -456,7 +506,7 @@ class CleanupService:
             bridge = _ManualEventBridge(callback)
             worker.moveToThread(thread)
             queued = QtCore.Qt.ConnectionType.QueuedConnection
-            worker.event.connect(bridge.on_event, queued)
+            worker.worker_event.connect(bridge.on_event, queued)
             worker.finished.connect(bridge.on_scan_finished, queued)
             thread.started.connect(worker.run)
             worker.finished.connect(thread.quit)
@@ -498,7 +548,7 @@ class CleanupService:
             bridge = _ManualEventBridge(callback)
             worker.moveToThread(thread)
             queued = QtCore.Qt.ConnectionType.QueuedConnection
-            worker.event.connect(bridge.on_event, queued)
+            worker.worker_event.connect(bridge.on_event, queued)
             worker.finished.connect(bridge.on_delete_finished, queued)
             thread.started.connect(worker.run)
             worker.finished.connect(thread.quit)
@@ -802,7 +852,8 @@ class CleanupService:
                     return finish("失败达到20次", "候选扫描连续失败")
                 if not candidates:
                     final_usage = shutil.disk_usage(roots[0])
-                    return finish("达到目标" if used_percent(final_usage) is not None and used_percent(final_usage) <= request.target_percent else "候选已耗尽", "候选文件已耗尽，但磁盘仍未达到目标阈值")
+                    final_percent = used_percent(final_usage)
+                    return finish("达到目标" if final_percent is not None and final_percent <= request.target_percent else "候选已耗尽", "候选文件已耗尽，但磁盘仍未达到目标阈值")
 
                 for candidate in candidates:
                     if cancel_event.is_set(): return finish("任务异常", "应用正在退出，自动清理已取消")
@@ -848,7 +899,7 @@ class CleanupService:
                     current_percent = used_percent(final_usage)
                     if not self._write_audit("DELETE_OK", run_id, path=candidate.path, file_name=os.path.basename(candidate.path), size_bytes=int(stat_result.st_size), created_at=datetime.datetime.fromtimestamp(created_at).isoformat(timespec="seconds"), modified_at_ns=self.file_modified_at_ns(stat_result), delete_mode="回收站", disk_used_percent=current_percent, disk_usage_error=usage_error, candidate_source="stream_scan"): return finish("任务异常", "清理审计日志写入失败")
                     if usage_error: return finish("路径不可用", usage_error)
-                    if final_usage.free <= start_usage.free:
+                    if final_usage is not None and start_usage is not None and final_usage.free <= start_usage.free:
                         return finish("回收站未释放空间")
                     if current_percent is not None and current_percent <= request.target_percent: return finish("达到目标")
             return finish("任务异常", "应用正在退出，自动清理已取消")

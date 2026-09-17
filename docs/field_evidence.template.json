@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "candidate": {"sha256": "待填写：现场重新计算候选ZIP的SHA-256"},
+  "environment": {
+    "clean_windows": false,
+    "python_or_ide_absent": false,
+    "real_network": false,
+    "smb": {"host": "待填写", "share": "待填写", "probe_passed": false, "evidence": "evidence/smb.json"},
+    "ftp": {"host": "待填写", "port": 21, "probe_passed": false, "evidence": "evidence/ftp.json"},
+    "max_file": {"bytes": 0, "sha256": "待填写", "evidence": "evidence/max-file.json"}
+  },
+  "scenarios": {
+    "clean_windows_start": {"passed": false, "evidence": "evidence/clean.json"},
+    "smb_upload": {"passed": false, "evidence": "evidence/smb-upload.json"},
+    "ftp_upload": {"passed": false, "evidence": "evidence/ftp-upload.json"},
+    "dual_protocol_partial_failure": {"passed": false, "evidence": "evidence/partial.json"},
+    "network_jitter_server_restart": {"passed": false, "evidence": "evidence/restart.json"},
+    "same_path_generations": {"passed": false, "evidence": "evidence/generations.json"},
+    "kill_and_machine_restart": {"passed": false, "evidence": "evidence/recovery.json"},
+    "disk_pressure_and_trash_failure": {"passed": false, "evidence": "evidence/disk.json"}
+  },
+  "soak": {"passed": false, "duration_hours": 0, "evidence": "evidence/soak.json"},
+  "reconciliation": {"discovered": 0, "submitted": 0, "pending": 0, "archived": 0, "failed": 0, "duplicate": 0, "unexplained": 0},
+  "rollback": {"passed": false, "evidence": "evidence/rollback.json"},
+  "signatures": {
+    "developer": {"name": "待填写", "date": "待填写", "decision": "NO-GO"},
+    "field": {"name": "待填写", "date": "待填写", "decision": "NO-GO"}
+  },
+  "conclusion": "NO-GO"
+}

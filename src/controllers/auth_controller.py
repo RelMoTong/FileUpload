@@ -74,6 +74,7 @@ class AuthController:
 
     def login(self, role: UserRole, password: str) -> LoginResult:
         previous_users = deepcopy(self._model.users)
+        previous_password_change_required = self._model.password_change_required
         result = self._service.authenticate(self._model, role, password)
         if not result.success or not result.credential_upgraded or self._settings is None:
             return result
@@ -82,10 +83,15 @@ class AuthController:
             config["users"] = self._model.to_mapping()
             if not self._settings.save_raw(config, preserve_users=False):
                 raise OSError(self._settings.last_error or "凭据迁移写入失败")
+            persisted = self._settings.load_raw().get("users", {})
+            if not isinstance(persisted, dict) or (
+                persisted.get(role.value) != self._model.users.get(role.value)
+            ):
+                raise OSError("凭据迁移写入校验失败")
         except Exception as exc:
             self._model.users = previous_users
             self._model.current_role = UserRole.GUEST
-            self._model.password_change_required = False
+            self._model.password_change_required = previous_password_change_required
             return LoginResult(False, role=role, error=str(exc))
         return result
 
@@ -100,6 +106,7 @@ class AuthController:
         confirm_password: str,
     ) -> PasswordChangeResult:
         previous_users = deepcopy(self._model.users)
+        previous_password_change_required = self._model.password_change_required
         result = self._service.change_password(
             self._model,
             target_role,
@@ -115,32 +122,31 @@ class AuthController:
             config["users"] = self._model.to_mapping()
             if not self._settings.save_raw(config, preserve_users=False):
                 self._model.users = previous_users
+                self._model.password_change_required = previous_password_change_required
                 return PasswordChangeResult(
                     False,
                     target_role,
                     self._settings.last_error or "写入配置文件失败",
                 )
+            persisted = self._settings.load_raw().get("users", {})
+            if not isinstance(persisted, dict) or (
+                persisted.get(target_role.value)
+                != self._model.users.get(target_role.value)
+            ):
+                self._model.users = previous_users
+                self._model.password_change_required = previous_password_change_required
+                return PasswordChangeResult(
+                    False, target_role, "密码写入校验失败，请重试"
+                )
         except Exception as exc:
             self._model.users = previous_users
+            self._model.password_change_required = previous_password_change_required
             return PasswordChangeResult(False, target_role, str(exc))
         return result
 
     def compute_permissions(self, context: PermissionContext) -> ControlPermissions:
-        permissions = self._service.compute_permissions(self.current_role, context)
-        if not self._model.password_change_required:
-            return permissions
-        values = permissions.to_mapping()
-        for name in values:
-            values[name] = False
-        values.update(
-            btn_more=True,
-            ftp_config_widget=True,
-            ftp_server_collapsible=True,
-            menu_change_password=True,
-            menu_logout=True,
-            menu_language=True,
-        )
-        return ControlPermissions(**values)
+        # P0-04：默认口令仅作风险提示，权限只由角色与运行态决定。
+        return self._service.compute_permissions(self.current_role, context)
 
     @property
     def password_change_required(self) -> bool:
@@ -151,6 +157,10 @@ class AuthController:
 
     def is_authenticated(self) -> bool:
         return self.current_role in {UserRole.USER, UserRole.ADMIN}
+
+    def users_mapping(self) -> Dict[str, Any]:
+        """Return a copy of the controller-owned credential source of truth."""
+        return self._model.to_mapping()
 
     def can_manage_ftp(self) -> bool:
         return self.current_role is UserRole.ADMIN

@@ -83,6 +83,7 @@ config.json
 # Release packages
 *_发布版.zip
 *_发布版/
+*_现场版.zip
 release_candidate/
 
 # Stable release folder

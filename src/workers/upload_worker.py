@@ -295,7 +295,9 @@ class UploadWorker(QtCore.QObject):  # type: ignore[misc]
             backup=self.enable_backup
         )
         if not self.enable_backup:
-            self._log_event("⚠️", "NO_BACKUP", "备份已关闭，上传成功后将删除源文件")
+            self._log_event(
+                "⚠️", "NO_BACKUP", "备份已关闭，上传成功后将源文件移入回收站"
+            )
         self._running = True
         self._pause_state.clear()
         self.network_pause_by_auto = False

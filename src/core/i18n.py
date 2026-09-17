@@ -446,6 +446,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '密码错误',
         LANG_EN_US: 'Wrong password',
     },
+    'msg_default_password_hint': {
+        LANG_ZH_CN: '当前正在使用默认口令，建议尽快在“更多 → 修改密码”中更换',
+        LANG_EN_US: 'Default password in use. Change it in More > Change Password.',
+    },
     'msg_logout': {
         LANG_ZH_CN: '已退出登录',
         LANG_EN_US: 'Logged out',

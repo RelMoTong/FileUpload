@@ -27,6 +27,9 @@ class AuthService:
     """Own password hashing, authentication and permission policy."""
 
     SIMPLE_PASSWORDS = {"123", "123456", "password", "upload_pass", "Tops123"}
+    # P0-04：现场版仅提示默认口令风险，不以此阻断业务操作。
+    # 如需恢复旧策略，可在受控发布中将此开关置为 True。
+    ENFORCE_DEFAULT_PASSWORD_CHANGE = False
 
     @staticmethod
     def hash_password(password: str, *, iterations: int = PBKDF2_ITERATIONS) -> str:
@@ -112,7 +115,9 @@ class AuthService:
         if needs_upgrade:
             model.users[role.value] = self.hash_password(password)
         model.current_role = role
-        model.password_change_required = default_password
+        model.password_change_required = (
+            default_password and self.ENFORCE_DEFAULT_PASSWORD_CHANGE
+        )
         return LoginResult(
             True,
             role=role,

@@ -1,0 +1,21 @@
+--- ImageUploadTool.spec@1322bf3
++++ ImageUploadTool.spec@v3.5.1-rollback-build
+@@
+ import os
+ import sys
++from PyInstaller.building.datastruct import TOC
+@@
+         'src.protocols.ftp',
++        'OpenSSL',
++        'OpenSSL.crypto',
++        'OpenSSL.SSL',
++        'cryptography',
+@@
+ )
++excluded_runtime_binaries = {"icuuc.dll", "icudt78.dll"}
++a.binaries = TOC(
++    entry for entry in a.binaries
++    if os.path.basename(entry[0]).lower() not in excluded_runtime_binaries
++)
+
+说明：只调整 v3.4.2 的 PyInstaller 依赖收集。OpenSSL hidden imports 保证 FTPS 依赖可见；排除 Conda 版本化 ICU DLL，避免覆盖 Qt6Core 所需的 Windows 未版本化 ABI。未修改 v3.4.2 业务源码。

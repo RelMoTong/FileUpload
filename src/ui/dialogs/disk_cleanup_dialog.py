@@ -19,7 +19,6 @@ from src.models import (
     CleanupScanRequest,
     normalize_cleanup_folders,
 )
-from src.models.stability import STABILITY_FREEZE_ACTIVE, STABILITY_FREEZE_NOTICE
 from src.ui.widgets import CollapsibleBox
 
 Signal = QtCore.Signal
@@ -291,9 +290,9 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
 
         self.settings_gateway = settings_gateway
         self._settings = self._read_settings_snapshot()
-        self.cleanup_controller = cleanup_controller
-        if self.cleanup_controller is None:
+        if cleanup_controller is None:
             raise ValueError("DiskCleanupDialog requires a cleanup controller")
+        self.cleanup_controller: CleanupGateway = cleanup_controller
         self.cleanup_controller.set_manual_listener(self._handle_cleanup_event)
 
         self.all_files: List[FileItem] = []
@@ -361,14 +360,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         for name in editable_names:
             widget = getattr(self, name, None)
             if widget is not None:
-                frozen_control = STABILITY_FREEZE_ACTIVE and name in {
-                    "btn_auto_config",
-                    "cb_enable_auto",
-                    "btn_save_auto",
-                }
-                widget.setEnabled(can_manage and not frozen_control)
-                if frozen_control:
-                    widget.setToolTip(STABILITY_FREEZE_NOTICE)
+                widget.setEnabled(can_manage)
 
         for row in self._folder_rows:
             self._apply_folder_row_state(*row, can_manage=can_manage)
@@ -1106,10 +1098,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
     def _update_auto_cleanup_status_summary(self, enabled: bool) -> None:
         """更新自动清理卡片上的启用状态摘要。"""
         if hasattr(self, 'auto_status_label'):
-            if STABILITY_FREEZE_ACTIVE:
-                status_text = f"未启用（{STABILITY_FREEZE_NOTICE}）"
-            else:
-                status_text = "已启用" if enabled else "未启用"
+            status_text = "已启用" if enabled else "未启用"
             self.auto_status_label.setText(f"当前状态: {status_text}")
     
     def _create_folder_row(self, label: str, path: str, checked: bool) -> Tuple[QtWidgets.QCheckBox, QtWidgets.QLineEdit, List[QtWidgets.QPushButton]]:
@@ -1367,9 +1356,6 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         # 状态摘要
         auto_enabled = bool(self._settings.get('enable_auto_delete', False))
         status_text = "已启用" if auto_enabled else "未启用"
-        if STABILITY_FREEZE_ACTIVE:
-            auto_enabled = False
-            status_text = f"未启用（{STABILITY_FREEZE_NOTICE}）"
         self.auto_status_label = QtWidgets.QLabel(f"当前状态: {status_text}")
         self.auto_status_label.setStyleSheet("color: #757575; font-size: 9pt;")
         layout.addWidget(self.auto_status_label)
@@ -1383,9 +1369,6 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.btn_auto_config = QtWidgets.QPushButton("配置...")
         self.btn_auto_config.setToolTip("打开自动清理配置窗口")
         self.btn_auto_config.clicked.connect(self._open_auto_cleanup_config)
-        if STABILITY_FREEZE_ACTIVE:
-            self.btn_auto_config.setEnabled(False)
-            self.btn_auto_config.setToolTip(STABILITY_FREEZE_NOTICE)
         layout.addWidget(self.btn_auto_config)
         
         return card
@@ -1400,12 +1383,7 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         # 启用自动清理
         self.cb_enable_auto = QtWidgets.QCheckBox(tr("disk_cleanup_auto_enable"))
         auto_enabled = bool(self._settings.get('enable_auto_delete', False))
-        if STABILITY_FREEZE_ACTIVE:
-            auto_enabled = False
         self.cb_enable_auto.setChecked(auto_enabled)
-        if STABILITY_FREEZE_ACTIVE:
-            self.cb_enable_auto.setEnabled(False)
-            self.cb_enable_auto.setToolTip(STABILITY_FREEZE_NOTICE)
         self.cb_enable_auto.toggled.connect(self._on_auto_clean_toggled)
         auto_layout.addWidget(self.cb_enable_auto)
         
@@ -1909,7 +1887,10 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             self._on_scan_progress(
                 str(event.get("current_dir", "")),
                 int(event.get("file_count", 0)),
-                int(event.get("total_size", 0)),
+                # New workers keep totals in an object payload under the
+                # explicit byte key.  Retain the legacy key while older
+                # workers are still in use during staged upgrades.
+                int(event.get("total_size_bytes", event.get("total_size", 0))),
             )
         elif event_type == "scan_finished":
             self._on_scan_finished(list(event.get("files", [])))

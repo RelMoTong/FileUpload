@@ -7,13 +7,15 @@
 - [v3.5.1 运行手册](V351_OPERATIONS_MANUAL.md)：现场运行、回退和放行要求。
 - [v3.5.1 现场验收表](V351_FIELD_ACCEPTANCE.md)：现场验证结果记录模板。
 - [v3.5.1 现场证据字段说明](V351_FIELD_EVIDENCE_SCHEMA.md)：结构化验收证据格式。
+- [v3.5.1 现场手工测试清单](V351_MANUAL_TEST_CHECKLIST.md)：实际登录、上传、清理、故障恢复、长稳和回退步骤。
+- [v3.5.1 回退说明](V351_ROLLBACK_README.md)：最后可复现 v3.4.2 回退包的边界和安全步骤。
 - [v3.5.1 发布验证记录](V351_RELEASE_VERIFICATION.md)：发布前验证结论和检查项。
 - [版本变更](CHANGELOG.md)：版本更新记录。
 
 ## 运行
 
 ```powershell
-pip install -r requirements.txt
+pip install -r requirements.lock.txt
 python -m src.main
 ```
 

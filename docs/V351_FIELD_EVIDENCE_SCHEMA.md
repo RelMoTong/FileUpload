@@ -2,6 +2,8 @@
 
 现场工程师应将实际执行结果保存为 `field_evidence.json`，不得使用回环地址、模拟服务或开发机结果替代现场证据。候选包 SHA-256 必须由校验器根据本地文件重新计算。
 
+从 `docs/field_evidence.template.json` 复制模板后填写；模板默认必定输出 `NO-GO`，只有真实附件、对账和双签全部齐全才可能通过。
+
 ## 必填结构
 
 ```json
@@ -40,7 +42,7 @@
 ## 机器校验
 
 ```powershell
-python tools\validate_v351_field_acceptance.py `
+python field_tools\validate_v351_field_acceptance.py `
   --evidence .\field_evidence.json `
   --candidate-zip .\release_candidate\ImageUploadTool_v3.5.1_no_database_release.zip `
   --output .\field_evidence_validation.json

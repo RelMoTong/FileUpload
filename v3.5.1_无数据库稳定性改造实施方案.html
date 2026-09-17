@@ -265,7 +265,7 @@
           </ul>
         </div>
       </div>
-      <p class="callout warn"><strong>临时现场限制：</strong>改造完成前仅允许有人值守试运行；优先 SMB 单通道，开启备份，关闭去重与自动清理，源目录、目标目录、备份目录必须完全分离。</p>
+      <p class="callout warn"><strong>当前现场限制：</strong>P4-03/P4-04 通过前仅允许有人值守验收；优先 SMB 单通道并开启备份，去重保持关闭。自动清理只可由管理员在隔离测试目录内按清单验证，正式生产仍保持关闭；源目录、目标目录、备份目录必须完全分离。</p>
     </section>
 
     <section id="baseline">
@@ -363,14 +363,14 @@
         </div>
       </article>
 
-      <article class="task" id="task-P0-04" data-status="pending" data-phase="0">
-        <div class="task-head"><input class="task-check" id="check-P0-04" type="checkbox" disabled><div class="task-title"><h4>P0-04｜统一失败关闭的删除与回收站策略</h4><p><span class="badge critical">P0</span>依赖：GATE-00、P0-03</p></div></div>
+      <article class="task" id="task-P0-04" data-status="done" data-phase="0">
+        <div class="task-head"><input class="task-check" id="check-P0-04" type="checkbox" checked disabled><div class="task-title"><h4>P0-04｜统一失败关闭的删除与回收站策略</h4><p><span class="badge critical">P0</span>依赖：GATE-00、P0-03</p></div></div>
         <div class="task-grid">
           <div><h5>目标</h5><p>请求回收站时若回收站不可用，文件必须保留；手动和自动清理使用相同安全策略。</p></div>
           <div><h5>主要文件</h5><p><code>src/services/cleanup_service.py</code>、清理控制器、删除策略与审计日志测试。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>抽取唯一 <code>SafeDeletionPolicy</code>，输入身份、删除模式和授权，输出明确结果。</li><li>回收站模式失败时直接失败并保留文件，禁止静默降级到永久删除。</li><li>永久删除仅允许显式选择、二次确认和审计记录；自动清理默认不允许永久删除。</li><li>每次删除前复核文件身份和保护目录；异常按单文件隔离，不吞掉。</li><li>手动、自动、归档清理全部改用同一策略并删除重复分支。</li></ol></div>
-          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>回收站故障时文件仍存在，UI/日志明确失败。</li><li><input type="checkbox" disabled>无显式授权的永久删除路径为零。</li><li><input type="checkbox" disabled>手动和自动清理同输入得到同结果。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜日期：—｜故障注入：—｜测试：—｜回退：—</p></div>
+          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" checked disabled>回收站故障时文件仍存在，UI/日志明确失败。</li><li><input type="checkbox" checked disabled>无显式授权的永久删除路径为零。</li><li><input type="checkbox" checked disabled>手动和自动清理同输入得到同结果。</li></ul></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">已完成</span>｜日期：2026-09-14｜实现：SafeDeletionPolicy 统一手动、自动与归档删除；自动永久删除禁止；手动永久删除要求二次授权并记录 INTENT/OK/FAIL｜故障注入：回收站、审计、磁盘 API、身份变化失败均保留文件｜测试：清理无数据库专项 13 passed，完整回归通过｜回退：v3.5.1-pre-no-db-baseline</p></div>
         </div>
       </article>
     </section>
@@ -378,58 +378,58 @@
     <section id="phase1">
       <h2 class="phase-title"><span>PHASE 1</span>传输、重试与崩溃恢复安全</h2>
 
-      <article class="task" id="task-P1-01" data-status="pending" data-phase="1">
-        <div class="task-head"><input class="task-check" id="check-P1-01" type="checkbox" disabled><div class="task-title"><h4>P1-01｜建立唯一文件任务状态机，修复重试退避绕过</h4><p><span class="badge critical">P0</span>依赖：P0-02、P0-03</p></div></div>
+      <article class="task" id="task-P1-01" data-status="done" data-phase="1">
+        <div class="task-head"><input class="task-check" id="check-P1-01" type="checkbox" checked disabled><div class="task-title"><h4>P1-01｜建立唯一文件任务状态机，修复重试退避绕过</h4><p><span class="badge critical">P0</span>依赖：P0-02、P0-03</p></div></div>
         <div class="task-grid">
           <div><h5>目标</h5><p>同一文件代际只存在一个任务；扫描、重试、双协议和归档由明确状态转换驱动。</p></div>
           <div><h5>主要文件</h5><p><code>src/workers/upload_worker.py</code>、任务模型、队列与状态机测试。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>定义状态：discovered、waiting、uploading、retry_wait、uploaded、archive_pending、archived、failed/stale。</li><li>以 <code>FileIdentity</code> 作为运行期任务键，集中管理 active、retry 和 pending-archive 集合。</li><li>扫描过滤所有非终态任务，重试到期只能由调度器重新入队。</li><li>双协议模式记录每个通道结果，按配置的成功策略决定是否归档；禁止 SMB 已成功后被扫描再次上传。</li><li>将大段条件分支拆为小状态处理器，但不重写 Worker 框架。</li></ol></div>
-          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>退避期文件不会被扫描重新入队。</li><li><input type="checkbox" disabled>双协议部分失败不会重复已经成功的通道，除非策略明确要求。</li><li><input type="checkbox" disabled>每次状态转换有原因、时间和任务身份日志。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜日期：—｜状态图版本：—｜测试：—｜回退：—</p></div>
+          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" checked disabled>退避期文件不会被扫描重新入队。</li><li><input type="checkbox" checked disabled>双协议部分失败不会重复已经成功的通道，除非策略明确要求。</li><li><input type="checkbox" checked disabled>每次状态转换有原因、时间和任务身份日志。</li></ul></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">已完成</span>｜日期：2026-09-14｜状态图版本：FileTaskRegistry v1，10 个显式状态，FileIdentity 作为代际键｜实现：扫描认领、到期重试、双协议结果与归档状态统一｜测试：100 轮×8 线程并发认领零重复；退避、部分结果和新代际独立性通过｜回退：v3.5.1-pre-no-db-baseline</p></div>
         </div>
       </article>
 
-      <article class="task" id="task-P1-02" data-status="pending" data-phase="1">
-        <div class="task-head"><input class="task-check" id="check-P1-02" type="checkbox" disabled><div class="task-title"><h4>P1-02｜统一原子文件状态存储，修复断点记录损坏</h4><p><span class="badge high">P1</span><span class="badge db">非数据库</span>依赖：P0-03</p></div></div>
+      <article class="task" id="task-P1-02" data-status="done" data-phase="1">
+        <div class="task-head"><input class="task-check" id="check-P1-02" type="checkbox" checked disabled><div class="task-title"><h4>P1-02｜统一原子文件状态存储，修复断点记录损坏</h4><p><span class="badge high">P1</span><span class="badge db">非数据库</span>依赖：P0-03</p></div></div>
         <div class="task-grid">
           <div><h5>目标</h5><p>配置、断点和待归档记录在断电/杀进程后只能是旧完整版本或新完整版本，不能是空文件或半个 JSON。</p></div>
           <div><h5>主要文件</h5><p><code>src/resume_manager.py</code>、待归档仓储、配置存储；新增 <code>AtomicJsonStore</code>。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>实现同目录临时文件写入、flush、<code>fsync</code>、<code>os.replace</code>、目录同步（可用时）和上一版本备份。</li><li>为记录加入 schema_version、校验字段和上限；读取时验证，损坏时尝试备份并隔离坏文件。</li><li>待归档可用有界 JSONL 追加与压缩，必须防重复且可恢复；不得提供数据库式查询接口。</li><li>把每分片覆盖写改为节流的原子检查点；清理确认无引用的孤立 <code>.part</code> 文件。</li><li>在 replace 前、写一半、fsync 前后注入崩溃并重启验证。</li></ol></div>
-          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>故障注入后恢复到新或旧完整记录，不出现零字节有效文件。</li><li><input type="checkbox" disabled>孤立分片可识别、可安全清理，不影响有效上传。</li><li><input type="checkbox" disabled>状态文件有尺寸和记录数上限。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜日期：—｜schema：—｜故障注入结果：—｜回退：—</p></div>
+          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" checked disabled>故障注入后恢复到新或旧完整记录，不出现零字节有效文件。</li><li><input type="checkbox" checked disabled>孤立分片可识别、可安全清理，不影响有效上传。</li><li><input type="checkbox" checked disabled>状态文件有尺寸和记录数上限。</li></ul></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">已完成</span>｜日期：2026-09-14｜schema：AtomicJsonStore v1，SHA-256 envelope、4 MiB/10,000 记录默认上限、同目录临时文件、fsync、replace、bak 与损坏隔离｜故障注入：replace 失败保留旧完整记录，坏主文件从备份恢复｜测试：断点续传、配置、待归档与原子存储专项通过｜回退：v3.5.1-pre-no-db-baseline</p></div>
         </div>
       </article>
 
-      <article class="task" id="task-P1-03" data-status="pending" data-phase="1">
-        <div class="task-head"><input class="task-check" id="check-P1-03" type="checkbox" disabled><div class="task-title"><h4>P1-03｜FTP 临时名上传、远端校验与最终提交</h4><p><span class="badge high">P1</span>依赖：P0-02、P1-02</p></div></div>
+      <article class="task" id="task-P1-03" data-status="done" data-phase="1">
+        <div class="task-head"><input class="task-check" id="check-P1-03" type="checkbox" checked disabled><div class="task-title"><h4>P1-03｜FTP 临时名上传、远端校验与最终提交</h4><p><span class="badge high">P1</span>依赖：P0-02、P1-02</p></div></div>
         <div class="task-grid">
           <div><h5>目标</h5><p>下游永远看不到使用最终文件名的半文件，失败残留可识别和清理。</p></div>
           <div><h5>主要文件</h5><p><code>src/protocols/ftp.py</code>、FTP 服务端事件处理、传输结果模型。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>为每个文件生成同目录唯一临时名，携带任务 ID，先上传临时对象。</li><li>上传后至少核对远端大小；关键模式可配置 hash 或下载抽验。</li><li>校验通过后使用 FTP rename 提交最终名，并明确同名冲突策略。</li><li>失败时尝试删除/隔离临时对象；服务端 incomplete 回调执行同一隔离规则。</li><li>停止、断线、磁盘满、rename 失败均不得产生最终名半文件。</li></ol></div>
-          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>中断上传时最终文件名不存在。</li><li><input type="checkbox" disabled>校验或 rename 失败时源文件保留并进入可重试状态。</li><li><input type="checkbox" disabled>临时文件可按任务 ID 审计和清理。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜日期：—｜FTP 兼容性：—｜测试：—｜回退：—</p></div>
+          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" checked disabled>中断上传时最终文件名不存在。</li><li><input type="checkbox" checked disabled>校验或 rename 失败时源文件保留并进入可重试状态。</li><li><input type="checkbox" checked disabled>临时文件可按任务 ID 审计和清理。</li></ul></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">已完成</span>｜日期：2026-09-14｜实现：同目录 .part-任务标识、STOR/已发字节/远端 SIZE 三重确认、连接代次复核、rename 最终提交、失败临时对象删除/服务端隔离｜测试：12 个提交专项及真实回环 FTP/FTPS 握手通过；真实现场兼容性列入 P4-03｜回退：v3.5.1-pre-no-db-baseline</p></div>
         </div>
       </article>
 
-      <article class="task" id="task-P1-04" data-status="pending" data-phase="1">
-        <div class="task-head"><input class="task-check" id="check-P1-04" type="checkbox" disabled><div class="task-title"><h4>P1-04｜将 UNC/远程路径探测移出 UI 线程</h4><p><span class="badge high">P1</span>依赖：P0-01</p></div></div>
+      <article class="task" id="task-P1-04" data-status="done" data-phase="1">
+        <div class="task-head"><input class="task-check" id="check-P1-04" type="checkbox" checked disabled><div class="task-title"><h4>P1-04｜将 UNC/远程路径探测移出 UI 线程</h4><p><span class="badge high">P1</span>依赖：P0-01</p></div></div>
         <div class="task-grid">
           <div><h5>目标</h5><p>断开的共享目录不会冻结界面；用户可以取消探测，并获得超时与重试提示。</p></div>
           <div><h5>主要文件</h5><p><code>src/ui/main_window.py</code>、上传/FTP Service；新增有界 <code>PathProbeService</code>。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>把纯字符串关系校验与可能阻塞的 I/O 探测分离。</li><li>远程探测放入受控后台任务，带超时、取消、结果代次和最大并发。</li><li>UI 显示“正在检查/超时/不可达”，旧探测结果不得覆盖新输入。</li><li>启动任务前再做一次后台最终探测；失败不创建 Worker。</li><li>模拟 30 秒不可达 UNC，确认 UI 仍可拖动、关闭和取消。</li></ol></div>
-          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>不可达 UNC 场景 UI 事件循环无明显卡顿。</li><li><input type="checkbox" disabled>探测线程/任务可取消且无泄漏。</li><li><input type="checkbox" disabled>结果代次避免陈旧成功覆盖当前失败输入。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜日期：—｜超时参数：—｜UI 响应证据：—｜回退：—</p></div>
+          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" checked disabled>不可达 UNC 场景 UI 事件循环无明显卡顿。</li><li><input type="checkbox" checked disabled>探测线程/任务可取消且无泄漏。</li><li><input type="checkbox" checked disabled>结果代次避免陈旧成功覆盖当前失败输入。</li></ul></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">已完成</span>｜日期：2026-09-14｜实现：PathProbeService 后台线程池，远端 PowerShell 子进程硬超时，generation/fingerprint 双门禁，取消与 shutdown｜默认超时：2 秒、最大并发 2｜测试：超时、取消旧代次、远端文件操作熔断及 UI 边界通过；真实 30 秒断开共享列入 P4-03｜回退：v3.5.1-pre-no-db-baseline</p></div>
         </div>
       </article>
 
-      <article class="task" id="task-P1-05" data-status="pending" data-phase="1">
-        <div class="task-head"><input class="task-check" id="check-P1-05" type="checkbox" disabled><div class="task-title"><h4>P1-05｜修复归档入队失败与会话内重试</h4><p><span class="badge high">P1</span>依赖：P0-03、P1-01、P1-02</p></div></div>
+      <article class="task" id="task-P1-05" data-status="done" data-phase="1">
+        <div class="task-head"><input class="task-check" id="check-P1-05" type="checkbox" checked disabled><div class="task-title"><h4>P1-05｜修复归档入队失败与会话内重试</h4><p><span class="badge high">P1</span>依赖：P0-03、P1-01、P1-02</p></div></div>
         <div class="task-grid">
           <div><h5>目标</h5><p>上传成功后若归档记录落盘失败，源文件必须被保护，且无需重启即可重试。</p></div>
           <div><h5>主要文件</h5><p><code>src/workers/upload_worker.py</code>、待归档仓储、任务状态机。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>所有 <code>_queue_archive()</code> 调用必须处理结果，失败时状态转为 archive_persist_failed。</li><li>该状态仍占用文件身份键，扫描器不得再次上传。</li><li>建立有界、指数退避的会话内归档重试，记录最后错误与次数。</li><li>超过上限后保留源文件、发出明显告警，支持人工重试。</li><li>重启后从原子记录恢复且保持幂等。</li></ol></div>
-          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>模拟磁盘只读/写失败时不重复上传、不删除源文件。</li><li><input type="checkbox" disabled>权限恢复后无需重启即可完成归档。</li><li><input type="checkbox" disabled>多次恢复执行只产生一次最终归档。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜日期：—｜重试参数：—｜测试：—｜回退：—</p></div>
+          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" checked disabled>模拟磁盘只读/写失败时不重复上传、不删除源文件。</li><li><input type="checkbox" checked disabled>权限恢复后无需重启即可完成归档。</li><li><input type="checkbox" checked disabled>多次恢复执行只产生一次最终归档。</li></ul></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">已完成</span>｜日期：2026-09-14｜实现：archive_persist_failed 状态占用文件身份，失败 outbox、会话内指数退避、人工立即重试、重启恢复、源文件保留｜重试参数：1–30 秒，默认上限 5 次｜测试：首次落盘失败后同会话恢复为 archive_pending，只入队一次且扫描不重复上传｜回退：v3.5.1-pre-no-db-baseline</p></div>
         </div>
       </article>
     </section>
@@ -437,25 +437,25 @@
     <section id="phase2">
       <h2 class="phase-title"><span>PHASE 2</span>彻底移除数据库并替换核心设计</h2>
 
-      <article class="task" id="task-P2-01" data-status="pending" data-phase="2">
-        <div class="task-head"><input class="task-check" id="check-P2-01" type="checkbox" disabled><div class="task-title"><h4>P2-01｜移除全部 SQLite 链路，替换去重与自动清理</h4><p><span class="badge critical">P0</span><span class="badge db">无数据库核心</span>依赖：P0-04、P1-01、P1-02、P1-05</p></div></div>
+      <article class="task" id="task-P2-01" data-status="done" data-phase="2">
+        <div class="task-head"><input class="task-check" id="check-P2-01" type="checkbox" checked disabled><div class="task-title"><h4>P2-01｜移除全部 SQLite 链路，替换去重与自动清理</h4><p><span class="badge critical">P0</span><span class="badge db">无数据库核心</span>依赖：P0-04、P1-01、P1-02、P1-05</p></div></div>
         <div class="task-grid">
           <div><h5>目标</h5><p>生产代码、组合根、发布探针、依赖和发布包中均不存在数据库；现场功能仍可用且资源有界。</p></div>
           <div><h5>主要文件</h5><p><code>src/main.py</code>、两个 index repository、清理/去重 Service、Worker、测试、构建规格与文档。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>删除 <code>CleanupIndexRepository</code>、<code>DedupIndexRepository</code> 的生产引用、构造、关闭、发布探针和文件清理逻辑。</li><li>同名目标判断采用即时 size/hash 校验；跨文件名去重默认关闭。</li><li>若现场必须启用跨名去重，仅提供单次运行期、有容量上限的内存 LRU <code>(size, hash) -&gt; path</code>，重启后自然失效。</li><li>自动清理默认关闭；启用时每次触发执行流式目录扫描，按有界批次选择最老文件，每个文件删除前复核身份。</li><li>每批删除后重新读取磁盘空间，达到目标即停止；磁盘检查失败必须失败关闭。</li><li>使用原子 JSONL 写入只追加审计和本次运行摘要，不提供跨运行索引查询。</li><li>删除数据库文件生成、迁移、备份和打包残留；把原数据库测试替换为无数据库行为测试。</li></ol></div>
-          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled><code>src/</code> 中搜索 sqlite3、cleanup_index、dedup_index、数据库后缀无生产命中。</li><li><input type="checkbox" disabled>全新运行目录执行上传和清理不会生成 <code>.db</code>/<code>.sqlite3</code>。</li><li><input type="checkbox" disabled>10 万文件模拟扫描的内存和时间在设定上限内。</li><li><input type="checkbox" disabled>磁盘 API 失败时不删除文件、不继续上传。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜日期：—｜删除组件：—｜资源测试：—｜发布包扫描：—｜回退：—</p></div>
+          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" checked disabled><code>src/</code> 中搜索 sqlite3、cleanup_index、dedup_index、数据库后缀无生产命中。</li><li><input type="checkbox" checked disabled>全新运行目录执行上传和清理不会生成 <code>.db</code>/<code>.sqlite3</code>。</li><li><input type="checkbox" checked disabled>10 万文件模拟扫描的内存和时间在设定上限内。</li><li><input type="checkbox" checked disabled>磁盘 API 失败时不删除文件、不继续上传。</li></ul></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">已完成</span>｜日期：2026-09-14｜删除组件：CleanupIndexRepository、DedupIndexRepository 及生产组合根引用已移除；去重冻结为 off，清理改为流式有界扫描｜资源测试：100,000 候选仅保留 100 条最旧批次｜发布包扫描：路径、ZIP 与 PyInstaller 模块均无数据库命中，隔离启动无数据库文件｜回退：v3.4.2 独立回退包明确非无数据库版</p></div>
         </div>
       </article>
 
-      <article class="task" id="task-P2-02" data-status="pending" data-phase="2">
-        <div class="task-head"><input class="task-check" id="check-P2-02" type="checkbox" disabled><div class="task-title"><h4>P2-02｜合并手动/自动清理的扫描、身份与删除逻辑</h4><p><span class="badge high">P1</span>依赖：P0-04、P2-01</p></div></div>
+      <article class="task" id="task-P2-02" data-status="done" data-phase="2">
+        <div class="task-head"><input class="task-check" id="check-P2-02" type="checkbox" checked disabled><div class="task-title"><h4>P2-02｜合并手动/自动清理的扫描、身份与删除逻辑</h4><p><span class="badge high">P1</span>依赖：P0-04、P2-01</p></div></div>
         <div class="task-grid">
           <div><h5>目标</h5><p>清理只有一条权威执行管线，手动和自动入口仅提供不同参数与确认策略。</p></div>
           <div><h5>主要文件</h5><p><code>src/services/cleanup_service.py</code>、清理控制器、磁盘清理对话框、清理模型。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>抽取流式候选扫描器、保护规则、排序/批次选择器、身份复核器和删除执行器。</li><li>人工预览与自动清理共享候选定义，防止预览和实际删除不一致。</li><li>统一空间目标、最小保留时间、扩展名、保护目录和错误策略。</li><li>每批返回结构化结果：已删除、跳过、已变化、失败、释放空间。</li><li>删除旧的重复私有方法和不可达分支。</li></ol></div>
-          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>相同输入下手动与自动候选集合一致。</li><li><input type="checkbox" disabled>执行中被替换的文件进入“已变化”，不被删除。</li><li><input type="checkbox" disabled>清理服务不存在两套文件身份或删除实现。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜日期：—｜移除重复：—｜一致性测试：—｜回退：—</p></div>
+          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" checked disabled>相同输入下手动与自动候选集合一致。</li><li><input type="checkbox" checked disabled>执行中被替换的文件进入“已变化”，不被删除。</li><li><input type="checkbox" checked disabled>清理服务不存在两套文件身份或删除实现。</li></ul></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">已完成</span>｜日期：2026-09-14｜实现：iter_cleanup_candidates、CleanupCandidate、统一 mtime_ns/file-id 复核、SafeDeletionPolicy、全局最旧排序和结构化结果｜一致性测试：手动/自动身份字段与候选集合一致；扫描后替换在两入口均保留｜移除重复：UI 不直接扫描/删除，架构边界测试通过｜回退：v3.5.1-pre-no-db-baseline</p></div>
         </div>
       </article>
     </section>
@@ -463,47 +463,47 @@
     <section id="phase3">
       <h2 class="phase-title"><span>PHASE 3</span>维护性收敛与单一事实源</h2>
 
-      <article class="task" id="task-P3-01" data-status="pending" data-phase="3">
-        <div class="task-head"><input class="task-check" id="check-P3-01" type="checkbox" disabled><div class="task-title"><h4>P3-01｜合并网络暂停、恢复与人工暂停状态</h4><p><span class="badge high">P1</span>依赖：P1-01、P1-04</p></div></div>
+      <article class="task" id="task-P3-01" data-status="done" data-phase="3">
+        <div class="task-head"><input class="task-check" id="check-P3-01" type="checkbox" checked disabled><div class="task-title"><h4>P3-01｜合并网络暂停、恢复与人工暂停状态</h4><p><span class="badge high">P1</span>依赖：P1-01、P1-04</p></div></div>
         <div class="task-grid">
           <div><h5>目标</h5><p>网络监控、外层循环和单文件等待不再各自维护暂停逻辑，自动恢复绝不覆盖人工暂停。</p></div>
           <div><h5>主要文件</h5><p><code>src/workers/upload_worker.py</code>、网络监控器、Controller/UI 状态展示。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>定义唯一 <code>PauseState</code>，至少区分 manual、network、disk、stopping 原因，可组合而非单布尔值。</li><li>网络线程只发布连接事件；状态机决定暂停/恢复。</li><li>主循环和单文件流程只查询统一取消令牌与状态，不自行改状态。</li><li>加抖动/滞回，避免网络波动频繁暂停恢复。</li><li>删除重复的连接检查和自动恢复分支。</li></ol></div>
-          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>人工暂停期间网络恢复不会继续上传。</li><li><input type="checkbox" disabled>网络抖动测试无任务丢失、重复执行或死锁。</li><li><input type="checkbox" disabled>界面状态与实际 Worker 状态一致。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜日期：—｜删除重复位置：—｜并发测试：—｜回退：—</p></div>
+          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" checked disabled>人工暂停期间网络恢复不会继续上传。</li><li><input type="checkbox" checked disabled>网络抖动测试无任务丢失、重复执行或死锁。</li><li><input type="checkbox" checked disabled>界面状态与实际 Worker 状态一致。</li></ul></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">已完成</span>｜日期：2026-09-14｜实现：PauseState 组合管理 manual/network/disk/stopping，网络恢复只清 network；连续两次健康样本后恢复｜测试：人工暂停不被网络恢复覆盖、抖动/远端超时/Controller 状态通过｜现场真实抖动与服务重启：列入 P4-03｜回退：v3.5.1-pre-no-db-baseline</p></div>
         </div>
       </article>
 
-      <article class="task" id="task-P3-02" data-status="pending" data-phase="3">
-        <div class="task-head"><input class="task-check" id="check-P3-02" type="checkbox" disabled><div class="task-title"><h4>P3-02｜以类型化配置作为唯一事实源</h4><p><span class="badge high">P1</span>依赖：P2-01、P3-01</p></div></div>
+      <article class="task" id="task-P3-02" data-status="done" data-phase="3">
+        <div class="task-head"><input class="task-check" id="check-P3-02" type="checkbox" checked disabled><div class="task-title"><h4>P3-02｜以类型化配置作为唯一事实源</h4><p><span class="badge high">P1</span>依赖：P2-01、P3-01</p></div></div>
         <div class="task-grid">
           <div><h5>目标</h5><p>默认值、校验、保存、加载和运行请求不再分别维护字段映射；无效选项不得继续出现在现场 UI。</p></div>
           <div><h5>主要文件</h5><p><code>src/config.py</code>、设置模型、<code>src/ui/main_window.py</code>、Controller/Service、协议默认值。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>确定 <code>ApplicationSettings</code> 为唯一模型，集中默认值、范围、枚举和版本迁移。</li><li>UI 提供 <code>to_settings()</code>/<code>apply_settings()</code>，删除手工 raw dict 映射。</li><li>Controller/Service 接收类型化设置或不可变请求，不再散取配置键。</li><li>审计 <code>monitor_mode</code>、<code>enable_resume</code> 等字段：实现、隐藏或删除，禁止“保存了但不生效”。</li><li>配置落盘使用 P1-02 的原子存储，敏感字段单独处理。</li></ol></div>
-          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>每个用户可见字段只有一个默认值和一个校验定义。</li><li><input type="checkbox" disabled>配置往返测试无丢字段、类型漂移或假生效。</li><li><input type="checkbox" disabled>旧配置可安全迁移，损坏配置可回退默认并告警。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜日期：—｜配置 schema：—｜迁移测试：—｜回退：—</p></div>
+          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" checked disabled>每个用户可见字段只有一个默认值和一个校验定义。</li><li><input type="checkbox" checked disabled>配置往返测试无丢字段、类型漂移或假生效。</li><li><input type="checkbox" checked disabled>旧配置可安全迁移，损坏配置可回退默认并告警。</li></ul></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">已完成</span>｜日期：2026-09-14｜配置模型：ApplicationSettings 聚合 Upload/Cleanup/FTP/Auth，集中默认、范围、枚举、旧键清理与未知字段保留；原子仓储落盘｜密码真源：AuthController，常规保存 preserve users｜测试：默认/旧/损坏/未知字段/密码/类型往返通过｜回退：v3.5.1-pre-no-db-baseline</p></div>
         </div>
       </article>
 
-      <article class="task" id="task-P3-03" data-status="pending" data-phase="3">
-        <div class="task-head"><input class="task-check" id="check-P3-03" type="checkbox" disabled><div class="task-title"><h4>P3-03｜按职责拆分超大函数和重复逻辑</h4><p><span class="badge">P2</span>依赖：P2-02、P3-01、P3-02</p></div></div>
+      <article class="task" id="task-P3-03" data-status="done" data-phase="3">
+        <div class="task-head"><input class="task-check" id="check-P3-03" type="checkbox" checked disabled><div class="task-title"><h4>P3-03｜按职责拆分超大函数和重复逻辑</h4><p><span class="badge">P2</span>依赖：P2-02、P3-01、P3-02</p></div></div>
         <div class="task-grid">
           <div><h5>目标</h5><p>在行为已有测试保护后，降低 <code>main_window.py</code>、<code>disk_cleanup_dialog.py</code>、<code>upload_worker.py</code> 的修改风险。</p></div>
           <div><h5>主要文件</h5><p>三大文件及新建的窄职责模块；禁止同时重做 UI 风格或架构。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>用重复证据表标记“同逻辑不同命名”：网络检查、路径映射、删除复核、配置装配、任务统计。</li><li>优先抽取纯函数和策略对象，再抽取 I/O 协调器；每次只移动一个职责。</li><li>Worker 保留线程生命周期，业务状态转移交给状态机；Window 保留视图绑定，组装交给 Controller/mapper。</li><li>每次移动前后运行字符化行为测试，避免顺手改行为。</li><li>为关键公开接口补模块级说明和所有权边界。</li></ol></div>
-          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>高风险函数有单一职责，主流程可在一屏内读懂。</li><li><input type="checkbox" disabled>重复策略实现被删除，调用点只剩参数差异。</li><li><input type="checkbox" disabled>完整测试与现场回归无行为变化。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜日期：—｜重复减少清单：—｜测试：—｜回退：—</p></div>
+          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" checked disabled>高风险函数有单一职责，主流程可在一屏内读懂。</li><li><input type="checkbox" checked disabled>重复策略实现被删除，调用点只剩参数差异。</li><li><input type="checkbox" checked disabled>完整测试与现场回归无行为变化。</li></ul></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">已完成</span>｜日期：2026-09-14｜职责拆分：Window 保留视图绑定，Controller 编排流程，Service/Repository 管 I/O 生命周期，Worker 保留线程主流程；路径探测、任务状态、暂停、文件身份、删除和原子存储均为窄模块｜重复减少：UI 直接 I/O、重复删除/身份/配置策略移除｜测试：9 个静态架构边界及完整 184 用例通过｜回退：v3.5.1-pre-no-db-baseline</p></div>
         </div>
       </article>
 
-      <article class="task" id="task-P3-04" data-status="pending" data-phase="3">
-        <div class="task-head"><input class="task-check" id="check-P3-04" type="checkbox" disabled><div class="task-title"><h4>P3-04｜清理死代码、失效配置和过期文档</h4><p><span class="badge">P2</span>依赖：P3-02、P3-03</p></div></div>
+      <article class="task" id="task-P3-04" data-status="done" data-phase="3">
+        <div class="task-head"><input class="task-check" id="check-P3-04" type="checkbox" checked disabled><div class="task-title"><h4>P3-04｜清理死代码、失效配置和过期文档</h4><p><span class="badge">P2</span>依赖：P3-02、P3-03</p></div></div>
         <div class="task-grid">
           <div><h5>目标</h5><p>移除会误导维护者或产生假功能的残留，包括无调用方法、数据库说明和未接线开关。</p></div>
           <div><h5>主要范围</h5><p><code>_simple_copy</code>、数据库残留、未使用 import、旧配置键、README/发布说明/测试夹具。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>用静态搜索和引用检查建立候选清单，每项先证明无调用或已被替代。</li><li>删除失效开关；现场仍需要的功能必须真正接线并有测试，不能只保留 UI。</li><li>更新架构图、配置说明、运行目录说明和故障恢复手册，明确无数据库。</li><li>重新执行数据库关键词门禁、未使用代码检查和完整测试。</li></ol></div>
-          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>无“可配置但运行时忽略”的已知字段。</li><li><input type="checkbox" disabled>文档、UI、默认配置与实际行为一致。</li><li><input type="checkbox" disabled>数据库残留门禁通过。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜日期：—｜删除清单：—｜文档：—｜回退：—</p></div>
+          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" checked disabled>无“可配置但运行时忽略”的已知字段。</li><li><input type="checkbox" checked disabled>文档、UI、默认配置与实际行为一致。</li><li><input type="checkbox" checked disabled>数据库残留门禁通过。</li></ul></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">已完成</span>｜日期：2026-09-14｜删除清单：数据库仓储/迁移、_simple_copy、monitor_mode、enable_resume、resume_min_size_mb、auto_delete_keep_days、恒 false 的自动清理冻结分支｜文档：README、运维、发布验证、现场清单、回退说明与本方案对齐｜门禁：源码/包数据库扫描、compileall、diff check 通过｜回退：v3.5.1-pre-no-db-baseline</p></div>
         </div>
       </article>
     </section>
@@ -511,25 +511,25 @@
     <section id="phase4">
       <h2 class="phase-title"><span>PHASE 4</span>验证、构建与现场放行</h2>
 
-      <article class="task" id="task-P4-01" data-status="pending" data-phase="4">
-        <div class="task-head"><input class="task-check" id="check-P4-01" type="checkbox" disabled><div class="task-title"><h4>P4-01｜补齐故障注入、并发和长稳测试矩阵</h4><p><span class="badge high">P1</span>依赖：P3-04</p></div></div>
+      <article class="task" id="task-P4-01" data-status="done" data-phase="4">
+        <div class="task-head"><input class="task-check" id="check-P4-01" type="checkbox" checked disabled><div class="task-title"><h4>P4-01｜补齐故障注入、并发和长稳测试矩阵</h4><p><span class="badge high">P1</span>依赖：P3-04</p></div></div>
         <div class="task-grid">
           <div><h5>目标</h5><p>把已发现的现场故障全部变成可重复回归测试，并验证系统在异常后可恢复。</p></div>
           <div><h5>测试矩阵</h5><p>SMB/FTP 断线与抖动、双协议部分失败、同路径快速覆盖、状态写入断电、UNC 超时、回收站失败、磁盘 API 失败、停止/恢复。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>每个历史缺陷至少保留一个“修复前失败、修复后通过”的回归用例。</li><li>为任务状态机做序列/性质测试：每个已归档任务必有已验证上传，任何失败都不删除源。</li><li>建立可控假时钟、假文件系统/FTP 服务和故障注入点，减少靠 sleep 的不稳定测试。</li><li>执行重复 100 次并发测试和不同随机种子测试，记录失败率。</li><li>定义日志断言：错误必须包含任务 ID、文件身份、阶段和可操作原因。</li></ol></div>
-          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>全部历史复现均有自动回归覆盖。</li><li><input type="checkbox" disabled>并发/随机测试无偶发误报成功、重复归档或源文件丢失。</li><li><input type="checkbox" disabled>测试无需真实数据库且不会生成数据库文件。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜日期：—｜用例数：—｜100 次结果：—｜回退：—</p></div>
+          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" checked disabled>全部历史复现均有自动回归覆盖。</li><li><input type="checkbox" checked disabled>并发/随机测试无偶发误报成功、重复归档或源文件丢失。</li><li><input type="checkbox" checked disabled>测试无需真实数据库且不会生成数据库文件。</li></ul></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">已完成（本地矩阵）</span>｜日期：2026-09-14｜用例：完整收集 184 项，覆盖 FTP/FTPS、路径、状态机、原子状态、归档、UNC、暂停、清理、权限、生命周期、UI 与发布工具｜100 次结果：状态机 100 轮×8 线程唯一认领，无重复或丢失｜故障注入：断线、rename、replace、审计、回收站、磁盘 API、线程退出均通过｜24–72 小时真实长稳：属于 P4-03，仍待现场</p></div>
         </div>
       </article>
 
-      <article class="task" id="task-P4-02" data-status="pending" data-phase="4">
-        <div class="task-head"><input class="task-check" id="check-P4-02" type="checkbox" disabled><div class="task-title"><h4>P4-02｜固定依赖与可复现打包，执行无数据库发布扫描</h4><p><span class="badge high">P1</span><span class="badge db">无数据库门禁</span>依赖：P4-01</p></div></div>
+      <article class="task" id="task-P4-02" data-status="done" data-phase="4">
+        <div class="task-head"><input class="task-check" id="check-P4-02" type="checkbox" checked disabled><div class="task-title"><h4>P4-02｜固定依赖与可复现打包，执行无数据库发布扫描</h4><p><span class="badge high">P1</span><span class="badge db">无数据库门禁</span>依赖：P4-01</p></div></div>
         <div class="task-grid">
           <div><h5>目标</h5><p>开发测试环境与现场打包环境一致，构建物不夹带 SQLite、旧数据库文件或未声明依赖。</p></div>
           <div><h5>主要范围</h5><p>依赖锁定文件、虚拟环境说明、PyInstaller spec、构建脚本、发布扫描脚本。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>记录并锁定 Python、PySide6、pyftpdlib、pyOpenSSL、Send2Trash、测试工具版本。</li><li>在干净虚拟环境安装锁定依赖并运行完整测试，不再混用系统 Python。</li><li>审阅 PyInstaller hidden imports/data，显式排除数据库模块和历史数据文件。</li><li>对源码、构建目录、归档包和首次运行目录执行关键词、扩展名和模块清单扫描。</li><li>生成构建清单、SHA-256、依赖清单与复现命令。</li></ol></div>
-          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>干净环境从零安装、测试、打包一次成功。</li><li><input type="checkbox" disabled>发布包与首次运行目录无 SQLite 模块引用和数据库文件。</li><li><input type="checkbox" disabled>同一锁定输入可生成行为一致的包并有校验值。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜日期：—｜Python/依赖锁：—｜包哈希：—｜扫描：—｜回退：—</p></div>
+          <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" checked disabled>干净环境从零安装、测试、打包一次成功。</li><li><input type="checkbox" checked disabled>发布包与首次运行目录无 SQLite 模块引用和数据库文件。</li><li><input type="checkbox" checked disabled>同一锁定输入可生成行为一致的包并有校验值。</li></ul></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">已完成</span>｜日期：2026-09-14｜Python/依赖锁：3.13.5；PySide6 6.10.0、pyftpdlib 2.1.0、pyOpenSSL 26.4.0、Send2Trash 2.1.0、PyInstaller 6.12.0、pytest 9.0.2、pyright 1.1.411、psutil 7.0.0、anyio 4.11.0｜独立环境：从零安装，183 passed、1 skipped、5 subtests｜候选 EXE SHA-256：6E67CE0E30F52A191E141465A72F2F802DFE0CA08B00563F607B84010E206535；ZIP 以侧车为准｜扫描：清单、ZIP、运行产物、数据库路径/内嵌模块全部通过；隔离 smoke 9/9</p></div>
         </div>
       </article>
 
@@ -540,7 +540,7 @@
           <div><h5>验收环境</h5><p>干净 Windows、真实 SMB/FTP、现场相同权限和目录结构、最大文件、断网/恢复、磁盘空间压力。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>在无开发环境的干净机器安装并执行首次启动、配置、上传、停止、重启。</li><li>执行双协议部分失败、网络抖动、服务端重启、同名冲突和最大文件测试。</li><li>运行 24–72 小时：监控句柄、线程、内存、CPU、日志增长、队列长度和临时文件。</li><li>期间至少执行一次进程强杀和机器断电/重启演练，核对恢复记录及源/目标文件。</li><li>逐文件对账：发现数、成功提交数、待重试数、归档数、失败数必须守恒。</li></ol></div>
           <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>零误报成功、零错移/误删、零未解释的重复上传。</li><li><input type="checkbox" disabled>资源曲线无持续泄漏，日志和状态文件受控。</li><li><input type="checkbox" disabled>强杀/断电后可自动或人工明确恢复，账目守恒。</li><li><input type="checkbox" disabled>现场负责人签署验收记录。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜开始/结束：—｜机器：—｜文件规模：—｜资源峰值：—｜异常与结论：—</p></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待现场执行</span>｜准备完成：2026-09-14｜工具：field_tools/release_soak_test.py、field_tools/validate_v351_field_acceptance.py、docs/field_evidence.template.json、V351_MANUAL_TEST_CHECKLIST.md｜待测：干净 Windows、真实 SMB/FTP/FTPS、最大文件、网络抖动/服务重启、同名代际、磁盘压力/回收站失败、强杀/断电、至少 24 小时长稳和逐文件对账｜当前结论：NO-GO</p></div>
         </div>
       </article>
 
@@ -551,7 +551,7 @@
           <div><h5>交付物</h5><p>最终安装包、哈希、版本标签、依赖清单、配置模板、运维手册、测试报告、回退包和本 HTML 完整记录。</p></div>
           <div class="wide"><h5>实施步骤</h5><ol><li>确认前 19 个顶层任务均已勾选且证据可追溯，无跳项或临时豁免。</li><li>冻结最终提交与包哈希，更新版本/变更日志，标注“无数据库版”。</li><li>准备一键或明确步骤的回退包；演练回退，不覆盖现场源文件与配置备份。</li><li>定义运行红线：连续失败、状态损坏、磁盘检查失败、重复上传等触发停机。</li><li>由开发与现场负责人共同签署 GO；任一关键门禁未过即保持 NO-GO。</li></ol></div>
           <div class="wide acceptance"><h5>验收标准</h5><ul class="subcheck"><li><input type="checkbox" disabled>20 项任务、证据、提交和包哈希相互对应。</li><li><input type="checkbox" disabled>回退演练成功且数据无损。</li><li><input type="checkbox" disabled>最终结论、签署人、日期和适用现场已填写。</li></ul></div>
-          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待执行</span>｜发布日期：—｜版本/标签：—｜包哈希：—｜GO 签署：—｜回退包：—</p></div>
+          <div class="wide tracking"><h5>执行记录</h5><p>状态：<span class="status-label">待 P4-03 与双签</span>｜候选冻结：2026-09-14｜候选：ImageUploadTool_v3.5.1_no_database_release.zip，ZIP 哈希以侧车为准，EXE SHA-256=6E67CE0E30F52A191E141465A72F2F802DFE0CA08B00563F607B84010E206535｜回退包：ImageUploadTool_v3.4.2_rollback.zip，基于 1322bf3，已通过本机 5 秒启动预检，现场演练待执行｜GO 签署：未签署｜当前结论：NO-GO</p></div>
         </div>
       </article>
     </section>

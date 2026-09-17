@@ -2,16 +2,18 @@
 
 本记录是 P4-03 与 P4-04 的现场证据表。只允许填写实际执行结果；本机回环测试、开发机截图或推断不能替代任何现场项。
 
+逐步操作与登录/改密专项见 `docs/V351_MANUAL_TEST_CHECKLIST.md`；机器可读模板见 `docs/field_evidence.template.json`。
+
 ## 输入与冻结物
 
 - 候选包：`release_candidate/ImageUploadTool_v3.5.1_no_database_release.zip`
-- 候选包 SHA-256：`307267F76807F502F2DAB56E985A060CACB1B2A47CED93199F9858FB4E14459B`
-- 候选 EXE SHA-256：`2DDB5A5179DB766BB653EAB1A3931B34233A8BD9CF6DE77358E9874469BC84C9`
-- 回退包：`release_candidate/ImageUploadTool_v3.5.0_rollback.zip`
-- 回退包 SHA-256：`A9642202E0DF23CBCCEF4401D6D5DBD279D50921C19156346D4219E659ACAFD0`
-- 回退 EXE SHA-256：`4304CB993A57CE4CEB7214EC7E103E11D67615D57CAF8A427785622311DA3DA1`
-- 发布证据归档：`release_candidate/v3.5.1_no_database_release_bundle_canonical_v24.zip`
-- 发布证据归档 SHA-256：见归档旁的 `release_candidate/v3.5.1_no_database_release_bundle_canonical_v24.zip.sha256` 侧车文件（归档内容不自引用自身哈希）。
+- 候选包 SHA-256：以同目录 `ImageUploadTool_v3.5.1_no_database_release.zip.sha256` 侧车文件为准；现场核验时必须重新计算并比对
+- 候选 EXE SHA-256：`6E67CE0E30F52A191E141465A72F2F802DFE0CA08B00563F607B84010E206535`
+- 回退包：`release_candidate/ImageUploadTool_v3.4.2_rollback.zip`（基于最后一个可复现稳定提交 `1322bf3`，不是无数据库版）
+- 回退包 SHA-256：`B2AD7AF275DA55BB59D1719BDB337EBAEC67C0EE36D2EAA0E1DEEC90EB4BDD84`
+- 回退 EXE SHA-256：`852182EF323463D713FFAF57B2B19A920E40133B56130D60401A703B16C36073`
+- 发布证据归档：待本轮现场证据完成后生成，禁止沿用旧候选归档
+- 发布证据归档 SHA-256：生成后以归档旁的 `.sha256` 侧车文件为准（归档内容不自引用自身哈希）
 - 候选清单：候选目录内 `release_manifest.json`
 - 配置模板：候选目录内 `config.template.json`
 - 验证方式：按本表现场逐项执行，并由发布负责人复核证据归档
@@ -30,11 +32,11 @@
 | 网络抖动与服务端重启 | 传输中断开/恢复网络并重启服务器 | 自动暂停和明确恢复；无重复归档或源丢失 | 待填写 |
 | 同名冲突与覆盖 | 同一相对路径生成不同代际文件 | 以精确文件身份处理；新代际不被旧任务删除 | 待填写 |
 | 强杀与机器重启 | 传输/归档中结束进程并重启机器 | 状态记录恢复；源、目标、待重试、归档账目守恒 | 待填写 |
-| 磁盘压力与回收站失败 | 制造低空间、磁盘 API 失败和回收站失败 | 上传暂停；自动清理失败关闭；源文件保留 | 待填写 |
+| 磁盘压力与回收站失败 | 由管理员启用自动清理，制造低空间、磁盘 API 失败和回收站失败 | 达阈值时触发；故障时安全停止且不降级为永久删除；源文件保留 | 待填写 |
 | 24–72 小时长稳 | 使用最终包、真实网络运行以下命令 | 资源无持续增长，日志/状态受控，队列可解释 | 待填写 |
 
 ```powershell
-python tools\release_soak_test.py `
+python field_tools\release_soak_test.py `
   --exe "C:\Release\ImageUploadTool_v3.5.1\ImageUploadTool_v3.5.1.exe" `
   --duration-seconds 86400 `
   --sample-interval 30 `
@@ -54,7 +56,7 @@ python tools\release_soak_test.py `
 将实际现场结果按校验器 schema 写入 `field_evidence.json`，然后执行：
 
 ```powershell
-python tools\validate_v351_field_acceptance.py `
+python field_tools\validate_v351_field_acceptance.py `
   --evidence .\field_evidence.json `
   --candidate-zip .\release_candidate\ImageUploadTool_v3.5.1_no_database_release.zip `
   --output .\field_evidence_validation.json
@@ -73,13 +75,9 @@ python tools\validate_v351_field_acceptance.py `
 3. 仅在管理员确认配置字段兼容后，复制配置副本；先以停止状态启动并检查路径，再允许上传。
 4. 上传一个非生产测试文件，核对目标和备份；失败时停止并恢复原目录，不操作源文件。
 
-回退演练结果：本机独立目录启动验证通过（5 秒运行、无 `startup-error.log`）；未执行真实现场配置迁移、测试上传和数据无损回退，故现场回退门禁仍为 `待填写`。证据路径：`.local_acceptance_20260912155636173/rollback/`。
+开发机回退启动预检：v3.4.2 独立副本运行 5 秒仍存活且无 `startup-error.log`。构建时只应用 `V342_ROLLBACK_PACKAGING_PATCH.diff` 的 Qt/ICU 兼容修正；尚未执行真实现场配置迁移、测试上传和数据无损回退，故现场回退门禁仍为 `待填写`。
 
-本机发布包隔离启动证据：`.local_acceptance_20260912155636173/release_soak_10s.json`，10 秒探针通过（exit 0、13 samples、RSS 增长约 5.4 MiB、线程增长 0、句柄增长 -1、无残留进程）。该证据不替代 P4-03 的真实 SMB/FTP、断网/恢复、强杀/断电及 24–72 小时验收。回退包不支持 `IMAGE_UPLOAD_SMOKE_TEST` 探针环境变量，使用该脚本会超时，不能作为回退包长稳结论。
-
-本机补充矩阵：`.local_acceptance_20260912155636173/p4_03_local_matrix/`，`44 passed, 1 skipped`，覆盖路径安全、FTP 提交、文件代际、原子状态、安全清理和无数据库专项；该结果仍不替代真实现场网络、断电和负责人签署。
-
-现场前置检查：`.local_acceptance_20260912155636173/field_preflight_20260913_rerun.json`。本机 LanmanServer/LanmanWorkstation 均为 Running，但未提供真实 SMB/FTP 主机，网络探针按规则跳过，不能作为现场验收通过。
+候选包隔离 smoke：最终候选副本 exit 0，9 项发布检查全部通过，无数据库文件和 `startup-error.log`。完整本地结果见 `V351_RELEASE_VERIFICATION.md`；这些结果不替代本表的真实网络、断电和负责人签署。
 
 ### 运行红线
 
