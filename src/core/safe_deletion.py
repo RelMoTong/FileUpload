@@ -14,7 +14,12 @@ IdentityVerifier = Callable[[], tuple[bool, str]]
 
 
 def trash_supported() -> bool:
-    """判断当前环境是否具备回收站删除能力。"""
+    """判断当前环境是否具备回收站删除能力。
+
+    用途：自动清理和手动回收站模式启动前的安全能力检查。
+    输出：安装 ``send2trash`` 时可跨平台支持；Windows 可使用后备 Shell API。
+    风险点：返回真不代表某个具体路径一定可移入回收站，真实删除仍可能失败并保留文件。
+    """
     try:
         from send2trash import send2trash  # noqa: F401
         return True
@@ -61,6 +66,7 @@ def send_to_trash(path: str) -> None:
 
 @dataclass(frozen=True)
 class SafeDeletionRequest:
+    """一次删除所需的完整安全上下文；调用方必须提供身份复核函数。"""
     path: str
     allowed_roots: tuple[str, ...]
     identity_verifier: IdentityVerifier
@@ -71,13 +77,21 @@ class SafeDeletionRequest:
 
 @dataclass(frozen=True)
 class SafeDeletionResult:
+    """删除策略的非异常结果，包含是否成功、机器可读状态码和用户可读说明。"""
     success: bool
     status: str
     message: str
 
 
 class SafeDeletionPolicy:
-    """执行经过身份复核的删除，任何失败都不自动降级为永久删除。"""
+    """执行经过身份复核的删除，任何失败都不自动降级为永久删除。
+
+    用途：为手动清理和上传后归档提供同一套 fail-closed 删除边界。
+    输入：目录范围、身份复核、模式、授权和自动/手动标记。
+    输出：不向上泄漏底层删除异常的结构化结果。
+    关键步骤：路径范围 → 授权 → 身份 → 回收站能力 → 实际操作。
+    风险点：顺序不能颠倒；真实删除动作必须永远是最后一步。
+    """
 
     def __init__(
         self,
@@ -85,6 +99,7 @@ class SafeDeletionPolicy:
         move_to_trash: Callable[[str], None] | None = None,
         remove_file: Callable[[str], None] | None = None,
     ) -> None:
+        """注入可替换的回收站/永久删除实现，默认使用生产实现，便于单元测试。"""
         self._is_trash_available = is_trash_available or trash_supported
         self._move_to_trash = move_to_trash or send_to_trash
         self._remove_file = remove_file or os.remove
@@ -135,7 +150,13 @@ class SafeDeletionPolicy:
 
     @staticmethod
     def _is_allowed_file(path: str, allowed_roots: tuple[str, ...]) -> bool:
-        """规范化真实路径后，确认待删对象是允许目录下的普通文件。"""
+        """规范化真实路径后，确认待删对象是允许目录下的普通文件。
+
+        用途：阻止 ``..``、符号链接、跨盘路径或扫描范围外路径进入删除操作。
+        输入：候选文件路径和本次已验证过的允许根目录。
+        输出：路径真实位于任一根目录下且为普通文件时返回 ``True``。
+        风险点：不同 Windows 磁盘比较公共路径会抛异常，必须安全跳过该根目录。
+        """
         if not allowed_roots or not path or not os.path.isfile(path):
             return False
         candidate = os.path.normcase(os.path.realpath(os.path.abspath(path)))

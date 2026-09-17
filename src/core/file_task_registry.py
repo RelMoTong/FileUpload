@@ -16,6 +16,11 @@ from .file_identity import FileIdentity, normalize_file_path
 
 
 class FileTaskState(str, Enum):
+    """一代文件在上传会话中的状态集合。
+
+    状态顺序不是简单线性：``RETRY_WAIT`` 会重新领取到 ``UPLOADING``，``STALE`` 表示
+    同路径文件已经换代，旧任务不能再继续；状态变化由 ``FileTaskRegistry`` 的锁保护。
+    """
     DISCOVERED = "discovered"
     WAITING = "waiting"
     UPLOADING = "uploading"
@@ -30,6 +35,11 @@ class FileTaskState(str, Enum):
 
 @dataclass
 class FileTask:
+    """单个精确文件代际的内存任务记录。
+
+    ``identity`` 是不可变安全快照；其余字段记录本次会话中的状态、退避时间和双协议结果。
+    该对象不落盘，进程重启后的恢复交给续传记录和待归档日志。
+    """
     identity: FileIdentity
     state: FileTaskState
     retry_count: int = 0
@@ -50,6 +60,7 @@ class FileTaskRegistry:
     """
 
     def __init__(self) -> None:
+        """创建可重入锁和空任务表；可重入锁允许内部方法在同一线程嵌套调用。"""
         self._lock = threading.RLock()
         self._tasks: Dict[str, FileTask] = {}
 
@@ -115,7 +126,11 @@ class FileTaskRegistry:
             return True
 
     def should_skip_scan(self, identity: FileIdentity) -> bool:
-        """同一代际已有进行中或终态记录时返回真，扫描器应跳过它。"""
+        """同一代际已有记录时返回真，扫描器应跳过它。
+
+        用途：避免上传、等待重试、待归档或已完成的同一代文件被下一轮扫描重复处理。
+        风险点：这是会话内门禁，不负责重启恢复；归档日志门禁会覆盖跨进程情况。
+        """
         with self._lock:
             task = self._tasks.get(self._key(identity))
             return task is not None
@@ -128,7 +143,11 @@ class FileTaskRegistry:
         reason: str = "",
         protocol_results: Optional[Dict[str, bool]] = None,
     ) -> FileTask:
-        """更新任务状态，并可选地保存各上传协议的执行结果。"""
+        """更新任务状态，并可选地保存各上传协议的执行结果。
+
+        用途：统一记录上传、归档和异常分支的状态变化。
+        风险点：调用方必须传入当前精确身份，不能通过路径查找后修改另一个代际。
+        """
         with self._lock:
             task = self.discover(identity)
             if protocol_results is not None:

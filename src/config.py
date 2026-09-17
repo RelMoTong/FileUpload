@@ -18,7 +18,14 @@ from src.models._conversion import SHARED_RETIRED_CONFIG_KEYS
 
 
 class ConfigManager:
-    """配置管理器"""
+    """应用 ``config.json`` 的兼容加载、原子保存与凭据保护入口。
+
+    用途：将界面和控制器需要的设置集中到一个安全读写边界，避免各模块直接改配置文件。
+    输入：应用目录下的配置路径，以及调用方准备保存的配置字典。
+    输出：带默认值补全的配置副本，或带 ``last_error`` 的保存失败结果。
+    关键步骤：深度合并默认值、移除废弃字段、保留未知未来字段和用户凭据、原子写盘。
+    风险点：普通设置保存不能覆盖改密后的凭据；解析失败时必须备份原文件而不能写空配置。
+    """
     
     DEFAULT_CONFIG = {
         'source_folder': '',
@@ -30,29 +37,29 @@ class ConfigManager:
         'disk_threshold_percent': 10,
         'retry_count': 3,
         'disk_check_interval': 5,
-        # 文件过滤
+        # 文件过滤：决定扫描器允许上传的源文件扩展名。
         'filter_jpg': True,
         'filter_png': True,
         'filter_bmp': True,
         'filter_gif': True,
         'filter_raw': True,
-        # 自动启动
+        # 自动启动：Windows 登录与应用启动后的自动运行策略。
         'auto_start_windows': False,
         'auto_run_on_startup': False,
-        # 托盘通知
+        # 托盘通知：仅影响提示方式，不改变上传、删除或归档业务逻辑。
         'show_notifications': True,
-        # 速率限制
+        # 速率限制：仅用于 SMB 可续传上传的节流参数。
         'limit_upload_rate': False,
         'max_upload_rate_mbps': 10.0,
-        # 去重
+        # 去重：当前仅支持 SMB 目标，FTP/FTPS 不共享文件系统索引。
         'enable_deduplication': False,
         'hash_algorithm': 'md5',
         'duplicate_strategy': 'ask',
-        # 网络监控
+        # 网络监控：断开时暂停、恢复时自动继续的参数。
         'network_check_interval': 10,
         'network_auto_pause': True,
         'network_auto_resume': True,
-        # 自动删除
+        # 自动清理：由主窗口统一清理引擎执行，配置只保存策略不保存手动扫描结果。
         'enable_auto_delete': False,
         'auto_delete_folder': '',
         'auto_delete_folders': [],
@@ -61,13 +68,13 @@ class ConfigManager:
         'auto_delete_check_interval': 300,
         'auto_delete_formats': [],
         'auto_delete_use_trash': True,
-        # 协议配置
+        # 协议配置：SMB、FTP/FTPS 客户端与内置 FTP 服务端的独立设置。
         'upload_protocol': 'smb',  # 上传协议: smb, ftp_client, both
         'current_protocol': 'smb',
         'enable_ftp_server': False,  # v3.1.0: FTP服务器独立开关
-        # v3.0.2 新增：语言设置
+        # 语言设置：不影响底层存储格式和业务数据。
         'language': 'zh_CN',
-        # FTP 服务器配置
+        # FTP 服务器配置：只有启用内置服务端时才会使用。
         'ftp_server': {
             'host': '0.0.0.0',
             'port': 2121,
@@ -84,7 +91,7 @@ class ConfigManager:
             'max_connections': 256,
             'max_connections_per_ip': 5,
         },
-        # FTP 客户端配置
+        # FTP 客户端配置：只有 upload_protocol 选择 FTP/双协议时才会使用。
         'ftp_client': {
             'host': '',
             'port': 21,
@@ -97,7 +104,7 @@ class ConfigManager:
             'passive_mode': True,
             'enable_tls': False,
         },
-        # 用户账户
+        # 用户账户：密码哈希由认证模块负责生成，常规保存默认保留最新磁盘值。
         'users': {},
     }
 

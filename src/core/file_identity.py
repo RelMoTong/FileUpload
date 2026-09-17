@@ -10,7 +10,13 @@ from typing import Any, Mapping
 
 
 def normalize_file_path(path: str | Path) -> str:
-    """返回统一比较路径；不要求路径在调用时一定存在。"""
+    """返回用于身份比较的规范路径；调用时不要求路径一定存在。
+
+    用途：让大小写不同、相对路径或符号链接表示的同一文件得到相同的比较键。
+    输入：字符串或 ``Path`` 路径。
+    输出：绝对、解析真实路径并按平台规则标准化大小写后的字符串。
+    风险点：它只规范路径表示，不证明当前文件身份；删除/归档仍必须调用 ``matches_path``。
+    """
     return os.path.normcase(os.path.realpath(os.path.abspath(os.fspath(path))))
 
 
@@ -92,7 +98,12 @@ class FileIdentity:
         )
 
     def to_mapping(self) -> dict[str, Any]:
-        """转换为可写入 JSON 日志或断点恢复记录的普通字典。"""
+        """转换为可写入 JSON 日志或断点恢复记录的普通字典。
+
+        用途：将不可变身份快照传给持久化归档日志，而不依赖 Python 对象序列化。
+        输出：只包含下一次安全复核所需字段的 JSON 兼容字典。
+        风险点：不能只保存路径；缺少大小、时间和 SHA-256 会使恢复归档无法确认文件代际。
+        """
         return {
             "normalized_path": self.normalized_path,
             "size": self.size,
@@ -123,7 +134,7 @@ def _optional_file_id(stat_result: os.stat_result, name: str) -> int | None:
 
 
 def _optional_mapping_id(value: Mapping[str, Any], name: str) -> int | None:
-    """校验从持久化数据读取的可选文件系统标识。"""
+    """校验从持久化数据读取的可选文件系统标识，拒绝布尔值和负数。"""
     candidate = value.get(name)
     if candidate is None:
         return None

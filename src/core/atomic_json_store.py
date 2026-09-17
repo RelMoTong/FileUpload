@@ -37,6 +37,11 @@ class AtomicJsonStore:
         wrap_envelope: bool = True,
         replace_func: Callable[[str | os.PathLike[str], str | os.PathLike[str]], None] | None = None,
     ) -> None:
+        """配置存储位置、大小/记录上限、封装校验方式和可替换原子替换函数。
+
+        用途：让配置、续传状态和归档日志可以共享同一套断电安全写入机制。
+        风险点：临时文件必须和目标文件同目录，跨卷移动不能保证 ``os.replace`` 的原子性。
+        """
         self.path = Path(path)
         self.backup_path = self.path.with_name(f"{self.path.name}.bak")
         self.max_bytes = max_bytes
@@ -148,7 +153,11 @@ class AtomicJsonStore:
     def _read_path(
         self, path: Path, validator: Optional[Callable[[Any], bool]]
     ) -> Any | None:
-        """读取单个候选文件，并把所有解析/校验错误收敛到 ``last_error``。"""
+        """读取单个候选文件，并把所有解析/校验错误收敛到 ``last_error``。
+
+        用途：为主文件与备份文件复用完全相同的大小、JSON、校验和和业务校验流程。
+        风险点：返回 ``None`` 只表示本候选不可用；上层 ``read`` 还会决定是否使用备份。
+        """
         if not path.exists():
             return None
         try:
@@ -168,7 +177,10 @@ class AtomicJsonStore:
             return None
 
     def _decode_envelope(self, loaded: Any) -> Any:
-        """兼容旧版裸 JSON，并校验新版封装中的模式版本和校验和。"""
+        """兼容旧版裸 JSON，并校验新版封装中的模式版本和校验和。
+
+        旧版载荷可读取以实现平滑升级；一旦发现完整封装字段，则版本和校验和必须全部通过。
+        """
         if not isinstance(loaded, Mapping):
             return loaded  # 旧版裸 JSON 可读取，下次成功保存时会升级为封装格式。
         required = {"schema_version", "checksum_sha256", "payload"}
@@ -195,6 +207,7 @@ class AtomicJsonStore:
 
     @staticmethod
     def _record_count(payload: Any) -> int:
+        """按对象顶层条目或 ``items`` 列表计算记录数，用于有界存储保护。"""
         if isinstance(payload, dict):
             if len(payload) == 1 and isinstance(payload.get("items"), list):
                 return len(payload["items"])
@@ -203,12 +216,14 @@ class AtomicJsonStore:
 
     @staticmethod
     def _canonical_bytes(payload: Any) -> bytes:
+        """以固定键顺序和紧凑格式编码 JSON，保证写入与校验和计算结果稳定。"""
         return json.dumps(
             payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
 
     @staticmethod
     def _fsync_file(path: Path) -> None:
+        """刷新单个文件内容到磁盘；保留为基础工具供需要额外持久化保证的调用方使用。"""
         with path.open("rb") as stream:
             os.fsync(stream.fileno())
 
@@ -224,7 +239,10 @@ class AtomicJsonStore:
             os.close(descriptor)
 
     def _quarantine(self, path: Path) -> None:
-        """把损坏主文件改名隔离，避免下次启动再次误用该文件。"""
+        """把损坏主文件改名隔离，避免下次启动再次误用该文件。
+
+        隔离失败也不能覆盖原文件；调用方仍会返回有效备份或默认状态，并保留 ``last_error``。
+        """
         if not path.exists():
             return
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
