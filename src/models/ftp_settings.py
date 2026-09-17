@@ -1,4 +1,4 @@
-"""FTP server and client configuration models."""
+"""FTP 服务端与客户端配置模型。"""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from ._conversion import as_bool, as_int, as_str, unknown_fields
 
 @dataclass
 class FTPServerSettings:
+    """FTP 服务端的可持久化配置及未知字段容器。"""
     host: str = "0.0.0.0"
     port: int = 2121
     username: str = "upload_user"
@@ -47,6 +48,7 @@ class FTPServerSettings:
 
     @classmethod
     def from_mapping(cls, data: Any) -> "FTPServerSettings":
+        """从可能不完整的映射恢复服务端设置，并保留未知字段。"""
         values: Mapping[str, Any] = data if isinstance(data, Mapping) else {}
         return cls(
             host=as_str(values.get("host"), "0.0.0.0"),
@@ -67,6 +69,7 @@ class FTPServerSettings:
         )
 
     def to_mapping(self) -> Dict[str, Any]:
+        """导出服务端配置，确保未知字段不会在保存时丢失。"""
         result = deepcopy(self.extra)
         result.update(
             {
@@ -91,6 +94,7 @@ class FTPServerSettings:
 
 @dataclass
 class FTPClientSettings:
+    """FTP 客户端上传端点的可持久化配置及未知字段容器。"""
     host: str = ""
     port: int = 21
     username: str = ""
@@ -118,6 +122,7 @@ class FTPClientSettings:
 
     @classmethod
     def from_mapping(cls, data: Any) -> "FTPClientSettings":
+        """从可能不完整的映射恢复客户端设置，并保留未知字段。"""
         values: Mapping[str, Any] = data if isinstance(data, Mapping) else {}
         return cls(
             host=as_str(values.get("host")),
@@ -134,6 +139,7 @@ class FTPClientSettings:
         )
 
     def to_mapping(self) -> Dict[str, Any]:
+        """导出客户端配置，确保未知字段不会在保存时丢失。"""
         result = deepcopy(self.extra)
         result.update(
             {
@@ -154,12 +160,14 @@ class FTPClientSettings:
 
 @dataclass
 class FTPSettings:
+    """组合 FTP 总开关、服务端和客户端设置。"""
     enable_server: bool = False
     server: FTPServerSettings = field(default_factory=FTPServerSettings)
     client: FTPClientSettings = field(default_factory=FTPClientSettings)
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "FTPSettings":
+        """从应用级配置中构造 FTP 总设置。"""
         return cls(
             enable_server=as_bool(data.get("enable_ftp_server"), False),
             server=FTPServerSettings.from_mapping(data.get("ftp_server")),
@@ -167,6 +175,7 @@ class FTPSettings:
         )
 
     def to_mapping(self) -> Dict[str, Any]:
+        """导出 FTP 总开关及嵌套的服务端、客户端配置。"""
         return {
             "enable_ftp_server": self.enable_server,
             "ftp_server": self.server.to_mapping(),
@@ -176,6 +185,7 @@ class FTPSettings:
 
 @dataclass(frozen=True)
 class FTPEvent:
+    """用于日志和界面展示的单条 FTP 事件。"""
     event: str
     timestamp: str = ""
     client_ip: str = ""
@@ -186,6 +196,7 @@ class FTPEvent:
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "FTPEvent":
+        """从事件映射恢复对象；缺少时间时记录当前时间。"""
         return cls(
             event=as_str(data.get("event")),
             timestamp=as_str(data.get("timestamp"))
@@ -198,6 +209,7 @@ class FTPEvent:
         )
 
     def to_mapping(self) -> Dict[str, Any]:
+        """导出可 JSON 序列化的事件字段。"""
         return {
             "event": self.event,
             "timestamp": self.timestamp,
@@ -211,16 +223,19 @@ class FTPEvent:
 
 @dataclass(frozen=True)
 class FTPValidationResult:
+    """FTP 配置校验得到的错误和非阻塞警告。"""
     errors: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 
     @property
     def is_valid(self) -> bool:
+        """没有阻塞错误时返回真；警告不会使配置无效。"""
         return not self.errors
 
 
 @dataclass(frozen=True)
 class FTPOperationResult:
+    """FTP 启停或测试操作的统一结果。"""
     success: bool
     message: str = ""
     errors: tuple[str, ...] = ()

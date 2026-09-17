@@ -1,4 +1,4 @@
-"""Pure data models used by the MVC application layers."""
+"""MVC 各层共用的纯数据模型导出入口。"""
 
 from .app_state import (
     AppState,

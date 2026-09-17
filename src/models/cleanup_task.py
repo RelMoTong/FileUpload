@@ -1,4 +1,4 @@
-"""Runtime models for manual and automatic disk cleanup."""
+"""手动与自动磁盘清理共用的运行时模型。"""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Tuple
 
 @dataclass
 class CleanupFileItem:
+    """手动清理列表中的单个文件及其勾选状态。"""
     path: str
     size: int
     mtime: float
@@ -18,6 +19,7 @@ class CleanupFileItem:
 
     @property
     def name(self) -> str:
+        """返回用于列表展示的文件名，不改变完整路径。"""
         return os.path.basename(self.path)
 
 
@@ -34,6 +36,7 @@ class CleanupCandidate:
     created_at: float = 0.0
 
     def as_file_item(self) -> CleanupFileItem:
+        """转换为手动列表项目，同时保留扫描时捕获的身份字段。"""
         return CleanupFileItem(
             path=self.path,
             size=self.size,

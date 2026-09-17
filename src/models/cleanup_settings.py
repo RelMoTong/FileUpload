@@ -1,4 +1,4 @@
-"""Disk cleanup configuration model."""
+"""磁盘清理配置模型。"""
 
 from __future__ import annotations
 
@@ -9,10 +9,13 @@ from ._conversion import SHARED_RETIRED_CONFIG_KEYS, as_bool, as_int, as_str, as
 
 
 def normalize_cleanup_folders(folders: Iterable[Any]) -> list[str]:
-    """Return configured cleanup folders as ordered, non-empty unique paths.
+    """按原顺序返回非空且不重复的清理目录。
 
-    This is the single normalization boundary for cleanup-folder inputs. It is
-    filesystem-free, so views and models share a rule without probing UNC paths.
+    用途：为手动和自动清理目录提供唯一的文本规范化边界。
+    输入：任意可迭代目录值。
+    输出：去除空白和重复项后的路径字符串列表。
+    关键步骤：仅做内存中的字符串处理，不访问文件系统。
+    风险点：不得在这里探测 UNC 路径，否则界面和模型层可能被网络 I/O 阻塞。
     """
     normalized: list[str] = []
     for path in folders:
@@ -35,8 +38,7 @@ class CleanupSettings:
     auto_delete_formats: list[str] = field(default_factory=list)
     auto_delete_use_trash: bool = True
 
-    # The cleanup policy has been global-oldest-first since v3.4.2, so this
-    # former setting never influenced a cleanup request.
+    # 自 v3.4.2 起清理策略固定为全局最旧优先，旧字段从未影响清理请求。
     RETIRED_CONFIG_KEYS = SHARED_RETIRED_CONFIG_KEYS
 
     CONFIG_KEYS = (
@@ -51,6 +53,14 @@ class CleanupSettings:
     )
 
     def __post_init__(self) -> None:
+        """规范化清理配置，使运行时始终拿到范围内且互相一致的字段。
+
+        用途：集中约束阈值、检查间隔、目录和扩展名配置。
+        输入：数据类构造时传入的原始字段值。
+        输出：原地修正后的 ``CleanupSettings`` 实例。
+        关键步骤：裁剪数值范围、去重目录和扩展名，并兼容旧单目录字段。
+        风险点：这里只校正文本与数值，不验证目录存在性或磁盘关系，避免构造模型时发生 I/O。
+        """
         self.auto_delete_threshold = min(99, max(1, int(self.auto_delete_threshold)))
         self.auto_delete_target_percent = min(
             self.auto_delete_threshold - 1,
@@ -75,6 +85,7 @@ class CleanupSettings:
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "CleanupSettings":
+        """从配置映射构建清理设置；每个字段均带类型容错默认值。"""
         return cls(
             enable_auto_delete=as_bool(data.get("enable_auto_delete"), False),
             auto_delete_folder=as_str(data.get("auto_delete_folder")),
@@ -87,6 +98,7 @@ class CleanupSettings:
         )
 
     def to_mapping(self) -> Dict[str, Any]:
+        """导出可 JSON 序列化的清理配置副本。"""
         return {
             "enable_auto_delete": self.enable_auto_delete,
             "auto_delete_folder": self.auto_delete_folder,

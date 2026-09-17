@@ -1,4 +1,4 @@
-"""Upload and application behavior configuration model."""
+"""上传流程和应用行为的配置模型。"""
 
 from __future__ import annotations
 
@@ -11,6 +11,14 @@ from .app_state import DuplicateStrategy, UploadProtocol
 
 @dataclass
 class UploadSettings:
+    """上传相关持久化配置及其运行时规范化规则。
+
+    用途：集中管理目录、重试、速率、网络和协议等上传参数。
+    输入：配置映射转换后的字段值或代码中的显式构造参数。
+    输出：字段类型及有效范围均已规范化的设置对象。
+    关键步骤：裁剪数值范围，并把字符串协议、重名策略转为对应枚举。
+    风险点：本模型不验证路径可达性和网络连通性，避免配置加载时产生阻塞 I/O。
+    """
     source_folder: str = ""
     target_folder: str = ""
     backup_folder: str = ""
@@ -41,6 +49,14 @@ class UploadSettings:
     language: str = "zh_CN"
 
     def __post_init__(self) -> None:
+        """规范化上传参数，确保控制器读取到稳定的数值和枚举类型。
+
+        用途：集中消化历史 JSON 中的字符串、超范围数值和缺失枚举。
+        输入：数据类初始化后的原始字段。
+        输出：原地修正后的 ``UploadSettings`` 实例。
+        关键步骤：限制数值边界，再逐项将协议和策略转换为枚举。
+        风险点：不能在这里进行文件系统或网络验证，以免配置加载阻塞主界面。
+        """
         self.upload_interval = max(1, int(self.upload_interval))
         self.file_upload_delay_seconds = max(0.0, float(self.file_upload_delay_seconds))
         self.disk_threshold_percent = min(95, max(1, int(self.disk_threshold_percent)))
@@ -61,8 +77,7 @@ class UploadSettings:
                 UploadProtocol, self.current_protocol, self.upload_protocol
             )
 
-    # These keys were formerly persisted but had no runtime switch.  Accept
-    # them from older JSON files, then omit them on the next successful save.
+    # 这些字段曾被写入配置但没有运行时开关；读取旧 JSON 时兼容，下一次成功保存时移除。
     RETIRED_CONFIG_KEYS = SHARED_RETIRED_CONFIG_KEYS
 
     CONFIG_KEYS = (
@@ -98,6 +113,7 @@ class UploadSettings:
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "UploadSettings":
+        """从原始配置映射构建上传设置，并给每个字段提供类型容错默认值。"""
         return cls(
             source_folder=as_str(data.get("source_folder")),
             target_folder=as_str(data.get("target_folder")),
@@ -140,6 +156,7 @@ class UploadSettings:
         )
 
     def to_mapping(self) -> Dict[str, Any]:
+        """导出可 JSON 序列化的上传配置，枚举转换为稳定字符串值。"""
         return {
             "source_folder": self.source_folder,
             "target_folder": self.target_folder,

@@ -1,4 +1,4 @@
-"""Immutable source-file identities for safety-critical file lifecycle work."""
+"""用于安全文件生命周期处理的不可变源文件身份标识。"""
 
 from __future__ import annotations
 
@@ -10,17 +10,16 @@ from typing import Any, Mapping
 
 
 def normalize_file_path(path: str | Path) -> str:
-    """Return a canonical comparison path without requiring that it exists."""
+    """返回统一比较路径；不要求路径在调用时一定存在。"""
     return os.path.normcase(os.path.realpath(os.path.abspath(os.fspath(path))))
 
 
 @dataclass(frozen=True)
 class FileIdentity:
-    """A durable identity for one exact source-file generation.
+    """描述某一代源文件的可持久化身份。
 
-    Size and nanosecond mtime make the common comparison inexpensive; available
-    device/inode values help on filesystems that expose them.  The SHA-256
-    digest closes the same-size, restored-timestamp replacement hole.
+    文件大小和纳秒级修改时间可快速识别多数变化；文件系统提供设备号或 inode 时
+    一并保存。SHA-256 用于避免“大小相同且修改时间被还原”的替换文件误通过校验。
     """
 
     normalized_path: str
@@ -32,7 +31,16 @@ class FileIdentity:
 
     @classmethod
     def capture(cls, path: str | Path) -> "FileIdentity":
+        """读取文件元数据和完整摘要，生成上传或归档前的安全快照。
+
+        用途：为文件在扫描后、实际操作前是否被替换提供可复核依据。
+        输入：待捕获的文件路径【path】。
+        输出：包含规范路径、大小、修改时间、文件系统标识和 SHA-256 的不可变身份对象。
+        关键步骤：先读取元数据，再按固定块大小计算完整摘要。
+        风险点：捕获期间文件若被其他程序修改，后续【matches_path】会以新的完整快照拒绝操作。
+        """
         source = Path(path)
+        # 先读取元数据，再以固定块大小计算摘要，避免一次性把大文件读入内存。
         stat_result = source.stat()
         digest = hashlib.sha256()
         with source.open("rb") as stream:
@@ -49,6 +57,14 @@ class FileIdentity:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "FileIdentity":
+        """从持久化身份数据恢复对象；字段异常时拒绝恢复而不是猜测默认值。
+
+        用途：安全读取归档日志和断点恢复记录中的文件身份。
+        输入：JSON 解析后的身份映射【value】。
+        输出：通过全部字段校验的【FileIdentity】对象。
+        关键步骤：校验路径、大小、纳秒时间、摘要长度和十六进制字符，再恢复可选文件系统标识。
+        风险点：任何关键字段不可信都会抛出异常；不能用默认身份继续删除或归档文件。
+        """
         normalized_path = value.get("normalized_path")
         size = value.get("size")
         mtime_ns = value.get("mtime_ns")
@@ -76,6 +92,7 @@ class FileIdentity:
         )
 
     def to_mapping(self) -> dict[str, Any]:
+        """转换为可写入 JSON 日志或断点恢复记录的普通字典。"""
         return {
             "normalized_path": self.normalized_path,
             "size": self.size,
@@ -86,17 +103,27 @@ class FileIdentity:
         }
 
     def matches_path(self, path: str | Path) -> bool:
-        """Return true only when *path* is still this exact file generation."""
+        """重新捕获路径身份，仅当其仍是扫描时的同一代文件才返回真。
+
+        用途：在删除或归档前防止对同名但已替换的文件执行操作。
+        输入：当前要复核的路径【path】。
+        输出：身份完全一致返回【True】，否则返回【False】或传播无法读取文件的异常。
+        关键步骤：重新计算完整快照后与本对象比较。
+        风险点：完整摘要读取会产生磁盘 I/O；必须由后台流程调用，不能阻塞主界面。
+        """
+        # 重新完整采样，确保删除或归档前不会操作扫描后已被替换的同名文件。
         actual = self.capture(path)
         return actual == self
 
 
 def _optional_file_id(stat_result: os.stat_result, name: str) -> int | None:
+    """提取文件系统可选标识；缺失或非正值统一视为不可用。"""
     value = getattr(stat_result, name, None)
     return value if isinstance(value, int) and value > 0 else None
 
 
 def _optional_mapping_id(value: Mapping[str, Any], name: str) -> int | None:
+    """校验从持久化数据读取的可选文件系统标识。"""
     candidate = value.get(name)
     if candidate is None:
         return None

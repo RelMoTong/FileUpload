@@ -1,8 +1,8 @@
-"""Bounded, checksummed JSON persistence without a database.
+"""不依赖数据库的有界、带校验和 JSON 持久化工具。
 
-State is written into a sibling temporary file, flushed to disk, and atomically
-replaced.  The immediately previous valid version is retained as ``.bak`` so a
-crash or corrupted write can recover without treating a partial file as state.
+写入时先在目标文件同目录创建临时文件，确保内容已刷新到磁盘后再原子替换。
+替换前保留上一份有效内容为 ``.bak``，因此断电或写入损坏时不会把半成品当作
+运行状态使用。
 """
 
 from __future__ import annotations
@@ -21,7 +21,11 @@ ATOMIC_JSON_SCHEMA_VERSION = 1
 
 
 class AtomicJsonStore:
-    """Atomic JSON object storage with validation, backups, and corruption quarantine."""
+    """提供校验、备份和损坏文件隔离能力的原子 JSON 存储。
+
+    ``payload`` 只允许为字典或列表，并同时限制字节数与记录数，防止运行状态文件
+    无限增长。``wrap_envelope`` 为真时会额外写入模式版本和 SHA-256 校验和。
+    """
 
     def __init__(
         self,
@@ -48,14 +52,24 @@ class AtomicJsonStore:
         validator: Optional[Callable[[Any], bool]] = None,
         default: Any = None,
     ) -> Any:
+        """读取并校验状态；主文件失效时尝试【.bak】，两者都不可用则返回默认值。
+
+        用途：安全恢复无数据库运行状态，避免把截断或损坏 JSON 交给业务层。
+        输入：可选业务校验器【validator】和读取失败时的默认值【default】。
+        输出：通过全部校验的载荷、有效备份载荷或默认值。
+        关键步骤：优先读取主文件；失败后读取备份；备份成功时隔离损坏主文件。
+        风险点：读取失败不能重写主文件，否则会覆盖仍可人工恢复的现场数据。
+        """
         if not self.path.exists():
             self.last_error = ""
             return default
+        # 第一步：优先读取最新主文件，成功后不触碰备份文件。
         result = self._read_path(self.path, validator)
         if result is not None:
             self.last_error = ""
             return result
 
+        # 第二步：主文件校验失败时，仅使用已经存在的上一份有效备份恢复。
         original_error = self.last_error
         backup = self._read_path(self.backup_path, validator)
         if backup is not None:
@@ -66,11 +80,21 @@ class AtomicJsonStore:
         return default
 
     def write(self, payload: Any) -> bool:
+        """以“临时文件 → 刷盘 → 备份 → 原子替换”的顺序保存状态。
+
+        用途：把运行状态写入磁盘，同时确保断电或异常不暴露半成品文件。
+        输入：字典或列表类型的待保存载荷【payload】。
+        输出：写入完成返回【True】，失败返回【False】并记录【last_error】。
+        关键步骤：校验边界、编码校验和、同目录临时写入和刷盘、备份、原子替换。
+        风险点：任一操作失败都会删除临时文件并保留原状态文件；调用方必须检查返回值。
+        """
         temp_path: Path | None = None
         descriptor: int | None = None
         try:
+            # 1. 先校验业务数据，避免无效内容覆盖上一份可恢复状态。
             self._validate_payload(payload)
             encoded_payload = self._canonical_bytes(payload)
+            # 2. 按需封装版本号和校验和，读取时可识别截断或篡改。
             if self.wrap_envelope:
                 envelope = {
                     "schema_version": self.schema_version,
@@ -80,6 +104,7 @@ class AtomicJsonStore:
                 encoded = self._canonical_bytes(envelope)
             else:
                 encoded = encoded_payload
+            # 3. 在创建文件前执行容量限制，避免异常大状态文件占满磁盘。
             if len(encoded) > self.max_bytes:
                 raise ValueError(f"state exceeds {self.max_bytes} byte limit")
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -87,11 +112,13 @@ class AtomicJsonStore:
                 prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent
             )
             temp_path = Path(raw_path)
+            # 4. 临时文件必须位于目标目录，才能保证后续 os.replace 为同盘原子替换。
             with os.fdopen(descriptor, "wb") as stream:
                 stream.write(encoded)
                 stream.flush()
                 os.fsync(stream.fileno())
             descriptor = None
+            # 5. 仅在新内容已经写实后备份旧版本，失败时主文件仍保持不变。
             if self.path.exists():
                 shutil.copy2(self.path, self.backup_path)
             if self._replace_func is None:
@@ -99,6 +126,7 @@ class AtomicJsonStore:
             else:
                 self._replace_func(temp_path, self.path)
             temp_path = None
+            # 6. POSIX 平台继续刷新目录项；Windows 的目录 fsync 不受支持。
             self._fsync_directory(self.path.parent)
             self.last_error = ""
             return True
@@ -120,6 +148,7 @@ class AtomicJsonStore:
     def _read_path(
         self, path: Path, validator: Optional[Callable[[Any], bool]]
     ) -> Any | None:
+        """读取单个候选文件，并把所有解析/校验错误收敛到 ``last_error``。"""
         if not path.exists():
             return None
         try:
@@ -139,8 +168,9 @@ class AtomicJsonStore:
             return None
 
     def _decode_envelope(self, loaded: Any) -> Any:
+        """兼容旧版裸 JSON，并校验新版封装中的模式版本和校验和。"""
         if not isinstance(loaded, Mapping):
-            return loaded  # Legacy bare JSON is readable and upgraded on write.
+            return loaded  # 旧版裸 JSON 可读取，下次成功保存时会升级为封装格式。
         required = {"schema_version", "checksum_sha256", "payload"}
         if not required.issubset(loaded):
             return loaded
@@ -156,6 +186,7 @@ class AtomicJsonStore:
         return payload
 
     def _validate_payload(self, payload: Any) -> None:
+        """确认状态结构和记录数均在本存储组件允许的边界内。"""
         if not isinstance(payload, (dict, list)):
             raise ValueError("state payload must be a JSON object or list")
         record_count = self._record_count(payload)
@@ -183,6 +214,7 @@ class AtomicJsonStore:
 
     @staticmethod
     def _fsync_directory(path: Path) -> None:
+        """在支持的系统上刷新目录元数据，确保原子替换已落盘。"""
         if os.name == "nt":
             return
         descriptor = os.open(path, os.O_DIRECTORY)
@@ -192,6 +224,7 @@ class AtomicJsonStore:
             os.close(descriptor)
 
     def _quarantine(self, path: Path) -> None:
+        """把损坏主文件改名隔离，避免下次启动再次误用该文件。"""
         if not path.exists():
             return
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")

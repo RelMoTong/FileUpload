@@ -22,13 +22,13 @@ os.chdir(project_root)
 
 
 def check_dependencies() -> Tuple[bool, List[str], List[str]]:
-    """检查关键依赖是否已安装
-    
-    Returns:
-        (all_ok, missing_required, missing_optional)
-        - all_ok: 必需依赖是否全部满足
-        - missing_required: 缺失的必需依赖列表
-        - missing_optional: 缺失的可选依赖列表
+    """检查启动依赖，并区分阻断启动和仅影响扩展功能的缺失项。
+
+    用途：在导入图形组件前给出可执行的依赖安装提示。
+    输入：无；依赖清单由函数内部的当前版本定义。
+    输出：【全部必需依赖可用、缺失必需项、缺失可选项】三元组。
+    关键步骤：先验证 PySide6，再逐项探测 FTP/FTPS 扩展依赖。
+    风险点：可选依赖缺失不能阻止基础上传启动，调用方须分别处理两类结果。
     """
     missing_required: List[str] = []
     missing_optional: List[str] = []
@@ -56,7 +56,7 @@ def check_dependencies() -> Tuple[bool, List[str], List[str]]:
 
 
 def show_dependency_warning(missing_required: List[str], missing_optional: List[str]) -> None:
-    """显示依赖缺失警告"""
+    """在控制台输出缺失依赖和对应安装建议。"""
     if missing_required:
         print("\n" + "=" * 60)
         print("缺少必需依赖，程序无法启动：")
@@ -75,9 +75,14 @@ def show_dependency_warning(missing_required: List[str], missing_optional: List[
 def run_packaged_release_probe(
     app_dir: Path,
 ) -> tuple[bool, dict[str, Any]]:
-    """Exercise packaged resources and writable stores used at the site.
+    """验证打包版在现场会使用的资源和可写存储。
 
-    The probe is only called when ``IMAGE_UPLOAD_SMOKE_TEST=1``.
+    用途：在发布环境中覆盖资源定位、状态存储、本地 FTPS 和协作式退出的组合路径。
+    输入：打包程序可写的应用目录【app_dir】。
+    输出：【是否全部通过、各检查项和错误说明】。
+    关键步骤：创建临时状态，验证资源/FTPS，再清理探针文件并写出报告。
+    风险点：该探针会在应用目录创建临时文件，必须只在
+    【IMAGE_UPLOAD_SMOKE_TEST=1】的发布验证环境调用，而非正常业务启动。
     """
     from src.core import ResumeManager, get_resource_path
     from src.core.file_identity import FileIdentity
@@ -89,6 +94,7 @@ def run_packaged_release_probe(
     errors: list[str] = []
 
     def record(name: str, passed: bool, detail: str = "") -> None:
+        """把单项检查结果写入汇总；失败时同时保留可读原因。"""
         checks[name] = bool(passed)
         if not passed:
             errors.append(f"{name}: {detail or 'failed'}")
@@ -277,7 +283,7 @@ def run_packaged_release_probe(
     return not errors, report
 
 
-# 导入核心模块
+# 延迟导入核心模块：依赖检查失败时可以给出明确提示，而非直接崩溃。
 from src.core import get_app_dir, get_app_version, get_app_title
 def wakeup_existing_instance(
     server_name: str,
@@ -285,14 +291,13 @@ def wakeup_existing_instance(
     wait_ms: int = 200,
     connect_ms: int = 300
 ) -> bool:
-    """检查并尝试唤醒已运行的实例
-    
-    Args:
-        server_name: 服务器名称
-        
-    Returns:
-        True - 已有实例运行，已发送唤醒消息（调用方应退出）
-        False - 未发现已有实例（调用方可继续启动）
+    """检查并尝试唤醒已有实例，防止两个进程并行处理同一批文件。
+
+    用途：作为单实例启动流程中的第一层进程间通信检查。
+    输入：本地服务名、重试次数、重试等待时长和单次连接超时。
+    输出：成功唤醒已有实例返回【True】，未发现可连接实例返回【False】。
+    关键步骤：在限定次数内连接本地服务，连接成功后发送【WAKEUP】消息。
+    风险点：此函数只能降低竞态概率；调用方仍须结合共享内存锁完成第二层保护。
     """
     for _ in range(attempts):
         socket = QLocalSocket()
@@ -309,8 +314,15 @@ def wakeup_existing_instance(
 
 
 def main():
-    """主程序入口"""
-    # 依赖检查（在导入 Qt 之前，便于提示）
+    """组装应用依赖、建立单实例保护并进入 Qt 事件循环。
+
+    用途：作为桌面程序的唯一组合根，控制启动前检查和资源生命周期。
+    输入：无；从命令行、环境变量和应用目录读取运行环境。
+    输出：进程退出码。
+    关键步骤：检查依赖、建立单实例锁、构造 MVC 依赖、显示主窗口并启动事件循环。
+    风险点：后台 Worker 必须经生命周期控制器退出，不能在此处直接强制终止线程。
+    """
+    # 第一步：在导入 Qt 前检查依赖，便于在控制台输出可执行的安装建议。
     all_ok, missing_required, missing_optional = check_dependencies()
     if not all_ok:
         show_dependency_warning(missing_required, missing_optional)
@@ -320,7 +332,7 @@ def main():
     if missing_optional:
         show_dependency_warning([], missing_optional)
     
-    # 延迟导入 Qt，避免缺依赖时直接 ImportError
+    # 第二步：依赖确认后才导入 Qt，避免缺包时产生难以理解的 ImportError。
     global QtCore, QtWidgets, QLocalServer, QLocalSocket  # type: ignore
     try:
         from PySide6 import QtCore, QtWidgets  # type: ignore
@@ -336,7 +348,7 @@ def main():
         show_dependency_warning(["PySide6: pip install PySide6"], [])
         return 1
 
-    # 依赖检查成功后再导入具体 MVC 组件，避免提前加载 Qt/平台实现。
+    # 第三步：依赖检查成功后再组装 MVC 组件，避免提前加载平台相关实现。
     from src.controllers import (
         AuthController,
         CleanupController,
@@ -365,23 +377,23 @@ def main():
 
     app = QtWidgets.QApplication(sys.argv)
     
-    # 设置应用程序信息
+    # 第四步：设置应用元数据，供系统任务栏、设置和日志展示。
     app.setApplicationName("图片异步上传工具")
     app.setApplicationVersion(get_app_version())
     app.setOrganizationName("RelMoTong")
     
-    # 单例检查
+    # 第五步：先检查本机是否已有实例，避免两个进程同时处理同一批源文件。
     server_name = "ImageUploadTool_SingleInstance_Server"
     if wakeup_existing_instance(server_name, attempts=1, wait_ms=0, connect_ms=200):
-        # 已有实例运行，已发送唤醒消息，直接退出
+        # 已有实例运行且已发送唤醒消息，本进程无需继续创建第二套 Worker。
         return 0
     
-    # 使用共享内存作为辅助锁（防止极端情况下的竞态条件）
+    # 第六步：使用共享内存作为辅助锁，缩小 LocalServer 建立前的极端竞态窗口。
     shared_mem = QtCore.QSharedMemory("ImageUploadTool_SingleInstance")
     if not shared_mem.create(1):
         if wakeup_existing_instance(server_name):
             return 0
-        # 极少情况：LocalServer 未响应但共享内存存在
+        # 极少情况：LocalServer 尚未响应但共享内存已存在，仍拒绝重复启动。
         msg = QtWidgets.QMessageBox()
         msg.setIcon(QtWidgets.QMessageBox.Icon.Warning)  # type: ignore[arg-type]
         msg.setWindowTitle("程序启动异常")
@@ -391,7 +403,7 @@ def main():
         msg.exec() if hasattr(msg, 'exec') else msg.exec_()
         return 1
     
-    # 创建主窗口
+    # 第七步：所有 Controller、Service、Repository 都在组合根创建，再注入主窗口。
     app_dir = get_app_dir()
     settings_repository = ConfigRepository(app_dir / 'config.json')
     ftp_event_repository = FTPEventLogRepository(app_dir)
@@ -453,8 +465,7 @@ def main():
 
     window.show()
 
-    # Packaged release smoke test: exercise the real composition root, Qt
-    # event loop and cooperative lifecycle shutdown without UI automation.
+    # 打包版冒烟测试：不做界面自动化，而是运行真实组合根、Qt 事件循环和协作式退出流程。
     if release_smoke:
         try:
             smoke_duration_ms = int(
@@ -462,12 +473,11 @@ def main():
             )
         except ValueError:
             smoke_duration_ms = 1000
-        # Allow a real 72-hour burn-in while preventing negative/overflowing
-        # timer values from turning release automation into an endless run.
+        # 允许真实 72 小时长稳，同时限制非法负值/溢出值，避免发布自动化无限运行。
         smoke_duration_ms = min(max(1000, smoke_duration_ms), 72 * 60 * 60 * 1000)
         QtCore.QTimer.singleShot(smoke_duration_ms, window.app_exit_requested.emit)
     
-    # 启动应用程序事件循环
+    # 最后进入事件循环；之后的用户操作、定时器和后台信号均由 Qt 分发。
     return app.exec()
 
 

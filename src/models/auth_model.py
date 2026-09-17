@@ -1,4 +1,4 @@
-"""Authentication state and permission render models."""
+"""认证状态与界面权限渲染模型。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,14 @@ from .app_state import UserRole
 
 @dataclass
 class AuthModel:
-    """Controller-owned authentication state and persisted credential hashes."""
+    """由控制器管理的认证状态和可持久化凭据摘要。
+
+    用途：把用户凭据与当前登录角色封装为独立模型。
+    输入：配置中的用户映射或控制器更新后的角色状态。
+    输出：可安全交给配置层保存的用户映射。
+    关键步骤：读写映射时均深拷贝，隔离调用方对内部状态的修改。
+    风险点：这里只保存摘要及认证状态，明文密码处理必须留在认证服务中。
+    """
 
     users: Dict[str, Any] = field(default_factory=dict)
     current_role: UserRole = UserRole.GUEST
@@ -19,11 +26,13 @@ class AuthModel:
 
     @classmethod
     def from_mapping(cls, data: Any) -> "AuthModel":
+        """从可能不可信的配置值恢复认证模型；非映射值按空模型处理。"""
         if not isinstance(data, Mapping):
             return cls()
         return cls(users=deepcopy(dict(data)))
 
     def to_mapping(self) -> Dict[str, Any]:
+        """返回用户凭据的独立副本，供配置序列化层写入。"""
         return deepcopy(self.users)
 
 
@@ -40,6 +49,7 @@ class PermissionContext:
 
 @dataclass(frozen=True)
 class ControlPermissions:
+    """按当前角色和运行状态计算后交给界面的控件可用性集合。"""
     btn_choose_src: bool
     btn_choose_tgt: bool
     btn_choose_bak: bool
@@ -80,6 +90,7 @@ class ControlPermissions:
     menu_language: bool
 
     def to_mapping(self) -> Dict[str, bool]:
+        """转换为控件名到可用状态的映射，便于批量渲染。"""
         return dict(self.__dict__)
 
 
