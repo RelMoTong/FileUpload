@@ -1,4 +1,12 @@
-"""Password-change input dialog."""
+"""
+文件名：src/ui/dialogs/change_password_dialog.py
+文件作用：Qt 界面层的“change_password_dialog”模块。
+主要功能：按既有 Gateway 协议收集输入、展示状态并转发用户事件。
+模块关系：由 src.ui.main_window 或对话框组合；不直接依赖控制器、服务或持久化实现。
+阅读重点：先读 Gateway 协议、事件转发与 render_* 方法；样式和布局按区域阅读。
+
+Password-change input dialog.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +29,13 @@ class ChangePasswordDialog(QtWidgets.QDialog):
         scale_px: Callable[[int, int], int] = lambda value, minimum: max(value, minimum),
         dialog_size: Optional[QtCore.QSize] = None,
     ) -> None:
+        """作用：执行界面“__init__”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway 或刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式或公开接口。
+        """
         super().__init__(parent)
         self.setWindowTitle("🔑 修改密码")
         self.setModal(True)
@@ -55,6 +70,7 @@ class ChangePasswordDialog(QtWidgets.QDialog):
 
     @staticmethod
     def _password_input(placeholder: str) -> QtWidgets.QLineEdit:
+        """界面辅助：完成“_password_input”对应的既有局部显示或事件工作。"""
         line_edit = QtWidgets.QLineEdit()
         line_edit.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
         line_edit.setPlaceholderText(placeholder)
@@ -67,6 +83,7 @@ class ChangePasswordDialog(QtWidgets.QDialog):
         widget: QtWidgets.QWidget,
         scale_px: Callable[[int, int], int],
     ) -> None:
+        """界面辅助：完成“_add_row”对应的既有局部显示或事件工作。"""
         row = QtWidgets.QHBoxLayout()
         label = QtWidgets.QLabel(label_text)
         label.setMinimumWidth(scale_px(80, 64))
@@ -75,6 +92,7 @@ class ChangePasswordDialog(QtWidgets.QDialog):
         layout.addLayout(row)
 
     def _submit(self) -> None:
+        """界面辅助：完成“_submit”对应的既有局部显示或事件工作。"""
         raw_role = self.target_combo.currentData()
         try:
             role = raw_role if isinstance(raw_role, UserRole) else UserRole(raw_role)
@@ -88,8 +106,22 @@ class ChangePasswordDialog(QtWidgets.QDialog):
         )
 
     def render_change_failed(self) -> None:
+        """作用：执行界面“render_change_failed”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway 或刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式或公开接口。
+        """
         self.old_input.selectAll()
         self.old_input.setFocus()
 
     def render_changed(self) -> None:
+        """作用：执行界面“render_changed”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway 或刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式或公开接口。
+        """
         self.accept()

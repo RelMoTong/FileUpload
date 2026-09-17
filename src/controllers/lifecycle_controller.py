@@ -1,4 +1,12 @@
-"""Application shutdown orchestration with explicit dependency order."""
+"""
+文件名：src/controllers/lifecycle_controller.py
+文件作用：控制器层的“lifecycle_controller”协调模块。
+主要功能：接收界面意图、协调模型与服务，并保持既有 MVC 分层边界。
+模块关系：由 src.main 组装；仅通过抽象约定与服务协作，不直接承担界面或底层 IO。
+阅读重点：先读公开 Gateway 方法、状态转换与异步回调，再追踪注入的服务。
+
+Application shutdown orchestration with explicit dependency order.
+"""
 
 from __future__ import annotations
 
@@ -15,14 +23,24 @@ logger = logging.getLogger(__name__)
 
 
 class ShutdownParticipant(Protocol):
-    def shutdown(self) -> None: ...
+    def shutdown(self) -> None:
+        """协议占位：声明“shutdown”的最小调用约定，由实现方提供既有行为。"""
+        ...
 
 
 class LifecycleView(Protocol):
-    def set_all_tasks_pending_stop(self) -> None: ...
-    def abort_pending_exit(self, errors: tuple[str, ...]) -> None: ...
-    def prepare_for_shutdown(self) -> None: ...
-    def release_view_resources(self) -> None: ...
+    def set_all_tasks_pending_stop(self) -> None:
+        """协议占位：声明“set_all_tasks_pending_stop”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def abort_pending_exit(self, errors: tuple[str, ...]) -> None:
+        """协议占位：声明“abort_pending_exit”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def prepare_for_shutdown(self) -> None:
+        """协议占位：声明“prepare_for_shutdown”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def release_view_resources(self) -> None:
+        """协议占位：声明“release_view_resources”的最小调用约定，由实现方提供既有行为。"""
+        ...
 
 
 class LifecycleController:
@@ -36,6 +54,13 @@ class LifecycleController:
         runtime: ShutdownParticipant,
         quit_callback: Optional[Callable[[], None]] = None,
     ) -> None:
+        """作用：执行“__init__”的既有协调或状态处理职责。
+
+        参数：沿用当前函数签名及已有类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、回调或异常语义。
+        执行流程：按现有代码顺序完成校验、调用、状态更新与结果交付。
+        风险或注意事项：本说明不改变 MVC 分层、线程边界或公开接口；调用方须保持原有调用顺序。
+        """
         self._cleanup = cleanup
         self._upload = upload
         self._ftp = ftp
@@ -114,6 +139,13 @@ class LifecycleController:
             poll_timer.setInterval(max(1, poll_interval_ms))
 
             def running_workers() -> tuple[str, ...]:
+                """作用：执行“running_workers”的既有协调或状态处理职责。
+
+                参数：沿用当前函数签名及已有类型、单位和状态约定。
+                返回结果：沿用当前实现的返回值、回调或异常语义。
+                执行流程：按现有代码顺序完成校验、调用、状态更新与结果交付。
+                风险或注意事项：本说明不改变 MVC 分层、线程边界或公开接口；调用方须保持原有调用顺序。
+                """
                 running: list[str] = []
                 for name, participant in (
                     ("upload", self._upload),
@@ -133,10 +165,24 @@ class LifecycleController:
                 return tuple(running)
 
             def poll() -> None:
+                """作用：执行“poll”的既有协调或状态处理职责。
+
+                参数：沿用当前函数签名及已有类型、单位和状态约定。
+                返回结果：沿用当前实现的返回值、回调或异常语义。
+                执行流程：按现有代码顺序完成校验、调用、状态更新与结果交付。
+                风险或注意事项：本说明不改变 MVC 分层、线程边界或公开接口；调用方须保持原有调用顺序。
+                """
                 if not running_workers():
                     event_loop.quit()
 
             def timeout() -> None:
+                """作用：执行“timeout”的既有协调或状态处理职责。
+
+                参数：沿用当前函数签名及已有类型、单位和状态约定。
+                返回结果：沿用当前实现的返回值、回调或异常语义。
+                执行流程：按现有代码顺序完成校验、调用、状态更新与结果交付。
+                风险或注意事项：本说明不改变 MVC 分层、线程边界或公开接口；调用方须保持原有调用顺序。
+                """
                 nonlocal timed_out
                 timed_out = True
                 event_loop.quit()
@@ -185,6 +231,13 @@ class LifecycleController:
         quit_callback = self._quit_callback
         if quit_callback is not None:
             def issue_test_quit() -> None:
+                """作用：执行“issue_test_quit”的既有协调或状态处理职责。
+
+                参数：沿用当前函数签名及已有类型、单位和状态约定。
+                返回结果：沿用当前实现的返回值、回调或异常语义。
+                执行流程：按现有代码顺序完成校验、调用、状态更新与结果交付。
+                风险或注意事项：本说明不改变 MVC 分层、线程边界或公开接口；调用方须保持原有调用顺序。
+                """
                 if not self._is_pending_generation(generation):
                     return
                 try:
@@ -311,6 +364,7 @@ class LifecycleController:
                 logger.error("恢复退出前界面失败: %s: %s", type(exc).__name__, exc)
 
     def _disconnect_about_to_quit_handler(self) -> None:
+        """内部辅助：完成“_disconnect_about_to_quit_handler”对应的既有局部工作。"""
         with self._lock:
             app = self._pending_app
             handler = self._about_to_quit_handler
@@ -322,6 +376,7 @@ class LifecycleController:
                 pass
 
     def _is_pending_generation(self, generation: int) -> bool:
+        """内部辅助：完成“_is_pending_generation”对应的既有局部工作。"""
         with self._lock:
             return self._quit_pending and generation == self._quit_generation
 
@@ -333,6 +388,13 @@ class LifecycleController:
         order: List[str],
         errors: List[str],
     ) -> None:
+        """作用：执行“_request_participant_stop”的既有协调或状态处理职责。
+
+        参数：沿用当前函数签名及已有类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、回调或异常语义。
+        执行流程：按现有代码顺序完成校验、调用、状态更新与结果交付。
+        风险或注意事项：本说明不改变 MVC 分层、线程边界或公开接口；调用方须保持原有调用顺序。
+        """
         try:
             for method_name in method_names:
                 method = getattr(participant, method_name, None)
@@ -351,6 +413,13 @@ class LifecycleController:
             order.append(label)
 
     def shutdown(self, view: LifecycleView) -> LifecycleShutdownResult:
+        """作用：执行“shutdown”的既有协调或状态处理职责。
+
+        参数：沿用当前函数签名及已有类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、回调或异常语义。
+        执行流程：按现有代码顺序完成校验、调用、状态更新与结果交付。
+        风险或注意事项：本说明不改变 MVC 分层、线程边界或公开接口；调用方须保持原有调用顺序。
+        """
         with self._lock:
             if self._result is not None:
                 return self._result

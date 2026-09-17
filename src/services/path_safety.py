@@ -1,4 +1,12 @@
-"""Canonical local-path relationship checks used before upload startup."""
+"""
+文件名：src/services/path_safety.py
+文件作用：业务服务层的“path_safety”模块。
+主要功能：封装既有业务规则、后台任务生命周期与底层协作者调用。
+模块关系：由控制器或组合根使用，可调用 Repository、Worker 和 Protocol；不直接操作 View。
+阅读重点：关注输入校验、状态转换、线程/定时器收尾、文件与网络失败路径。
+
+Canonical local-path relationship checks used before upload startup.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +25,7 @@ class LocalPathConflict:
 
 
 def _looks_like_unc(path: str) -> bool:
+    """内部辅助：完成“_looks_like_unc”对应的既有局部工作。"""
     value = path.replace("/", "\\")
     return value.startswith("\\\\")
 
@@ -39,6 +48,7 @@ def normalize_local_path(path: str) -> str:
 
 
 def _relationship(left: str, right: str) -> str:
+    """内部辅助：完成“_relationship”对应的既有局部工作。"""
     if left == right:
         return "same"
     try:
@@ -79,6 +89,13 @@ def find_local_path_conflicts(
 
 
 def describe_local_path_conflict(conflict: LocalPathConflict) -> str:
+    """作用：执行“describe_local_path_conflict”的既有业务服务职责。
+
+    参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+    返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+    执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+    风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+    """
     if conflict.relation == "same":
         return (
             f"{conflict.left_label}与{conflict.right_label}路径相同："

@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
 """
+文件名：src/main.py
+文件作用：桌面应用的唯一组合根与启动入口。
+主要功能：检查依赖、延迟加载 Qt、建立单实例保护、装配 MVC，并进入事件循环。
+模块关系：创建并连接 Repository、Service、Model、Controller 与 MainWindow；不承载具体业务规则。
+阅读重点：按 main() 的编号步骤理解启动顺序；退出顺序由 LifecycleController 负责。
+
 图片异步上传工具 - 主程序入口
 
 v3.1.1 - 断点续传、中英文切换、配置加载修复
@@ -32,26 +38,26 @@ def check_dependencies() -> Tuple[bool, List[str], List[str]]:
     """
     missing_required: List[str] = []
     missing_optional: List[str] = []
-    
+
     # 可选依赖
     optional_packages = [
         ('pyftpdlib', 'pip install pyftpdlib'),  # FTP 服务器功能
         ('OpenSSL', 'pip install pyOpenSSL'),  # FTPS 服务器 TLS 支持
     ]
-    
+
     # 检查必需依赖
     try:
         import PySide6  # noqa: F401
     except ImportError:
         missing_required.append('PySide6: pip install PySide6')
-    
+
     # 检查可选依赖
     for pkg_name, install_cmd in optional_packages:
         try:
             __import__(pkg_name)
         except ImportError:
             missing_optional.append(f'{pkg_name}: {install_cmd}')
-    
+
     return len(missing_required) == 0, missing_required, missing_optional
 
 
@@ -63,7 +69,7 @@ def show_dependency_warning(missing_required: List[str], missing_optional: List[
         for dep in missing_required:
             print(f"   - {dep}")
         print("=" * 60 + "\n")
-    
+
     if missing_optional:
         print("\n" + "-" * 60)
         print("缺少可选依赖，部分功能不可用：")
@@ -328,10 +334,10 @@ def main():
         show_dependency_warning(missing_required, missing_optional)
         print("程序因缺少必需依赖而无法启动。")
         return 1
-    
+
     if missing_optional:
         show_dependency_warning([], missing_optional)
-    
+
     # 第二步：依赖确认后才导入 Qt，避免缺包时产生难以理解的 ImportError。
     global QtCore, QtWidgets, QLocalServer, QLocalSocket  # type: ignore
     try:
@@ -376,18 +382,18 @@ def main():
     from src.ui import MainWindow  # type: ignore
 
     app = QtWidgets.QApplication(sys.argv)
-    
+
     # 第四步：设置应用元数据，供系统任务栏、设置和日志展示。
     app.setApplicationName("图片异步上传工具")
     app.setApplicationVersion(get_app_version())
     app.setOrganizationName("RelMoTong")
-    
+
     # 第五步：先检查本机是否已有实例，避免两个进程同时处理同一批源文件。
     server_name = "ImageUploadTool_SingleInstance_Server"
     if wakeup_existing_instance(server_name, attempts=1, wait_ms=0, connect_ms=200):
         # 已有实例运行且已发送唤醒消息，本进程无需继续创建第二套 Worker。
         return 0
-    
+
     # 第六步：使用共享内存作为辅助锁，缩小 LocalServer 建立前的极端竞态窗口。
     shared_mem = QtCore.QSharedMemory("ImageUploadTool_SingleInstance")
     if not shared_mem.create(1):
@@ -402,7 +408,7 @@ def main():
         msg.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)  # type: ignore[arg-type]
         msg.exec() if hasattr(msg, 'exec') else msg.exec_()
         return 1
-    
+
     # 第七步：所有 Controller、Service、Repository 都在组合根创建，再注入主窗口。
     app_dir = get_app_dir()
     settings_repository = ConfigRepository(app_dir / 'config.json')
@@ -476,7 +482,7 @@ def main():
         # 允许真实 72 小时长稳，同时限制非法负值/溢出值，避免发布自动化无限运行。
         smoke_duration_ms = min(max(1000, smoke_duration_ms), 72 * 60 * 60 * 1000)
         QtCore.QTimer.singleShot(smoke_duration_ms, window.app_exit_requested.emit)
-    
+
     # 最后进入事件循环；之后的用户操作、定时器和后台信号均由 Qt 分发。
     return app.exec()
 

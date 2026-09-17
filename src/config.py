@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
 """
+文件名：src/config.py
+文件作用：应用入口配套模块“config”。
+主要功能：提供当前既有能力，并以中文说明固定数据、状态和调用边界。
+模块关系：由上层组合根或相邻分层模块调用；不改变现有依赖方向。
+阅读重点：先读公开类型/函数、关键状态和单位说明，再按调用链追踪。
+
 配置管理模块
 
 负责配置文件的加载、保存和默认值生成
@@ -26,7 +32,7 @@ class ConfigManager:
     关键步骤：深度合并默认值、移除废弃字段、保留未知未来字段和用户凭据、原子写盘。
     风险点：普通设置保存不能覆盖改密后的凭据；解析失败时必须备份原文件而不能写空配置。
     """
-    
+
     DEFAULT_CONFIG = {
         'source_folder': '',
         'target_folder': '',
@@ -111,7 +117,7 @@ class ConfigManager:
     # 旧版本曾写入这些字段，但当前已被固定策略替代或不再生效。
     # 保存时会主动移除它们，同时保留未来版本可能新增的未知字段。
     RETIRED_CONFIG_KEYS = SHARED_RETIRED_CONFIG_KEYS
-    
+
     def __init__(self, config_path: Path):
         """初始化配置管理器和同目录的原子 JSON 存储。
 
@@ -156,7 +162,7 @@ class ConfigManager:
             for key, value in config.items()
             if key not in cls.RETIRED_CONFIG_KEYS
         }
-    
+
     def load(self) -> Dict[str, Any]:
         """加载并规范化配置文件；故障时保留原文件并返回内存默认配置。
 
@@ -173,12 +179,12 @@ class ConfigManager:
             self._config = copy.deepcopy(self.DEFAULT_CONFIG)
             self.save(self._config)
             return copy.deepcopy(self._config)
-        
+
         try:
             loaded_config = self._store.read(default=None)
             if not isinstance(loaded_config, dict):
                 raise ValueError("配置文件必须是 JSON 对象")
-            
+
             # 先移除废弃字段，再深度合并默认值以兼容旧版本缺少的新字段。
             loaded_config = self._without_retired_keys(loaded_config)
             merged_config = apply_stability_feature_freeze(
@@ -209,7 +215,7 @@ class ConfigManager:
             print(self.last_error)
             self._config = copy.deepcopy(self.DEFAULT_CONFIG)
             return copy.deepcopy(self._config)
-    
+
     def save(self, config: Dict[str, Any], preserve_users: bool = True) -> bool:
         """以原子方式保存配置，并默认保留磁盘上最新的用户凭据。
 
@@ -256,15 +262,15 @@ class ConfigManager:
             self.last_error = str(e)
             print(f"配置保存失败: {e}")
             return False
-    
+
     def get(self, key: str, default: Any = None) -> Any:
         """从内存配置读取单项；键不存在时返回调用方给定的默认值。"""
         return self._config.get(key, default)
-    
+
     def set(self, key: str, value: Any) -> None:
         """仅更新内存配置；调用方需要显式调用【save】才会写入磁盘。"""
         self._config[key] = value
-    
+
     @staticmethod
     def get_default_config() -> Dict[str, Any]:
         """返回默认配置的深拷贝，防止调用方污染类级默认值。"""

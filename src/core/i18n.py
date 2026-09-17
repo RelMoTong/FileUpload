@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
 """
+文件名：src/core/i18n.py
+文件作用：通用基础设施与安全边界模块“i18n”。
+主要功能：提供当前既有能力，并以中文说明固定数据、状态和调用边界。
+模块关系：由上层组合根或相邻分层模块调用；不改变现有依赖方向。
+阅读重点：先读公开类型/函数、关键状态和单位说明，再按调用链追踪。
+
 多语言国际化模块
 
 v3.0.2 新增功能：
@@ -48,7 +54,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '语言',
         LANG_EN_US: 'Language',
     },
-    
+
     # ========== 文件夹设置卡片 ==========
     'card_folder_settings': {
         LANG_ZH_CN: '📁 文件夹设置',
@@ -78,7 +84,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '💡 启用后，上传成功的文件会移动到备份文件夹保存；禁用后文件上传成功会直接删除',
         LANG_EN_US: '💡 When enabled, uploaded files are moved to backup folder; when disabled, files are deleted after upload',
     },
-    
+
     # ========== 上传设置卡片 ==========
     'card_upload_settings': {
         LANG_ZH_CN: '⚙️ 上传设置',
@@ -140,7 +146,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '磁盘检查间隔(秒)',
         LANG_EN_US: 'Disk Check Interval (sec)',
     },
-    
+
     # ========== FTP 配置 ==========
     'ftp_server_config': {
         LANG_ZH_CN: '🖥️ FTP 服务器配置',
@@ -218,13 +224,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '■ 停止FTP服务器',
         LANG_EN_US: '■ Stop FTP Server',
     },
-    
+
     # ========== 文件类型限制 ==========
     'file_type_filter': {
         LANG_ZH_CN: '📋 文件类型限制',
         LANG_EN_US: '📋 File Type Filter',
     },
-    
+
     # ========== 高级选项 ==========
     'advanced_options': {
         LANG_ZH_CN: '⚡ 高级选项',
@@ -262,7 +268,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '▶️ 恢复时自动继续',
         LANG_EN_US: '▶️ Auto Resume on Reconnect',
     },
-    
+
     # ========== 操作控制卡片 ==========
     'card_control': {
         LANG_ZH_CN: '🎮 操作控制',
@@ -308,7 +314,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '🚪 退出登录',
         LANG_EN_US: '🚪 Logout',
     },
-    
+
     # ========== 运行状态卡片 ==========
     'card_status': {
         LANG_ZH_CN: '📊 运行状态',
@@ -390,7 +396,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '总体进度',
         LANG_EN_US: 'Overall Progress',
     },
-    
+
     # ========== 日志卡片 ==========
     'card_log': {
         LANG_ZH_CN: '📜 运行日志',
@@ -400,7 +406,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: ' 自动滚动',
         LANG_EN_US: ' Auto Scroll',
     },
-    
+
     # ========== 角色和权限 ==========
     'role_guest': {
         LANG_ZH_CN: '🔒 未登录',
@@ -414,7 +420,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '👑 管理员',
         LANG_EN_US: '👑 Admin',
     },
-    
+
     # ========== 对话框 ==========
     'dialog_login': {
         LANG_ZH_CN: '🔐 权限登录',
@@ -436,7 +442,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '确认',
         LANG_EN_US: 'Confirm',
     },
-    
+
     # ========== 提示消息 ==========
     'msg_login_success': {
         LANG_ZH_CN: '登录成功！',
@@ -490,7 +496,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '权限不足',
         LANG_EN_US: 'Permission denied',
     },
-    
+
     # ========== 断点续传相关 ==========
     'resume_upload': {
         LANG_ZH_CN: '断点续传',
@@ -512,7 +518,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '续传进度',
         LANG_EN_US: 'Resume Progress',
     },
-    
+
     # ========== 系统托盘 ==========
     'tray_show': {
         LANG_ZH_CN: '显示主窗口',
@@ -526,7 +532,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '退出程序',
         LANG_EN_US: 'Exit',
     },
-    
+
     'minutes': {
         LANG_ZH_CN: '分钟',
         LANG_EN_US: 'min',
@@ -539,7 +545,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '天',
         LANG_EN_US: 'days',
     },
-    
+
     # ========== 路径行标签 ==========
     'source_folder_label': {
         LANG_ZH_CN: '源文件夹',
@@ -553,7 +559,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '备份文件夹',
         LANG_EN_US: 'Backup Folder',
     },
-    
+
     # ========== 协议相关 ==========
     'upload_protocol_title': {
         LANG_ZH_CN: '📡 上传协议 (v2.0)',
@@ -571,7 +577,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '重试次数:',
         LANG_EN_US: 'Retries:',
     },
-    
+
     # ========== 设置行 ==========
     'interval_label': {
         LANG_ZH_CN: '间隔时间(秒)',
@@ -597,19 +603,19 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '检测间隔:',
         LANG_EN_US: 'Check Interval:',
     },
-    
+
     # ========== 标题栏 ==========
     'header_title': {
         LANG_ZH_CN: '图片异步上传工具',
         LANG_EN_US: 'Image Upload Tool',
     },
-    
+
     # ========== 当前文件 ==========
     'current_file_label': {
         LANG_ZH_CN: '📄 当前文件',
         LANG_EN_US: '📄 Current File',
     },
-    
+
     # ========== 上传协议选项 ==========
     'protocol_option_smb': {
         LANG_ZH_CN: 'SMB (网络共享)',
@@ -631,7 +637,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '启用后，本机将作为FTP服务器，其他设备可连接上传文件到指定文件夹',
         LANG_EN_US: 'When enabled, this machine acts as FTP server, others can connect to upload files',
     },
-    
+
     # ========== FTP 表单标签 ==========
     'shared_dir': {
         LANG_ZH_CN: '共享目录:',
@@ -645,7 +651,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '远程路径:',
         LANG_EN_US: 'Remote Path:',
     },
-    
+
     # ========== 登录对话框 ==========
     'login_role_label': {
         LANG_ZH_CN: '登录角色:',
@@ -691,7 +697,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '已退出登录',
         LANG_EN_US: 'Logged out',
     },
-    
+
     # ========== 修改密码对话框 ==========
     'change_target': {
         LANG_ZH_CN: '修改对象:',
@@ -709,7 +715,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '确认密码:',
         LANG_EN_US: 'Confirm:',
     },
-    
+
     # ========== 芯片额外标签 ==========
     'protocol_chip': {
         LANG_ZH_CN: '上传协议',
@@ -731,7 +737,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '未连接',
         LANG_EN_US: 'Not Connected',
     },
-    
+
     # ========== 可折叠区块标题 ==========
     'file_filter_title': {
         LANG_ZH_CN: '📋 文件类型限制',
@@ -741,7 +747,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '⚡ 高级选项',
         LANG_EN_US: '⚡ Advanced Options',
     },
-    
+
     # ========== 工具提示 ==========
     'limit_rate_tooltip': {
         LANG_ZH_CN: '启用后将限制最大上传速度，避免占用过多带宽',
@@ -751,7 +757,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '设置最大上传速率（单位：MB/秒）',
         LANG_EN_US: 'Set max upload rate (MB/s)',
     },
-    
+
     # ========== 去重相关 ==========
     'duplicate_strategy': {
         LANG_ZH_CN: '重复策略',
@@ -777,7 +783,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '💡 通过文件哈希检测重复，避免上传相同内容的文件',
         LANG_EN_US: '💡 Detect duplicates via file hash to avoid uploading identical files',
     },
-    
+
     # ========== 网络监控 ==========
     'network_monitor': {
         LANG_ZH_CN: '🌐 网络监控',
@@ -791,7 +797,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '💡 实时监控网络状态，断网时自动暂停，恢复后自动继续',
         LANG_EN_US: '💡 Monitor network status and auto-pause/resume on disconnect/reconnect',
     },
-    
+
     # ========== FTP 配置标签 ==========
     'listen_address': {
         LANG_ZH_CN: '监听地址:',
@@ -873,7 +879,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '连接限制:',
         LANG_EN_US: 'Conn Limit:',
     },
-    
+
     # ========== FTP 客户端标签 ==========
     'remote_path_tooltip': {
         LANG_ZH_CN: '上传到远程FTP服务器的目标路径',
@@ -935,7 +941,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '连接到FTPS服务器时启用',
         LANG_EN_US: 'Enable when connecting to FTPS server',
     },
-    
+
     # ========== v3.1.0 新增：密码可见性切换 ==========
     'show_password': {
         LANG_ZH_CN: '显示密码',
@@ -945,7 +951,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         LANG_ZH_CN: '隐藏密码',
         LANG_EN_US: 'Hide Password',
     },
-    
+
     # ========== v3.1.0 新增：协议模式增强 ==========
     'current_mode': {
         LANG_ZH_CN: '当前模式',
@@ -1330,88 +1336,89 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
 
 class I18n:
     """国际化管理器
-    
+
     支持中英文切换，动态更新 UI 文本
     """
-    
+
     _instance: Optional['I18n'] = None
     _current_lang: str = LANG_ZH_CN
     _listeners: List[Callable[[], None]] = []
-    
+
     def __new__(cls):
         """单例模式"""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
-    
+
     def __init__(self):
+        """内部辅助：完成“__init__”对应的既有局部工作。"""
         pass
-    
+
     @classmethod
     def get_instance(cls) -> 'I18n':
         """获取单例实例"""
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
-    
+
     @classmethod
     def get_current_language(cls) -> str:
         """获取当前语言"""
         return cls._current_lang
-    
+
     @classmethod
     def set_language(cls, lang: str) -> bool:
         """设置当前语言
-        
+
         Args:
             lang: 语言代码 (zh_CN 或 en_US)
-            
+
         Returns:
             是否设置成功
         """
         if lang not in [LANG_ZH_CN, LANG_EN_US]:
             logger.warning(f"不支持的语言: {lang}")
             return False
-        
+
         if lang == cls._current_lang:
             return True
-        
+
         cls._current_lang = lang
         logger.info(f"语言已切换: {lang}")
-        
+
         # 通知所有监听器
         for listener in cls._listeners:
             try:
                 listener()
             except Exception as e:
                 logger.warning(f"语言切换监听器执行失败: {e}")
-        
+
         return True
-    
+
     @classmethod
     def add_listener(cls, callback: Callable[[], None]):
         """添加语言切换监听器
-        
+
         Args:
             callback: 语言切换时的回调函数
         """
         if callback not in cls._listeners:
             cls._listeners.append(callback)
-    
+
     @classmethod
     def remove_listener(cls, callback: Callable[[], None]):
         """移除语言切换监听器"""
         if callback in cls._listeners:
             cls._listeners.remove(callback)
-    
+
     @classmethod
     def t(cls, key: str, default: str = '') -> str:
         """翻译文本
-        
+
         Args:
             key: 翻译键
             default: 默认值（如果找不到翻译）
-            
+
         Returns:
             翻译后的文本
         """
@@ -1419,9 +1426,9 @@ class I18n:
         if not translation:
             logger.debug(f"未找到翻译: {key}")
             return default or key
-        
+
         return translation.get(cls._current_lang, translation.get(LANG_ZH_CN, default or key))
-    
+
     @classmethod
     def get_language_name(cls, lang: str) -> str:
         """获取语言显示名称"""
@@ -1429,7 +1436,7 @@ class I18n:
             if code == lang:
                 return name
         return lang
-    
+
     @classmethod
     def get_supported_languages(cls) -> List[tuple]:
         """获取支持的语言列表"""
@@ -1439,7 +1446,7 @@ class I18n:
 # 便捷函数
 def t(key: str, default: str = '') -> str:
     """翻译快捷函数
-    
+
     使用方法:
         from src.core.i18n import t
         label = t('start_upload')  # 返回 "▶ 开始上传" 或 "▶ Start Upload"

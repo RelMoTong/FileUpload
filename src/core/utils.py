@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
 """
+文件名：src/core/utils.py
+文件作用：通用基础设施与安全边界模块“utils”。
+主要功能：提供当前既有能力，并以中文说明固定数据、状态和调用边界。
+模块关系：由上层组合根或相邻分层模块调用；不改变现有依赖方向。
+阅读重点：先读公开类型/函数、关键状态和单位说明，再按调用链追踪。
+
 通用工具函数模块
 
 提供路径处理、资源访问等通用功能
@@ -19,10 +25,10 @@ except Exception:
 
 def get_app_dir() -> Path:
     """获取应用程序数据目录（用于配置和日志等可写文件）
-    
+
     - 开发环境：返回项目根目录
     - 打包后：返回 exe 所在目录（用户可写）
-    
+
     Returns:
         Path: 应用程序数据目录
     """
@@ -35,12 +41,12 @@ def get_app_dir() -> Path:
 
 def get_resource_path(relative_path: str) -> Path:
     """获取资源文件的绝对路径（支持打包）
-    
+
     用于读取只读资源文件，如 Logo、默认配置等
-    
+
     Args:
         relative_path: 相对于资源目录的路径，如 'assets/logo.png'
-    
+
     Returns:
         Path: 资源文件的绝对路径
     """
@@ -56,7 +62,7 @@ def get_resource_path(relative_path: str) -> Path:
 
 def get_app_version() -> str:
     """获取应用程序版本号
-    
+
     Returns:
         str: 版本号，如 "3.2.0"
     """
@@ -65,7 +71,7 @@ def get_app_version() -> str:
 
 def get_app_title() -> str:
     """获取应用程序标题
-    
+
     Returns:
         str: 应用程序标题
     """

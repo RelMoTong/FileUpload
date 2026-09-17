@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
 """
+文件名：src/protocols/ftp.py
+文件作用：网络传输协议实现模块“ftp”。
+主要功能：在既有分层内处理网络、文件、状态记录或后台任务。
+模块关系：由服务或组合根注入调用；保留现有 JSON、网络和线程边界。
+阅读重点：关注资源生命周期、失败路径、状态记录和路径/网络安全条件。
+
 FTP/FTPS 协议处理模块
 支持 FTP 服务器和客户端功能
 
@@ -33,7 +39,7 @@ logger = logging.getLogger(__name__)
 class FTPServerManager:
     """
     FTP 服务器管理器
-    
+
     功能：
     - 启动/停止 FTP 服务器
     - 用户认证管理
@@ -43,11 +49,11 @@ class FTPServerManager:
     - 连接数限制
     - 状态监控
     """
-    
+
     def __init__(self, config: dict):
         """
         初始化 FTP 服务器
-        
+
         Args:
             config: 配置字典
                 {
@@ -70,11 +76,11 @@ class FTPServerManager:
         self.is_running = False
         self._stop_event = threading.Event()
         self.event_callback: Optional[Callable[[dict], None]] = config.get('event_callback')
-        
+
         # 确保共享目录存在
         shared_folder = Path(config.get('shared_folder', 'D:/FTP_Share'))
         shared_folder.mkdir(parents=True, exist_ok=True)
-        
+
         logger.info(f"FTP 服务器管理器初始化: {config.get('host')}:{config.get('port')}")
 
     def _emit_event(self, event: str, **payload):
@@ -112,39 +118,40 @@ class FTPServerManager:
         except OSError as exc:
             logger.warning("FTP 不完整文件隔离失败 %s: %s", source, exc)
             return ""
-    
+
     def start(self) -> bool:
         """
         启动 FTP 服务器
-        
+
         Returns:
             bool: 启动是否成功
         """
         if self.is_running:
             logger.warning("FTP 服务器已在运行")
             return False
-        
+
         try:
             # 创建授权器
             authorizer = DummyAuthorizer()
-            
+
             # 添加用户（可读写）
             username = self.config.get('username', 'upload_user')
             password = self.config.get('password', 'upload_pass')
             shared_folder = str(self.config.get('shared_folder', 'D:/FTP_Share'))
-            
+
             authorizer.add_user(
                 username=username,
                 password=password,
                 homedir=shared_folder,
                 perm='elradfmwMT'  # 完整权限
             )
-            
+
             logger.info(f"已添加 FTP 用户: {username}")
-            
+
             manager = self
 
             def _file_size(file_path: str) -> int:
+                """内部辅助：完成“_file_size”对应的既有局部工作。"""
                 try:
                     return os.path.getsize(file_path)
                 except OSError:
@@ -152,6 +159,13 @@ class FTPServerManager:
 
             class EventHandlerMixin:
                 def on_connect(self):
+                    """作用：执行“on_connect”的既有业务或基础设施职责。
+
+                    参数：沿用当前函数签名及已有路径、端口、重试、状态和类型约定。
+                    返回结果：沿用当前实现的返回值、事件或异常语义。
+                    执行流程：按现有代码顺序完成校验、处理、状态记录与结果交付。
+                    风险或注意事项：本说明不改变文件、网络、JSON 持久化、线程或公开接口约定。
+                    """
                     manager._emit_event(
                         'connect',
                         client_ip=getattr(self, 'remote_ip', ''),
@@ -159,6 +173,13 @@ class FTPServerManager:
                     )
 
                 def on_disconnect(self):
+                    """作用：执行“on_disconnect”的既有业务或基础设施职责。
+
+                    参数：沿用当前函数签名及已有路径、端口、重试、状态和类型约定。
+                    返回结果：沿用当前实现的返回值、事件或异常语义。
+                    执行流程：按现有代码顺序完成校验、处理、状态记录与结果交付。
+                    风险或注意事项：本说明不改变文件、网络、JSON 持久化、线程或公开接口约定。
+                    """
                     manager._emit_event(
                         'disconnect',
                         client_ip=getattr(self, 'remote_ip', ''),
@@ -167,6 +188,13 @@ class FTPServerManager:
                     )
 
                 def on_login(self, username):
+                    """作用：执行“on_login”的既有业务或基础设施职责。
+
+                    参数：沿用当前函数签名及已有路径、端口、重试、状态和类型约定。
+                    返回结果：沿用当前实现的返回值、事件或异常语义。
+                    执行流程：按现有代码顺序完成校验、处理、状态记录与结果交付。
+                    风险或注意事项：本说明不改变文件、网络、JSON 持久化、线程或公开接口约定。
+                    """
                     manager._emit_event(
                         'login_ok',
                         client_ip=getattr(self, 'remote_ip', ''),
@@ -175,6 +203,13 @@ class FTPServerManager:
                     )
 
                 def on_login_failed(self, username, password):
+                    """作用：执行“on_login_failed”的既有业务或基础设施职责。
+
+                    参数：沿用当前函数签名及已有路径、端口、重试、状态和类型约定。
+                    返回结果：沿用当前实现的返回值、事件或异常语义。
+                    执行流程：按现有代码顺序完成校验、处理、状态记录与结果交付。
+                    风险或注意事项：本说明不改变文件、网络、JSON 持久化、线程或公开接口约定。
+                    """
                     manager._emit_event(
                         'login_failed',
                         client_ip=getattr(self, 'remote_ip', ''),
@@ -183,6 +218,13 @@ class FTPServerManager:
                     )
 
                 def on_file_received(self, file):
+                    """作用：执行“on_file_received”的既有业务或基础设施职责。
+
+                    参数：沿用当前函数签名及已有路径、端口、重试、状态和类型约定。
+                    返回结果：沿用当前实现的返回值、事件或异常语义。
+                    执行流程：按现有代码顺序完成校验、处理、状态记录与结果交付。
+                    风险或注意事项：本说明不改变文件、网络、JSON 持久化、线程或公开接口约定。
+                    """
                     manager._emit_event(
                         'upload_ok',
                         client_ip=getattr(self, 'remote_ip', ''),
@@ -193,6 +235,13 @@ class FTPServerManager:
                     )
 
                 def on_incomplete_file_received(self, file):
+                    """作用：执行“on_incomplete_file_received”的既有业务或基础设施职责。
+
+                    参数：沿用当前函数签名及已有路径、端口、重试、状态和类型约定。
+                    返回结果：沿用当前实现的返回值、事件或异常语义。
+                    执行流程：按现有代码顺序完成校验、处理、状态记录与结果交付。
+                    风险或注意事项：本说明不改变文件、网络、JSON 持久化、线程或公开接口约定。
+                    """
                     isolated_path = manager._isolate_incomplete_upload(str(file))
                     manager._emit_event(
                         'upload_incomplete',
@@ -231,9 +280,9 @@ class FTPServerManager:
                 # 普通 FTP 处理器
                 handler = EventFTPHandler
                 logger.info("使用普通 FTP 协议（无加密）")
-            
+
             handler.authorizer = authorizer
-            
+
             # 设置被动模式端口范围
             enable_passive = self.config.get('enable_passive', True)
             passive_ports = self.config.get('passive_ports')
@@ -251,23 +300,23 @@ class FTPServerManager:
                     handler.passive_ports = range(start_port, end_port + 1)  # type: ignore
                 else:
                     handler.passive_ports = range(end_port, start_port + 1)  # type: ignore
-            
+
             # 设置 banner
             handler.banner = "图片异步上传工具 v2.0 FTP 服务器"
-            
+
             # 设置超时
             handler.timeout = 300  # 5分钟超时
-            
+
             # 创建服务器
             host = self.config.get('host', '0.0.0.0')
             port = self.config.get('port', 21)
-            
+
             self.server = FTPServer((host, port), handler)
-            
+
             # 设置连接限制
             self.server.max_cons = self.config.get('max_cons', self.config.get('max_connections', 256))
             self.server.max_cons_per_ip = self.config.get('max_cons_per_ip', self.config.get('max_connections_per_ip', 5))
-            
+
             logger.info(f"FTP 服务器配置完成: {host}:{port}")
             logger.info(f"共享目录: {shared_folder}")
             if enable_passive and isinstance(passive_ports, (list, tuple)) and len(passive_ports) == 2:
@@ -276,7 +325,7 @@ class FTPServerManager:
                 logger.info("被动端口范围: 默认")
             logger.info(f"最大连接数: {self.server.max_cons}")
             logger.info(f"单IP最大连接数: {self.server.max_cons_per_ip}")
-            
+
             # 在新线程中启动服务器
             self._stop_event.clear()
             self.server_thread = threading.Thread(
@@ -285,10 +334,10 @@ class FTPServerManager:
                 name="FTPServerThread"
             )
             self.server_thread.start()
-            
+
             # 等待服务器启动
             time.sleep(0.5)
-            
+
             self.is_running = True
             logger.info("✓ FTP 服务器已启动")
             self._emit_event(
@@ -298,7 +347,7 @@ class FTPServerManager:
                 address=f"{host}:{port}"
             )
             return True
-            
+
         except PermissionError as e:
             logger.error(f"权限错误：{e}。端口 < 1024 需要管理员权限")
             self._emit_event('error', message=f"权限错误：{e}。端口 < 1024 需要管理员权限")
@@ -317,7 +366,7 @@ class FTPServerManager:
             import traceback
             traceback.print_exc()
             return False
-    
+
     def _run_server(self):
         """运行 FTP 服务器（在独立线程中）"""
         try:
@@ -330,38 +379,38 @@ class FTPServerManager:
             self.is_running = False
         finally:
             logger.info("FTP 服务器线程已退出")
-    
+
     def stop(self) -> bool:
         """
         停止 FTP 服务器
-        
+
         Returns:
             bool: 停止是否成功
         """
         if not self.is_running:
             logger.warning("FTP 服务器未运行")
             return False
-        
+
         try:
             logger.info("正在停止 FTP 服务器...")
             self._stop_event.set()
-            
+
             if self.server:
                 self.server.close_all()
-                
+
             self.is_running = False
             logger.info("✓ FTP 服务器已停止")
             self._emit_event('server_stopped', message='FTP 服务器已停止')
             return True
-            
+
         except Exception as e:
             logger.error(f"停止 FTP 服务器失败：{e}")
             return False
-    
+
     def get_status(self) -> dict:
         """
         获取服务器状态
-        
+
         Returns:
             dict: 服务器状态信息
         """
@@ -373,7 +422,7 @@ class FTPServerManager:
                 'shared_folder': None,
                 'tls_enabled': False
             }
-        
+
         # 获取当前连接数
         connection_count = 0
         try:
@@ -386,7 +435,7 @@ class FTPServerManager:
             # 意外错误，记录但不影响返回
             print(f"⚠️ FTP状态获取异常: {type(e).__name__}: {str(e)[:100]}")
             connection_count = 0
-        
+
         return {
             'running': True,
             'connections': connection_count,
@@ -396,7 +445,7 @@ class FTPServerManager:
             'max_connections': self.config.get('max_cons', self.config.get('max_connections', 256)),
             'max_connections_per_ip': self.config.get('max_cons_per_ip', self.config.get('max_connections_per_ip', 5))
         }
-    
+
     def __del__(self):
         """析构函数，确保服务器被关闭"""
         if self.is_running:
@@ -406,7 +455,7 @@ class FTPServerManager:
 class FTPClientUploader:
     """
     FTP 客户端上传器
-    
+
     功能：
     - 连接到 FTP 服务器
     - 用户认证
@@ -419,11 +468,11 @@ class FTPClientUploader:
     - 重试机制
     - 超时处理
     """
-    
+
     def __init__(self, config: dict):
         """
         初始化 FTP 客户端
-        
+
         Args:
             config: 配置字典
                 {
@@ -449,9 +498,9 @@ class FTPClientUploader:
         self._connection_lock = threading.Lock()
         self._connection_epoch = 0
         self._cancel_event = threading.Event()
-        
+
         logger.info(f"FTP 客户端初始化: {config.get('name', 'Unknown')} -> {config.get('host')}")
-    
+
     def connect(
         self,
         cancel_event: Optional[threading.Event] = None,
@@ -459,18 +508,32 @@ class FTPClientUploader:
     ) -> bool:
         """
         连接到 FTP 服务器
-        
+
         Returns:
             bool: 连接是否成功
         """
         self._cancel_event.clear()
 
         def cancelled() -> bool:
+            """作用：执行“cancelled”的既有业务或基础设施职责。
+
+            参数：沿用当前函数签名及已有路径、端口、重试、状态和类型约定。
+            返回结果：沿用当前实现的返回值、事件或异常语义。
+            执行流程：按现有代码顺序完成校验、处理、状态记录与结果交付。
+            风险或注意事项：本说明不改变文件、网络、JSON 持久化、线程或公开接口约定。
+            """
             return self._cancel_event.is_set() or bool(
                 cancel_event is not None and cancel_event.is_set()
             )
 
         def wait_for_retry(seconds: float) -> bool:
+            """作用：执行“wait_for_retry”的既有业务或基础设施职责。
+
+            参数：沿用当前函数签名及已有路径、端口、重试、状态和类型约定。
+            返回结果：沿用当前实现的返回值、事件或异常语义。
+            执行流程：按现有代码顺序完成校验、处理、状态记录与结果交付。
+            风险或注意事项：本说明不改变文件、网络、JSON 持久化、线程或公开接口约定。
+            """
             deadline = time.monotonic() + max(0.0, seconds)
             while not cancelled():
                 remaining = deadline - time.monotonic()
@@ -487,7 +550,7 @@ class FTPClientUploader:
                 return True
 
             retry_count = max(1, int(self.config.get('retry_count', 3)))
-            
+
             for attempt in range(retry_count):
                 if cancelled():
                     logger.info("FTP 连接已取消")
@@ -500,7 +563,7 @@ class FTPClientUploader:
                 candidate: Optional[Union[FTP, FTP_TLS]] = None
                 try:
                     logger.info(f"连接 FTP 服务器 (尝试 {attempt + 1}/{retry_count})...")
-                    
+
                     # 创建 FTP 对象
                     if self.config.get('enable_tls', False):
                         # FTPS 连接
@@ -522,7 +585,7 @@ class FTPClientUploader:
                         self.ftp = candidate
                         self.connected = False
                         self._connection_epoch += 1
-                    
+
                     # 连接
                     host = str(self.config.get('host', ''))
                     candidate.connect(
@@ -530,7 +593,7 @@ class FTPClientUploader:
                         port=self.config.get('port', 21),
                         timeout=self.config.get('timeout', 30)
                     )
-                    
+
                     # 登录
                     username = str(self.config.get('username', ''))
                     password = str(self.config.get('password', ''))
@@ -538,11 +601,11 @@ class FTPClientUploader:
                         user=username,
                         passwd=password
                     )
-                    
+
                     # FTPS 启用数据连接加密
                     if self.config.get('enable_tls', False) and isinstance(candidate, FTP_TLS):
                         candidate.prot_p()
-                    
+
                     # 设置被动/主动模式
                     if self.config.get('passive_mode', True):
                         candidate.set_pasv(True)
@@ -550,7 +613,7 @@ class FTPClientUploader:
                     else:
                         candidate.set_pasv(False)
                         logger.info("使用主动模式")
-                    
+
                     # 设置编码
                     candidate.encoding = 'utf-8'
 
@@ -564,10 +627,10 @@ class FTPClientUploader:
                         candidate.close()
                         logger.info("FTP 连接在完成前已取消")
                         return False
-                    
+
                 except Exception as e:
                     logger.error(f"连接失败 (尝试 {attempt + 1}/{retry_count})：{e}")
-                    
+
                     if candidate:
                         try:
                             candidate.close()
@@ -593,15 +656,15 @@ class FTPClientUploader:
                             return False
                     else:
                         logger.error("连接 FTP 服务器失败，已达最大重试次数")
-            
+
             with self._connection_lock:
                 self.connected = False
             return False
-    
+
     def disconnect(self) -> bool:
         """
         断开 FTP 连接
-        
+
         Returns:
             bool: 断开是否成功
         """
@@ -628,7 +691,7 @@ class FTPClientUploader:
     def cancel(self) -> None:
         """非阻塞请求取消连接、重试等待或当前 FTP 操作。"""
         self.disconnect()
-    
+
     def upload_file(
         self,
         local_path: Path,
@@ -668,6 +731,13 @@ class FTPClientUploader:
             remote_size: Optional[int] = None,
             response: str = "",
         ) -> FTPOperationResult:
+            """作用：执行“make_result”的既有业务或基础设施职责。
+
+            参数：沿用当前函数签名及已有路径、端口、重试、状态和类型约定。
+            返回结果：沿用当前实现的返回值、事件或异常语义。
+            执行流程：按现有代码顺序完成校验、处理、状态记录与结果交付。
+            风险或注意事项：本说明不改变文件、网络、JSON 持久化、线程或公开接口约定。
+            """
             return FTPOperationResult(
                 success,
                 message,
@@ -743,6 +813,13 @@ class FTPClientUploader:
                 last_chunk_time = time.time()
 
                 def callback(block: bytes) -> None:
+                    """作用：执行“callback”的既有业务或基础设施职责。
+
+                    参数：沿用当前函数签名及已有路径、端口、重试、状态和类型约定。
+                    返回结果：沿用当前实现的返回值、事件或异常语义。
+                    执行流程：按现有代码顺序完成校验、处理、状态记录与结果交付。
+                    风险或注意事项：本说明不改变文件、网络、JSON 持久化、线程或公开接口约定。
+                    """
                     nonlocal uploaded_bytes, last_chunk_time
                     chunk_start = last_chunk_time
                     uploaded_bytes += len(block)
@@ -947,7 +1024,7 @@ class FTPClientUploader:
                 and self._connection_epoch == connection_epoch
                 and not self._cancel_event.is_set()
             )
-    
+
     def upload_folder(
         self,
         local_folder: Path,
@@ -956,61 +1033,61 @@ class FTPClientUploader:
     ) -> Tuple[int, int]:
         """
         上传整个文件夹
-        
+
         Args:
             local_folder: 本地文件夹路径
             remote_base: 远程基础路径（可选）
             progress_callback: 进度回调函数 callback(current, total, filename)
-        
+
         Returns:
             tuple: (成功数, 失败数)
         """
         if not self.connected:
             logger.error("未连接到 FTP 服务器")
             return (0, 0)
-        
+
         local_folder = Path(local_folder)
         if not local_folder.exists():
             logger.error(f"文件夹不存在：{local_folder}")
             return (0, 0)
-        
+
         # 收集所有文件
         all_files = list(local_folder.rglob('*'))
         all_files = [f for f in all_files if f.is_file()]
-        
+
         total = len(all_files)
         success = 0
         failed = 0
-        
+
         # 确定远程基础路径
         if remote_base is None:
             remote_base = self.config.get('remote_path', '/')
-        
+
         logger.info(f"开始上传文件夹：{local_folder} → {remote_base} (共 {total} 个文件)")
-        
+
         for i, file_path in enumerate(all_files, 1):
             try:
                 # 计算相对路径
                 rel_path = file_path.relative_to(local_folder)
                 remote_path = f"{remote_base}/{rel_path.as_posix()}"
-                
+
                 # 上传文件
                 if self.upload_file(file_path, remote_path):
                     success += 1
                 else:
                     failed += 1
-                
+
                 # 调用回调
                 if progress_callback:
                     progress_callback(i, total, file_path.name)
-                    
+
             except Exception as e:
                 logger.error(f"上传文件失败 {file_path.name}：{e}")
                 failed += 1
-        
+
         logger.info(f"✓ 文件夹上传完成：成功 {success}，失败 {failed}")
         return (success, failed)
-    
+
     def _ensure_remote_dir(
         self,
         remote_dir: str,
@@ -1018,23 +1095,23 @@ class FTPClientUploader:
     ) -> bool:
         """
         确保远程目录存在
-        
+
         Args:
             remote_dir: 远程目录路径
         """
         if not remote_dir or remote_dir == '/' or remote_dir == '.':
             return True
-        
+
         # 标准化路径
         remote_dir = remote_dir.replace('\\', '/').strip('/')
-        
+
         if not remote_dir:
             return True
-        
+
         ftp = ftp_connection or self.ftp
         if ftp is None:
             return False
-            
+
         try:
             # 尝试切换到目录
             current = ftp.pwd()
@@ -1049,7 +1126,7 @@ class FTPClientUploader:
                 # 意外的目录检查错误
                 logger.debug(f"FTP目录检查异常: {type(e).__name__}: {e}")
                 return False  # 出错时不创建
-            
+
             # 递归创建目录
             parts = remote_dir.split('/')
             current_path = ''
@@ -1065,11 +1142,11 @@ class FTPClientUploader:
                 except Exception as e:
                     logger.debug(f"创建目录失败 {current_path}：{e}")
             return True
-            
+
         except Exception as e:
             logger.warning(f"确保远程目录存在时出错：{e}")
             return False
-    
+
     def test_connection(
         self,
         cancel_event: Optional[threading.Event] = None,
@@ -1077,7 +1154,7 @@ class FTPClientUploader:
     ) -> bool:
         """
         测试连接
-        
+
         Returns:
             bool: 连接测试是否成功
         """
@@ -1095,11 +1172,11 @@ class FTPClientUploader:
         except Exception as e:
             logger.error(f"连接测试失败：{e}")
             return False
-    
+
     def get_status(self) -> dict:
         """
         获取客户端状态
-        
+
         Returns:
             dict: 客户端状态信息
         """
@@ -1113,7 +1190,7 @@ class FTPClientUploader:
             'passive_mode': self.config.get('passive_mode', True),
             'timeout': self.config.get('timeout', 30)
         }
-    
+
     def __del__(self):
         """析构函数，确保连接被关闭"""
         if self.connected:
@@ -1127,32 +1204,32 @@ class FTPClientUploader:
 class FTPProtocolManager:
     """
     FTP 服务器生命周期管理器。
-    
+
     功能：
     - 启动和停止内置 FTP 服务器
     - 获取服务器运行状态
     - 统一停止服务并处理生命周期异常
-    
+
     工作模式：
     - 'none': 禁用 FTP（使用 SMB）
     - 'server': 仅 FTP 服务器
     """
-    
+
     def __init__(self):
         """初始化协议管理器"""
         self.server: Optional[FTPServerManager] = None
         self.mode = 'none'  # 'server' or 'none'
         self._lock = threading.RLock()  # 使用可重入锁防止stop_all()中的死锁
-        
+
         logger.info("FTP 协议管理器初始化")
-    
+
     def start_server(self, config: dict) -> bool:
         """
         启动 FTP 服务器
-        
+
         Args:
             config: 服务器配置
-        
+
         Returns:
             bool: 启动是否成功
         """
@@ -1161,27 +1238,27 @@ class FTPProtocolManager:
                 if self.server and self.server.is_running:
                     logger.warning("FTP 服务器已在运行")
                     return False
-                
+
                 self.server = FTPServerManager(config)
-                
+
                 if self.server.start():
                     self.mode = 'server'
-                    
+
                     logger.info(f"FTP 服务器已启动，当前模式：{self.mode}")
                     return True
                 else:
                     self.server = None
                     return False
-                    
+
             except Exception as e:
                 logger.error(f"启动 FTP 服务器失败：{e}")
                 self.server = None
                 return False
-    
+
     def stop_server(self) -> bool:
         """
         停止 FTP 服务器
-        
+
         Returns:
             bool: 停止是否成功
         """
@@ -1189,22 +1266,22 @@ class FTPProtocolManager:
             if not self.server:
                 logger.warning("FTP 服务器未启动")
                 return False
-            
+
             result = self.server.stop()
-            
+
             if result:
                 self.server = None
-                
+
                 self.mode = 'none'
-                
+
                 logger.info(f"FTP 服务器已停止，当前模式：{self.mode}")
-            
+
             return result
-    
+
     def get_status(self) -> dict:
         """
         获取整体状态
-        
+
         Returns:
             dict: 整体状态信息
         """
@@ -1212,19 +1289,19 @@ class FTPProtocolManager:
             'mode': self.mode,
             'server': self.server.get_status() if self.server else None,
         }
-    
+
     def stop_all(self):
         """停止所有服务器和客户端"""
         with self._lock:
             logger.info("正在停止所有 FTP 服务...")
-            
+
             # 停止服务器
             if self.server:
                 self.stop_server()
-            
+
             self.mode = 'none'
             logger.info("✓ 所有 FTP 服务已停止")
-    
+
     def __del__(self):
         """析构函数，确保所有服务被关闭"""
         try:

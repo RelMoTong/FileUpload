@@ -1,4 +1,10 @@
 """手动清理与自动清理的控制器。
+文件名：src/controllers/cleanup_controller.py
+文件作用：控制器层的“cleanup_controller”协调模块。
+主要功能：接收界面意图、协调模型与服务，并保持既有 MVC 分层边界。
+模块关系：由 src.main 组装；仅通过抽象约定与服务协作，不直接承担界面或底层 IO。
+阅读重点：先读公开 Gateway 方法、状态转换与异步回调，再追踪注入的服务。
+
 
 本模块不直接读写文件，也不直接操作界面。它负责把界面的操作转换为服务层请求，
 并管理自动清理任务的生命周期。这样做可以让 UI、后台线程和文件系统规则各自独立，
@@ -26,19 +32,43 @@ class CleanupBusinessService(Protocol):
     trash_available: bool
     is_scanning: bool
     is_deleting: bool
-    def validate_scan_request(self, request: CleanupScanRequest) -> CleanupValidationResult: ...
-    def start_scan(self, request: CleanupScanRequest, callback: Callable) -> CleanupCommandResult: ...
-    def cancel_scan(self) -> None: ...
-    def cancel(self) -> None: ...
+    def validate_scan_request(self, request: CleanupScanRequest) -> CleanupValidationResult:
+        """协议占位：声明“validate_scan_request”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def start_scan(self, request: CleanupScanRequest, callback: Callable) -> CleanupCommandResult:
+        """协议占位：声明“start_scan”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def cancel_scan(self) -> None:
+        """协议占位：声明“cancel_scan”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def cancel(self) -> None:
+        """协议占位：声明“cancel”的最小调用约定，由实现方提供既有行为。"""
+        ...
     @property
-    def has_running_workers(self) -> bool: ...
-    def start_delete(self, request: CleanupDeleteRequest, callback: Callable) -> CleanupCommandResult: ...
-    def shutdown_manual(self) -> None: ...
-    def validate_auto_request(self, request: AutoCleanupRequest) -> CleanupValidationResult: ...
-    def validate_cleanup_folder_group(self, folders: Any) -> Tuple[bool, str, Any]: ...
-    def should_trigger(self, request: AutoCleanupRequest) -> Tuple[bool, str]: ...
-    def record_blocked(self, request: AutoCleanupRequest, status: str, error: str) -> None: ...
-    def run_auto_cleanup(self, request: AutoCleanupRequest, cancel_event: Any, log: Callable[[str], None], delete_mode_provider: Optional[Callable[[], bool]] = None) -> AutoCleanupResult: ...
+    def has_running_workers(self) -> bool:
+        """协议占位：声明“has_running_workers”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def start_delete(self, request: CleanupDeleteRequest, callback: Callable) -> CleanupCommandResult:
+        """协议占位：声明“start_delete”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def shutdown_manual(self) -> None:
+        """协议占位：声明“shutdown_manual”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def validate_auto_request(self, request: AutoCleanupRequest) -> CleanupValidationResult:
+        """协议占位：声明“validate_auto_request”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def validate_cleanup_folder_group(self, folders: Any) -> Tuple[bool, str, Any]:
+        """协议占位：声明“validate_cleanup_folder_group”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def should_trigger(self, request: AutoCleanupRequest) -> Tuple[bool, str]:
+        """协议占位：声明“should_trigger”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def record_blocked(self, request: AutoCleanupRequest, status: str, error: str) -> None:
+        """协议占位：声明“record_blocked”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def run_auto_cleanup(self, request: AutoCleanupRequest, cancel_event: Any, log: Callable[[str], None], delete_mode_provider: Optional[Callable[[], bool]] = None) -> AutoCleanupResult:
+        """协议占位：声明“run_auto_cleanup”的最小调用约定，由实现方提供既有行为。"""
+        ...
 
 
 class CleanupController:
@@ -134,8 +164,24 @@ class CleanupController:
         self._service.cancel()
         self._manual_listener = None
 
-    def validate_auto_request(self, request: AutoCleanupRequest) -> CleanupValidationResult: return self._service.validate_auto_request(request)
-    def validate_folder_group(self, folders: Any) -> Tuple[bool, str, Any]: return self._service.validate_cleanup_folder_group(folders)
+    def validate_auto_request(self, request: AutoCleanupRequest) -> CleanupValidationResult:
+        """作用：执行“validate_auto_request”的既有协调或状态处理职责。
+
+        参数：沿用当前函数签名及已有类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、回调或异常语义。
+        执行流程：按现有代码顺序完成校验、调用、状态更新与结果交付。
+        风险或注意事项：本说明不改变 MVC 分层、线程边界或公开接口；调用方须保持原有调用顺序。
+        """
+        return self._service.validate_auto_request(request)
+    def validate_folder_group(self, folders: Any) -> Tuple[bool, str, Any]:
+        """作用：执行“validate_folder_group”的既有协调或状态处理职责。
+
+        参数：沿用当前函数签名及已有类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、回调或异常语义。
+        执行流程：按现有代码顺序完成校验、调用、状态更新与结果交付。
+        风险或注意事项：本说明不改变 MVC 分层、线程边界或公开接口；调用方须保持原有调用顺序。
+        """
+        return self._service.validate_cleanup_folder_group(folders)
 
     def configure_auto_cleanup(self, request: AutoCleanupRequest) -> bool:
         """发布当前自动清理策略，但不在保存配置时扫描文件。

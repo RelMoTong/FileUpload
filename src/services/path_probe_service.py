@@ -1,4 +1,12 @@
-"""Bounded, cancellable filesystem probes for the UI layer."""
+"""
+文件名：src/services/path_probe_service.py
+文件作用：业务服务层的“path_probe_service”模块。
+主要功能：封装既有业务规则、后台任务生命周期与底层协作者调用。
+模块关系：由控制器或组合根使用，可调用 Repository、Worker 和 Protocol；不直接操作 View。
+阅读重点：关注输入校验、状态转换、线程/定时器收尾、文件与网络失败路径。
+
+Bounded, cancellable filesystem probes for the UI layer.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +28,7 @@ class PathProbeService:
     """
 
     def __init__(self, max_workers: int = 2, timeout: float = 2.0) -> None:
+        """内部辅助：完成“__init__”对应的既有局部工作。"""
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, max_workers), thread_name_prefix="PathProbe"
         )
@@ -55,6 +64,13 @@ class PathProbeService:
             return self._generation
 
     def shutdown(self) -> None:
+        """作用：执行“shutdown”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         with self._lock:
             if self._closed:
                 return
@@ -67,6 +83,7 @@ class PathProbeService:
         future: Future[PathProbeResult],
         callback: Callable[[PathProbeResult], None],
     ) -> None:
+        """内部辅助：完成“_deliver”对应的既有局部工作。"""
         try:
             result = future.result()
         except Exception as exc:
@@ -83,6 +100,7 @@ class PathProbeService:
     def _probe_all(
         self, generation: int, probes: tuple[PathProbe, ...], timeout: float
     ) -> PathProbeResult:
+        """内部辅助：完成“_probe_all”对应的既有局部工作。"""
         errors: list[str] = []
         timed_out = False
         for probe in probes:
@@ -98,10 +116,18 @@ class PathProbeService:
 
     @staticmethod
     def _is_remote_path(path: str) -> bool:
+        """内部辅助：完成“_is_remote_path”对应的既有局部工作。"""
         normalized = path.replace("/", "\\")
         return normalized.startswith("\\\\")
 
     def _probe_one(self, probe: PathProbe, timeout: float) -> tuple[bool, bool]:
+        """作用：执行“_probe_one”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         path = probe.path.strip()
         if not path:
             return False, False

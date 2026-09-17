@@ -1,4 +1,12 @@
-"""供长时间运行 Worker 使用的线程安全、可组合暂停状态。"""
+"""
+文件名：src/core/pause_state.py
+文件作用：通用基础设施与安全边界模块“pause_state”。
+主要功能：提供当前既有能力，并以中文说明固定数据、状态和调用边界。
+模块关系：由上层组合根或相邻分层模块调用；不改变现有依赖方向。
+阅读重点：先读公开类型/函数、关键状态和单位说明，再按调用链追踪。
+
+供长时间运行 Worker 使用的线程安全、可组合暂停状态。
+"""
 
 from __future__ import annotations
 
@@ -12,6 +20,7 @@ class PauseState:
     VALID_REASONS = frozenset({"manual", "network", "disk", "stopping"})
 
     def __init__(self) -> None:
+        """内部辅助：完成“__init__”对应的既有局部工作。"""
         self._lock = threading.RLock()
         self._reasons: set[str] = set()
 
@@ -37,11 +46,25 @@ class PauseState:
 
     @property
     def is_paused(self) -> bool:
+        """作用：执行“is_paused”的既有职责。
+
+        参数：沿用当前函数签名及已有类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、回调或异常语义。
+        执行流程：按现有代码顺序完成校验、处理与结果交付。
+        风险或注意事项：本说明不改变既有持久化、线程、路径或公开接口约定。
+        """
         with self._lock:
             return bool(self._reasons)
 
     @property
     def reasons(self) -> FrozenSet[str]:
+        """作用：执行“reasons”的既有职责。
+
+        参数：沿用当前函数签名及已有类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、回调或异常语义。
+        执行流程：按现有代码顺序完成校验、处理与结果交付。
+        风险或注意事项：本说明不改变既有持久化、线程、路径或公开接口约定。
+        """
         with self._lock:
             return frozenset(self._reasons)
 

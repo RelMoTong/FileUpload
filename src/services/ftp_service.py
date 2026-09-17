@@ -1,4 +1,12 @@
-"""FTP configuration validation and protocol lifecycle service."""
+"""
+文件名：src/services/ftp_service.py
+文件作用：业务服务层的“ftp_service”模块。
+主要功能：封装既有业务规则、后台任务生命周期与底层协作者调用。
+模块关系：由控制器或组合根使用，可调用 Repository、Worker 和 Protocol；不直接操作 View。
+阅读重点：关注输入校验、状态转换、线程/定时器收尾、文件与网络失败路径。
+
+FTP configuration validation and protocol lifecycle service.
+"""
 
 from __future__ import annotations
 
@@ -33,6 +41,7 @@ class FTPService:
         server_factory: Optional[Callable[[dict], Any]] = None,
         client_factory: Optional[Callable[[dict], Any]] = None,
     ) -> None:
+        """内部辅助：完成“__init__”对应的既有局部工作。"""
         self._manager_factory = manager_factory or FTPProtocolManager
         self._server_factory = server_factory or FTPServerManager
         self._client_factory = client_factory or FTPClientUploader
@@ -45,14 +54,35 @@ class FTPService:
 
     @property
     def available(self) -> bool:
+        """作用：执行“available”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         return all((self._manager_factory, self._server_factory, self._client_factory))
 
     @property
     def tls_server_available(self) -> bool:
+        """作用：执行“tls_server_available”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         return TLS_FTPHandler is not None
 
     @staticmethod
     def build_server_config(config: Mapping[str, Any]) -> Dict[str, Any]:
+        """作用：执行“build_server_config”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         passive_ports = None
         if config.get("enable_passive", True):
             passive_ports = (
@@ -78,6 +108,13 @@ class FTPService:
 
     @staticmethod
     def validate_server(config: Mapping[str, Any]) -> FTPValidationResult:
+        """作用：执行“validate_server”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         errors: list[str] = []
         warnings: list[str] = []
         host = str(config.get("host", "")).strip()
@@ -149,6 +186,13 @@ class FTPService:
 
     @staticmethod
     def validate_client(config: Mapping[str, Any]) -> FTPValidationResult:
+        """作用：执行“validate_client”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         errors: list[str] = []
         host = str(config.get("host", "")).strip()
         if not host:
@@ -184,6 +228,13 @@ class FTPService:
         server_config: Mapping[str, Any],
         client_config: Mapping[str, Any],
     ) -> FTPValidationResult:
+        """作用：执行“validate_configuration”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         errors: list[str] = []
         warnings: list[str] = []
         if enable_server:
@@ -197,6 +248,7 @@ class FTPService:
         return FTPValidationResult(tuple(errors), tuple(warnings))
 
     def _ensure_manager(self) -> Any:
+        """内部辅助：完成“_ensure_manager”对应的既有局部工作。"""
         if not self.available:
             raise RuntimeError("FTP模块不可用")
         if self._manager is None:
@@ -207,6 +259,13 @@ class FTPService:
         return self._manager
 
     def test_server(self, config: Mapping[str, Any]) -> FTPOperationResult:
+        """作用：执行“test_server”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         validation = self.validate_server(config)
         if not validation.is_valid:
             return FTPOperationResult(False, errors=validation.errors, warnings=validation.warnings)
@@ -237,6 +296,13 @@ class FTPService:
         cancel_event: Optional[threading.Event] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> FTPOperationResult:
+        """作用：执行“test_client”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         validation = self.validate_client(config)
         if not validation.is_valid:
             return FTPOperationResult(False, errors=validation.errors)
@@ -282,6 +348,13 @@ class FTPService:
         config: Mapping[str, Any],
         event_callback: Callable[[dict], None],
     ) -> FTPOperationResult:
+        """作用：执行“start_client_test”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         validation = self.validate_client(config)
         if not validation.is_valid:
             return FTPOperationResult(False, errors=validation.errors)
@@ -292,12 +365,26 @@ class FTPService:
             self._test_cancel.clear()
 
         def emit(payload: dict) -> None:
+            """作用：执行“emit”的既有业务服务职责。
+
+            参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+            返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+            执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+            风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+            """
             try:
                 event_callback(payload)
             except Exception:
                 pass
 
         def run() -> None:
+            """作用：执行“run”的既有业务服务职责。
+
+            参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+            返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+            执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+            风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+            """
             try:
                 result = self.test_client(
                     config,
@@ -335,6 +422,13 @@ class FTPService:
             return FTPOperationResult(False, str(exc))
 
     def cancel_client_test(self) -> FTPOperationResult:
+        """作用：执行“cancel_client_test”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         with self._test_lock:
             running = self._test_running
             client = self._test_client
@@ -352,6 +446,13 @@ class FTPService:
 
     @property
     def client_test_running(self) -> bool:
+        """作用：执行“client_test_running”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         with self._test_lock:
             return self._test_running
 
@@ -360,6 +461,13 @@ class FTPService:
         config: Mapping[str, Any],
         event_callback: Callable[[dict], None],
     ) -> FTPOperationResult:
+        """作用：执行“start_server”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         validation = self.validate_server(config)
         if not validation.is_valid:
             return FTPOperationResult(False, errors=validation.errors, warnings=validation.warnings)
@@ -379,6 +487,13 @@ class FTPService:
             return FTPOperationResult(False, str(exc), warnings=validation.warnings)
 
     def stop_server(self) -> FTPOperationResult:
+        """作用：执行“stop_server”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         if not self.is_server_running():
             return FTPOperationResult(True, "FTP服务器未运行")
         try:
@@ -389,6 +504,13 @@ class FTPService:
             return FTPOperationResult(False, str(exc))
 
     def is_server_running(self) -> bool:
+        """作用：执行“is_server_running”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         try:
             return bool(
                 self._manager
@@ -399,14 +521,35 @@ class FTPService:
             return False
 
     def server_status(self) -> Dict[str, Any]:
+        """作用：执行“server_status”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         if not self._manager:
             return {}
         return self._manager.get_status().get("server") or {}
 
     def stop_all(self) -> None:
+        """作用：执行“stop_all”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         self.cancel_client_test()
         if self._manager:
             self._manager.stop_all()
 
     def shutdown(self) -> None:
+        """作用：执行“shutdown”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         self.stop_all()

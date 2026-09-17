@@ -1,4 +1,10 @@
 """手动清理与自动清理的文件系统规则、后台 Worker 和生命周期管理。
+文件名：src/services/cleanup_service.py
+文件作用：业务服务层的“cleanup_service”模块。
+主要功能：封装既有业务规则、后台任务生命周期与底层协作者调用。
+模块关系：由控制器或组合根使用，可调用 Repository、Worker 和 Protocol；不直接操作 View。
+阅读重点：关注输入校验、状态转换、线程/定时器收尾、文件与网络失败路径。
+
 
 这里是清理功能真正接触文件系统的地方：扫描、候选排序、文件身份复核、回收站
 删除和审计记录都在本模块完成。界面层只展示结果，控制器只协调调用，因此不能把
@@ -194,6 +200,7 @@ class _NewestCandidate:
     """反转堆比较顺序，使固定容量堆始终保留修改时间最早的候选。"""
 
     def __init__(self, candidate: CleanupCandidate) -> None:
+        """内部辅助：完成“__init__”对应的既有局部工作。"""
         self.candidate = candidate
         self.key = (
             int(candidate.mtime_ns),
@@ -201,6 +208,7 @@ class _NewestCandidate:
         )
 
     def __lt__(self, other: "_NewestCandidate") -> bool:
+        """内部辅助：完成“__lt__”对应的既有局部工作。"""
         return self.key > other.key
 
 
@@ -248,6 +256,13 @@ class _NeverCancelled:
     """为未传入取消事件的同步调用提供始终为假的兼容对象。"""
 
     def is_set(self) -> bool:
+        """作用：执行“is_set”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         return False
 
 
@@ -255,7 +270,9 @@ class CleanupAuditWriter(Protocol):
     """自动/永久删除写入审计记录所需的最小接口。"""
     last_error: str
 
-    def write(self, event: str, run_id: str, **fields: Any) -> bool: ...
+    def write(self, event: str, run_id: str, **fields: Any) -> bool:
+        """协议占位：声明“write”的最小调用约定，由实现方提供既有行为。"""
+        ...
 
 
 class _ScanWorker(QtCore.QObject):
@@ -305,6 +322,13 @@ class _ScanWorker(QtCore.QObject):
 
         def on_error(path: str, exc: BaseException) -> None:
             # 扫描单个文件失败不应终止整次扫描；交给 UI 日志供现场定位权限/网络问题。
+            """作用：执行“on_error”的既有业务服务职责。
+
+            参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+            返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+            执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+            风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+            """
             self.worker_event.emit("log", {"message": f"无法访问文件 {path}: {exc}"})
 
         def flush_items() -> None:
@@ -414,6 +438,13 @@ class _DeleteWorker(QtCore.QObject):
                 def verify_identity() -> tuple[bool, str]:
                     # SafeDeletionPolicy 在真正执行删除前再次调用该闭包，缩小扫描到删除
                     # 之间的竞态窗口。这里不捕获异常，让策略将其视为安全失败。
+                    """作用：执行“verify_identity”的既有业务服务职责。
+
+                    参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+                    返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+                    执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+                    风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+                    """
                     stat_result = os.stat(item.path, follow_symlinks=False)
                     changes = _file_identity_changes(item, stat_result)
                     return (
@@ -745,10 +776,24 @@ class CleanupService:
 
     @property
     def is_scanning(self) -> bool:
+        """作用：执行“is_scanning”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         return self._scan_worker is not None
 
     @property
     def is_deleting(self) -> bool:
+        """作用：执行“is_deleting”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         return self._delete_worker is not None
 
     @property
@@ -927,6 +972,13 @@ class CleanupService:
 
     @staticmethod
     def file_created_at(stat_result: Any) -> float:
+        """作用：执行“file_created_at”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         birth_time = getattr(stat_result, "st_birthtime", None)
         if birth_time is not None:
             return float(birth_time)
@@ -934,10 +986,24 @@ class CleanupService:
 
     @staticmethod
     def file_modified_at_ns(stat_result: Any) -> int:
+        """作用：执行“file_modified_at_ns”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         return _stat_mtime_ns(stat_result)
 
     @staticmethod
     def file_identity(stat_result: Any) -> str:
+        """作用：执行“file_identity”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         return _stat_file_id(stat_result)
 
     def validate_auto_request(self, request: AutoCleanupRequest) -> CleanupValidationResult:
@@ -1070,10 +1136,24 @@ class CleanupService:
 
         def used_percent(usage: Any) -> Optional[float]:
             # disk_usage 的数值是 Python 整数；这里只在最后一步换算为百分比供阈值判断和显示。
+            """作用：执行“used_percent”的既有业务服务职责。
+
+            参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+            返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+            执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+            风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+            """
             return None if usage is None or usage.total <= 0 else ((usage.total - usage.free) / usage.total) * 100
 
         def finish(status: str, error: str = "") -> AutoCleanupResult:
             # 所有返回路径都走这里，保证已开始的审计任务一定尝试写 END 记录并输出最终日志。
+            """作用：执行“finish”的既有业务服务职责。
+
+            参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+            返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+            执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+            风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+            """
             released = max(0, int(final_usage.free - start_usage.free)) if start_usage is not None and final_usage is not None else 0
             if audit_started:
                 self._write_audit("END", run_id, status=status, error=error, scanned_count=scanned_count, deleted_count=deleted_count, failed_count=failed_count, skipped_changed_count=skipped_changed_count, start_used_percent=used_percent(start_usage), final_used_percent=used_percent(final_usage), actual_released_bytes=released, attempted_delete_bytes=attempted_bytes)
@@ -1104,6 +1184,13 @@ class CleanupService:
             while not cancel_event.is_set():
                 scan_failures = 0
                 def scan_error(path: str, exc: BaseException) -> None:
+                    """作用：执行“scan_error”的既有业务服务职责。
+
+                    参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+                    返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+                    执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+                    风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+                    """
                     nonlocal scan_failures
                     scan_failures += 1
                     log(f"⚠️ 清理候选无法访问: {path}: {type(exc).__name__}: {exc}")
@@ -1143,6 +1230,13 @@ class CleanupService:
                     if not trash_supported(): return finish("路径不可用", "回收站不可用，自动清理已停止（避免意外永久删除）")
                     def verify_identity() -> tuple[bool, str]:
                         # SafeDeletionPolicy 内部在最后一刻调用本闭包，进一步缩小 TOCTOU 窗口。
+                        """作用：执行“verify_identity”的既有业务服务职责。
+
+                        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+                        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+                        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+                        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+                        """
                         current = os.stat(candidate.path, follow_symlinks=False)
                         current_changes = list(_candidate_identity_changes(candidate, current))
                         if abs(self.file_created_at(current) - candidate.created_at) > 0.001: current_changes.append("创建时间")

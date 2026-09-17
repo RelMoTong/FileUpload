@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
 """
+文件名：src/ui/main_window.py
+文件作用：应用主窗口与 View Gateway 协议定义模块。
+主要功能：构建既有界面、收集输入、显示后台状态并转发语义事件。
+模块关系：由 src.main 注入 Controller Gateway；View 不直接依赖业务实现。
+阅读重点：先读顶部 Gateway Protocol、初始化、事件入口与 render_*；样式/布局按“第 1 步”区块阅读。
+
 Main window UI module.
 """
 import copy
@@ -53,13 +59,28 @@ class SettingsGateway(Protocol):
 
     @property
     def config_exists(self) -> bool:
+        """作用：执行界面“config_exists”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         ...
 
-    def load_settings(self) -> ApplicationSettings: ...
-    def save(self, settings: ApplicationSettings, preserve_users: bool = True) -> bool: ...
+    def load_settings(self) -> ApplicationSettings:
+        """协议占位：声明“load_settings”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def save(self, settings: ApplicationSettings, preserve_users: bool = True) -> bool:
+        """协议占位：声明“save”的最小调用约定，由实现方提供既有行为。"""
+        ...
 
-    def decode_ftp_password(self, section: dict, default: str = "") -> str: ...
-    def encode_ftp_password(self, password: str, label: str) -> tuple[str, str]: ...
+    def decode_ftp_password(self, section: dict, default: str = "") -> str:
+        """协议占位：声明“decode_ftp_password”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def encode_ftp_password(self, password: str, label: str) -> tuple[str, str]:
+        """协议占位：声明“encode_ftp_password”的最小调用约定，由实现方提供既有行为。"""
+        ...
 
 
 class AuthGateway(Protocol):
@@ -67,26 +88,75 @@ class AuthGateway(Protocol):
 
     @property
     def current_role(self) -> UserRole:
+        """作用：执行界面“current_role”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         ...
 
     @property
     def default_password_roles(self) -> list[UserRole]:
+        """作用：执行界面“default_password_roles”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         ...
 
     @property
     def password_change_required(self) -> bool:
+        """作用：执行界面“password_change_required”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         ...
 
     def load_users(self, users: Any) -> None:
+        """作用：执行界面“load_users”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         ...
 
     def set_current_role(self, role: UserRole) -> None:
+        """作用：执行界面“set_current_role”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         ...
 
     def login(self, role: UserRole, password: str) -> Any:
+        """作用：执行界面“login”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         ...
 
     def logout(self) -> None:
+        """作用：执行界面“logout”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         ...
 
     def change_password(
@@ -96,104 +166,250 @@ class AuthGateway(Protocol):
         new_password: str,
         confirm_password: str,
     ) -> Any:
+        """作用：执行界面“change_password”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         ...
 
     def compute_permissions(self, context: PermissionContext) -> Any:
+        """作用：执行界面“compute_permissions”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         ...
 
     def can_manage_disk_cleanup(self) -> bool:
+        """作用：执行界面“can_manage_disk_cleanup”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         ...
 
     def is_authenticated(self) -> bool:
+        """作用：执行界面“is_authenticated”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         ...
 
     def users_mapping(self) -> dict:
+        """作用：执行界面“users_mapping”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         ...
 
     def can_manage_ftp(self) -> bool:
+        """作用：执行界面“can_manage_ftp”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         ...
 
     def password_change_block_reason(self) -> str:
+        """作用：执行界面“password_change_block_reason”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         ...
 
     def disk_cleanup_block_reason(self) -> str:
+        """作用：执行界面“disk_cleanup_block_reason”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         ...
 
 
 class FTPGateway(Protocol):
     @property
-    def available(self) -> bool: ...
+    def available(self) -> bool:
+        """协议占位：声明“available”的最小调用约定，由实现方提供既有行为。"""
+        ...
     @property
-    def tls_server_available(self) -> bool: ...
+    def tls_server_available(self) -> bool:
+        """协议占位：声明“tls_server_available”的最小调用约定，由实现方提供既有行为。"""
+        ...
     @property
-    def server_started_independently(self) -> bool: ...
+    def server_started_independently(self) -> bool:
+        """协议占位：声明“server_started_independently”的最小调用约定，由实现方提供既有行为。"""
+        ...
     @property
-    def server_started_by_upload(self) -> bool: ...
-    def set_event_listener(self, listener: Any) -> None: ...
-    def validate_server(self, config: dict) -> Any: ...
-    def validate_client(self, config: dict) -> Any: ...
+    def server_started_by_upload(self) -> bool:
+        """协议占位：声明“server_started_by_upload”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def set_event_listener(self, listener: Any) -> None:
+        """协议占位：声明“set_event_listener”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def validate_server(self, config: dict) -> Any:
+        """协议占位：声明“validate_server”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def validate_client(self, config: dict) -> Any:
+        """协议占位：声明“validate_client”的最小调用约定，由实现方提供既有行为。"""
+        ...
     def validate_configuration(
         self,
         enable_server: bool,
         protocol: str,
         server_config: dict,
         client_config: dict,
-    ) -> Any: ...
-    def test_server(self, config: dict) -> Any: ...
-    def test_client(self, config: dict) -> Any: ...
-    def start_client_test(self, config: dict, event_callback: Any) -> Any: ...
-    def cancel_client_test(self) -> Any: ...
+    ) -> Any:
+        """协议占位：声明“validate_configuration”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def test_server(self, config: dict) -> Any:
+        """协议占位：声明“test_server”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def test_client(self, config: dict) -> Any:
+        """协议占位：声明“test_client”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def start_client_test(self, config: dict, event_callback: Any) -> Any:
+        """协议占位：声明“start_client_test”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def cancel_client_test(self) -> Any:
+        """协议占位：声明“cancel_client_test”的最小调用约定，由实现方提供既有行为。"""
+        ...
     @property
-    def client_test_running(self) -> bool: ...
-    def start_server(self, config: dict, source: str) -> Any: ...
-    def stop_server(self) -> Any: ...
-    def stop_upload_server(self) -> Any: ...
-    def is_server_running(self) -> bool: ...
-    def server_status(self) -> dict: ...
-    def shutdown(self) -> None: ...
+    def client_test_running(self) -> bool:
+        """协议占位：声明“client_test_running”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def start_server(self, config: dict, source: str) -> Any:
+        """协议占位：声明“start_server”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def stop_server(self) -> Any:
+        """协议占位：声明“stop_server”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def stop_upload_server(self) -> Any:
+        """协议占位：声明“stop_upload_server”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def is_server_running(self) -> bool:
+        """协议占位：声明“is_server_running”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def server_status(self) -> dict:
+        """协议占位：声明“server_status”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def shutdown(self) -> None:
+        """协议占位：声明“shutdown”的最小调用约定，由实现方提供既有行为。"""
+        ...
 
 
 class UploadGateway(Protocol):
     @property
-    def state(self) -> Any: ...
-    def set_event_listener(self, listener: Any) -> None: ...
-    def validate_request(self, request: UploadTaskRequest) -> Any: ...
-    def start(self, request: UploadTaskRequest) -> Any: ...
-    def pause(self) -> Any: ...
-    def resume(self) -> Any: ...
-    def stop(self) -> Any: ...
-    def set_running(self, running: bool) -> None: ...
+    def state(self) -> Any:
+        """协议占位：声明“state”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def set_event_listener(self, listener: Any) -> None:
+        """协议占位：声明“set_event_listener”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def validate_request(self, request: UploadTaskRequest) -> Any:
+        """协议占位：声明“validate_request”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def start(self, request: UploadTaskRequest) -> Any:
+        """协议占位：声明“start”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def pause(self) -> Any:
+        """协议占位：声明“pause”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def resume(self) -> Any:
+        """协议占位：声明“resume”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def stop(self) -> Any:
+        """协议占位：声明“stop”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def set_running(self, running: bool) -> None:
+        """协议占位：声明“set_running”的最小调用约定，由实现方提供既有行为。"""
+        ...
     def resolve_duplicate(
         self, payload: Any, choice: str, apply_all: bool = False
-    ) -> None: ...
-    def ftp_client_status(self) -> dict: ...
-    def archive_queue_size(self) -> int: ...
-    def request_stop_all(self) -> Any: ...
+    ) -> None:
+        """协议占位：声明“resolve_duplicate”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def ftp_client_status(self) -> dict:
+        """协议占位：声明“ftp_client_status”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def archive_queue_size(self) -> int:
+        """协议占位：声明“archive_queue_size”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def request_stop_all(self) -> Any:
+        """协议占位：声明“request_stop_all”的最小调用约定，由实现方提供既有行为。"""
+        ...
     @property
-    def has_running_workers(self) -> bool: ...
-    def shutdown(self) -> None: ...
+    def has_running_workers(self) -> bool:
+        """协议占位：声明“has_running_workers”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def shutdown(self) -> None:
+        """协议占位：声明“shutdown”的最小调用约定，由实现方提供既有行为。"""
+        ...
 
 
 class CleanupGateway(Protocol):
-    def set_auto_listener(self, listener: Any) -> None: ...
-    def configure_auto_cleanup(self, request: AutoCleanupRequest) -> bool: ...
-    def validate_auto_request(self, request: AutoCleanupRequest) -> Any: ...
-    def validate_folder_group(self, folders: Any) -> Any: ...
+    def set_auto_listener(self, listener: Any) -> None:
+        """协议占位：声明“set_auto_listener”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def configure_auto_cleanup(self, request: AutoCleanupRequest) -> bool:
+        """协议占位：声明“configure_auto_cleanup”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def validate_auto_request(self, request: AutoCleanupRequest) -> Any:
+        """协议占位：声明“validate_auto_request”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def validate_folder_group(self, folders: Any) -> Any:
+        """协议占位：声明“validate_folder_group”的最小调用约定，由实现方提供既有行为。"""
+        ...
     def maybe_trigger_auto_cleanup(
         self, request: AutoCleanupRequest, reason: str = ""
-    ) -> bool: ...
-    def cancel_auto_cleanup(self) -> None: ...
-    def cancel(self) -> None: ...
+    ) -> bool:
+        """协议占位：声明“maybe_trigger_auto_cleanup”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def cancel_auto_cleanup(self) -> None:
+        """协议占位：声明“cancel_auto_cleanup”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def cancel(self) -> None:
+        """协议占位：声明“cancel”的最小调用约定，由实现方提供既有行为。"""
+        ...
     @property
-    def has_running_workers(self) -> bool: ...
-    def shutdown(self) -> None: ...
+    def has_running_workers(self) -> bool:
+        """协议占位：声明“has_running_workers”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def shutdown(self) -> None:
+        """协议占位：声明“shutdown”的最小调用约定，由实现方提供既有行为。"""
+        ...
 
 
 class RuntimeGateway(Protocol):
     @property
-    def app_dir(self) -> Path: ...
-    def initialize(self) -> Any: ...
-    def append_log(self, line: str) -> None: ...
+    def app_dir(self) -> Path:
+        """协议占位：声明“app_dir”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def initialize(self) -> Any:
+        """协议占位：声明“initialize”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def append_log(self, line: str) -> None:
+        """协议占位：声明“append_log”的最小调用约定，由实现方提供既有行为。"""
+        ...
     def request_disk_space(
         self,
         target_path: str,
@@ -201,15 +417,27 @@ class RuntimeGateway(Protocol):
         backup_enabled: bool,
         network_available: bool,
         callback: Any,
-    ) -> None: ...
-    def reconcile_startup(self, auto_enabled: bool, explicit: bool = False) -> Any: ...
-    def disable_startup(self) -> Any: ...
-    def shutdown(self) -> None: ...
+    ) -> None:
+        """协议占位：声明“request_disk_space”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def reconcile_startup(self, auto_enabled: bool, explicit: bool = False) -> Any:
+        """协议占位：声明“reconcile_startup”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def disable_startup(self) -> Any:
+        """协议占位：声明“disable_startup”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def shutdown(self) -> None:
+        """协议占位：声明“shutdown”的最小调用约定，由实现方提供既有行为。"""
+        ...
 
 
 class LifecycleGateway(Protocol):
-    def request_shutdown(self, view: Any) -> Any: ...
-    def shutdown(self, view: Any) -> Any: ...
+    def request_shutdown(self, view: Any) -> Any:
+        """协议占位：声明“request_shutdown”的最小调用约定，由实现方提供既有行为。"""
+        ...
+    def shutdown(self, view: Any) -> Any:
+        """协议占位：声明“shutdown”的最小调用约定，由实现方提供既有行为。"""
+        ...
 
 
 def get_qt_enum(enum_class, attr_name: str, fallback_value: int):
@@ -231,7 +459,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
     _permission_changed_signal = Signal()  # 角色/运行状态变更
     _path_probe_result_signal = Signal(object)
     app_exit_requested = Signal()
-    
+
     def __init__(
         self,
         settings_controller: Optional[SettingsGateway] = None,
@@ -242,6 +470,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         runtime_controller: Optional[RuntimeGateway] = None,
         lifecycle_controller: Optional[LifecycleGateway] = None,
     ):
+        """作用：执行界面“__init__”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         super().__init__()
         if settings_controller is None:
             raise ValueError("MainWindow requires a SettingsController")
@@ -275,7 +510,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.setMinimumSize(self.window_min_width, self.window_min_height)
         self.resize(self.window_initial_width, self.window_initial_height)
         self.app_dir = self.runtime_controller.app_dir
-        
+
         # 连接内部信号
         self._disk_update_signal.connect(self.render_disk_space)
         self._async_log_signal.connect(self._append_log)
@@ -306,17 +541,17 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.disk_check_interval = 5  # 磁盘空间检查间隔（秒）
         self.file_upload_delay_seconds = 1.5  # 扫描到文件后的上传延迟（秒，仅配置文件）
         self.disk_check_counter = 0  # 磁盘空间检查计数器
-        
+
         # v1.9 新增：文件去重配置
         self.enable_deduplication = False  # 是否启用智能去重
         self.hash_algorithm = 'md5'  # 哈希算法：md5 或 sha256
         self.duplicate_strategy = 'ask'  # 去重策略：skip, rename, overwrite, ask
-        
+
         # v1.9 新增：网络监控配置
         self.network_check_interval = 10  # 网络检测间隔（秒）
         self.network_auto_pause = True  # 网络断开自动暂停
         self.network_auto_resume = True  # 网络恢复自动继续
-        
+
         # v1.9 新增：自动删除配置
         self.enable_auto_delete = False
         self.auto_delete_folder = ''
@@ -326,7 +561,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.auto_delete_check_interval = 300  # 每5分钟检查一次
         self.auto_delete_formats: List[str] = []  # 自动清理文件格式过滤
         self.auto_delete_use_trash = True  # 自动清理删除模式（True=回收站）
-        
+
         # v2.0 新增：FTP 协议配置
         self.current_protocol = 'smb'  # 上传协议：smb, ftp_client, both
         self.enable_ftp_server = False  # v3.1.0: FTP服务器独立开关
@@ -348,21 +583,21 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             'timeout': 30,
             'retry_count': 3,
         }
-        
+
         self.runtime_controller.initialize()
         self._auto_cleanup_timer = QtCore.QTimer(self)
         self._auto_cleanup_timer.timeout.connect(self._auto_cleanup_tick)
         self._auto_cleanup_last_warn = 0.0
-        
+
         # v2.2.0 新增：系统托盘配置
         self.minimize_to_tray = True  # 最小化到托盘
         self.show_notifications = True  # 显示通知
         self.tray_icon = None  # 托盘图标对象
-        
+
         # v2.3.0 新增：速率限制配置
         self.limit_upload_rate = False
         self.max_upload_rate_mbps = 10.0
-        
+
         # UI
         self._build_ui()
         self._load_config()
@@ -376,10 +611,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             )
         self._apply_theme()
         self._update_ui_permissions()
-        
+
         # v2.2.0 新增：初始化系统托盘
         self._init_tray_icon()
-        
+
         # 自动运行检查
         if self.auto_run_on_startup:
             QtCore.QTimer.singleShot(1000, self._auto_start_upload)
@@ -395,10 +630,24 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
 
     @current_role.setter
     def current_role(self, role: str) -> None:
+        """作用：执行界面“current_role”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         self.auth_controller.set_current_role(UserRole(role))
 
     @property
     def default_password_roles(self) -> List[str]:
+        """作用：执行界面“default_password_roles”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         labels = {
             UserRole.USER: '用户',
             UserRole.ADMIN: '管理员',
@@ -407,34 +656,90 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
 
     @property
     def is_running(self) -> bool:
+        """作用：执行界面“is_running”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         return self.upload_controller.state.is_running
 
     @is_running.setter
     def is_running(self, running: bool) -> None:
+        """作用：执行界面“is_running”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         self.upload_controller.set_running(bool(running))
 
     @property
     def is_paused(self) -> bool:
+        """作用：执行界面“is_paused”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         return self.upload_controller.state.is_paused
 
     @property
     def start_time(self) -> Optional[float]:
+        """作用：执行界面“start_time”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         return self.upload_controller.state.start_time
 
     @property
     def uploaded(self) -> int:
+        """作用：执行界面“uploaded”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         return self.upload_controller.state.uploaded
 
     @property
     def failed(self) -> int:
+        """作用：执行界面“failed”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         return self.upload_controller.state.failed
 
     @property
     def skipped(self) -> int:
+        """作用：执行界面“skipped”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         return self.upload_controller.state.skipped
 
     @property
     def network_status(self) -> str:
+        """作用：执行界面“network_status”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         return self.upload_controller.state.network_status.value
 
     def _handle_upload_event(self, event: dict) -> None:
@@ -517,6 +822,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         }
 
     def _init_responsive_metrics(self) -> None:
+        """界面辅助：完成“_init_responsive_metrics”对应的既有局部显示或事件工作。"""
         screen = QtWidgets.QApplication.primaryScreen()
         if screen is not None:
             geometry = screen.availableGeometry()
@@ -534,15 +840,18 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.status_grid_columns = int(metrics['status_columns'])
 
     def _scale_px(self, value: int, minimum: int = 1, maximum: Optional[int] = None) -> int:
+        """界面辅助：完成“_scale_px”对应的既有局部显示或事件工作。"""
         scaled = max(minimum, int(round(value * self.ui_scale)))
         if maximum is not None:
             scaled = min(maximum, scaled)
         return scaled
 
     def _font_pt(self, value: int, minimum: int = 8) -> int:
+        """界面辅助：完成“_font_pt”对应的既有局部显示或事件工作。"""
         return max(minimum, int(round(value * self.ui_scale)))
 
     def _clamped_dialog_size(self, width: int, height: int) -> QtCore.QSize:
+        """界面辅助：完成“_clamped_dialog_size”对应的既有局部显示或事件工作。"""
         screen_width = int(self.responsive_metrics.get('available_width', 1366))
         screen_height = int(self.responsive_metrics.get('available_height', 768))
         return QtCore.QSize(
@@ -551,6 +860,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         )
 
     def _apply_theme(self):
+        """作用：执行界面“_apply_theme”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         stylesheet = """
             QWidget{font-family:'Microsoft YaHei UI', 'Segoe UI'; font-size:11pt; color:#1F2937; background:#E3F2FD;}
             QMainWindow{background:#E3F2FD;}
@@ -572,7 +888,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             QPushButton.Danger:hover{background:#FECACA;}
             QPushButton.Danger:disabled{background:#E5E7EB; color:#9CA3AF;}
             QProgressBar{border:1px solid #64B5F6; border-radius:6px; background:#EEF2F5; text-align:center; color:#1F2937;}
-            QProgressBar::chunk{border-radius:6px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4FACFE, stop:1 #00F2FE);} 
+            QProgressBar::chunk{border-radius:6px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4FACFE, stop:1 #00F2FE);}
             QPlainTextEdit{background:#FFFFFF; border:1px solid #64B5F6; color:#1F2937; border-radius:4px;}
             QSpinBox{background:#FFFFFF; color:#1F2937; border:1px solid #64B5F6; border-radius:4px; padding:4px; padding-right:2px;}
             QSpinBox:disabled{background:#F3F4F6; color:#9CA3AF; border:1px solid #D1D5DB;}
@@ -612,7 +928,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             QComboBox::down-arrow{image:none; border-left:4px solid transparent; border-right:4px solid transparent; border-top:6px solid #1976D2; margin-right:8px;}
             QComboBox::down-arrow:disabled{border-top-color:#9CA3AF;}
             QComboBox QAbstractItemView{background:#FFFFFF; color:#1F2937; border:1px solid #64B5F6; selection-background-color:#E3F2FD;}
-            
+
             /* 滚动条样式 */
             QScrollBar:vertical{background:#E3F2FD; width:12px; border-radius:6px; margin:0px;}
             QScrollBar::handle:vertical{background:#90CAF9; border-radius:6px; min-height:30px;}
@@ -620,7 +936,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             QScrollBar::handle:vertical:pressed{background:#42A5F5;}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical{height:0px;}
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical{background:transparent;}
-            
+
             QScrollBar:horizontal{background:#E3F2FD; height:12px; border-radius:6px; margin:0px;}
             QScrollBar::handle:horizontal{background:#90CAF9; border-radius:6px; min-width:30px;}
             QScrollBar::handle:horizontal:hover{background:#64B5F6;}
@@ -650,6 +966,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
 
     def _build_ui(self):
         # 创建滚动区域作为中央窗口
+        """作用：执行界面“_build_ui”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         scroll_area = QtWidgets.QScrollArea(self)
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -657,14 +980,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.main_scroll_area = scroll_area
         self.setCentralWidget(scroll_area)
-        
+
         # 创建内容容器 - 优化宽度适配高分辨率
         central = QtWidgets.QWidget()
         central.setMinimumWidth(int(self.responsive_metrics.get('content_min_width', 0)))
         central.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
         self.central_content = central
         scroll_area.setWidget(central)
-        
+
         root = QtWidgets.QVBoxLayout(central)
         root.setSpacing(self._scale_px(12, 8))
         root.setContentsMargins(
@@ -676,7 +999,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
 
         # header
         header = QtWidgets.QHBoxLayout()
-        
+
         # Logo - 使用资源路径函数确保打包后也能访问
         logo_path = get_resource_path("assets/logo.png")
         logo_label = QtWidgets.QLabel()
@@ -689,7 +1012,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             header.addSpacing(self._scale_px(12, 8))
         else:
             logger.warning("⚠️ Logo 文件加载失败: %s", logo_path)
-        
+
         self.header_title = QtWidgets.QLabel(t('header_title'))
         self.header_title.setObjectName("Title")
         ver = QtWidgets.QLabel(f"v{APP_VERSION} (Qt)")
@@ -729,16 +1052,16 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 background: #1976D2;
             }
         """)
-        
+
         folder_card = self._folder_card()
         settings_card = self._settings_card()
-        
+
         left_splitter.addWidget(folder_card)
         left_splitter.addWidget(settings_card)
-        
+
         # 设置初始比例：文件夹卡片较小，设置卡片较大
         left_splitter.setSizes([self._scale_px(200, 160), self._scale_px(500, 360)])
-        
+
         left.addWidget(left_splitter)
 
         # middle cards - 同样使用 QSplitter
@@ -754,11 +1077,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 background: #1976D2;
             }
         """)
-        
+
         middle_splitter.addWidget(self._control_card())
         middle_splitter.addWidget(self._status_card())
         middle_splitter.setSizes([self._scale_px(250, 190), self._scale_px(450, 330)])
-        
+
         middle.addWidget(middle_splitter)
 
         # right - log card
@@ -766,11 +1089,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
 
     def _card(self, title_text: str, title_key: str = '') -> Tuple[QtWidgets.QFrame, QtWidgets.QVBoxLayout, Optional[QtWidgets.QLabel]]:
         """创建卡片容器
-        
+
         Args:
             title_text: 标题文本
             title_key: i18n 翻译键（用于动态切换语言）
-            
+
         Returns:
             (card, layout, title_label) - title_label 用于后续更新文本
         """
@@ -795,16 +1118,25 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         return card, v, title_label
 
     def _folder_card(self) -> QtWidgets.QWidget:
+        """界面辅助：完成“_folder_card”对应的既有局部显示或事件工作。"""
         self.upload_folders_panel = UploadFoldersPanel(self)
         return self.upload_folders_panel
 
     def _settings_card(self) -> QtWidgets.QWidget:
+        """界面辅助：完成“_settings_card”对应的既有局部显示或事件工作。"""
         self.upload_settings_panel = UploadSettingsPanel(self)
         return self.upload_settings_panel
 
     def _control_card(self) -> QtWidgets.QFrame:
+        """作用：执行界面“_control_card”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         card, v, self.title_control = self._card("🎮 操作控制", "card_control")
-        
+
         # primary start - 优化按钮尺寸
         self.btn_start = QtWidgets.QPushButton("▶ 开始上传")
         self.btn_start.setProperty("class", "Primary")
@@ -848,7 +1180,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         act_disk_cleanup = menu.addAction("💿 磁盘清理")
         act_disk_cleanup.triggered.connect(self._show_disk_cleanup)
         menu.addSeparator()
-        
+
         # v3.0.2 新增：语言切换子菜单
         lang_menu = menu.addMenu("🌐 语言 / Language")
         self.act_lang_zh = lang_menu.addAction("简体中文")
@@ -859,7 +1191,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.act_lang_en.triggered.connect(lambda: self._switch_language('en_US'))
         # 默认选中中文
         self.act_lang_zh.setChecked(True)
-        
+
         menu.addSeparator()
         act_login = menu.addAction("🔐 权限登录")
         act_login.triggered.connect(self._show_login)
@@ -869,7 +1201,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         act_logout = menu.addAction("🚪 退出登录")
         act_logout.triggered.connect(self._logout)
         self.btn_more.setMenu(menu)
-        
+
         # 保存菜单项引用用于多语言更新
         self.menu_items = {
             'clear_logs': act_clear,
@@ -879,32 +1211,32 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             'logout': act_logout,
             'lang_menu': lang_menu,
         }
-        
+
         row2.addWidget(self.btn_save)
         row2.addWidget(self.btn_more)
         v.addLayout(row2)
-        
+
         card.setFixedHeight(self._scale_px(260, 210, 260))
-        
+
         return card
 
     def _switch_language(self, lang: str):
         """切换语言并刷新 UI"""
         try:
             from src.core.i18n import set_language, get_language, LANG_ZH_CN, LANG_EN_US
-            
+
             if lang == get_language():
                 return
-            
+
             set_language(lang)
-            
+
             # 更新菜单选中状态
             self.act_lang_zh.setChecked(lang == LANG_ZH_CN)
             self.act_lang_en.setChecked(lang == LANG_EN_US)
-            
+
             # 刷新所有 UI 文本
             self._refresh_ui_texts()
-            
+
             # 显示提示
             if lang == LANG_ZH_CN:
                 self._toast('语言已切换为简体中文', 'success')
@@ -912,10 +1244,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             else:
                 self._toast('Language changed to English', 'success')
                 self._append_log('🌐 Language changed to English')
-            
+
             # 保存语言设置到配置
             self.config_modified = True
-            
+
         except Exception as e:
             self._append_log(f'⚠ 语言切换失败: {e}')
 
@@ -923,7 +1255,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         """刷新所有 UI 文本（用于语言切换）"""
         try:
             from src.core.i18n import t
-            
+
             # === 卡片标题 ===
             if hasattr(self, 'title_folder') and self.title_folder:
                 self.title_folder.setText(t('card_folder_settings'))
@@ -935,7 +1267,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.title_status.setText(t('card_status'))
             if hasattr(self, 'title_log') and self.title_log:
                 self.title_log.setText(t('card_log'))
-            
+
             # === 按钮 ===
             if not self.is_running:
                 self.btn_start.setText(t('start_upload'))
@@ -946,18 +1278,18 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.btn_stop.setText(t('stop_upload'))
             self.btn_save.setText(t('save_config'))
             self.btn_more.setText(t('more'))
-            
+
             # === 浏览按钮 ===
             self.btn_choose_src.setText(t('browse'))
             self.btn_choose_tgt.setText(t('browse'))
             self.btn_choose_bak.setText(t('browse'))
-            
+
             # === 复选框 ===
             # 备份
             checked = self.cb_enable_backup.isChecked()
             self.cb_enable_backup.setProperty('orig_text', t('enable_backup'))
             self._set_checkbox_mark(self.cb_enable_backup, checked)
-            
+
             # 高级选项
             if hasattr(self, 'cb_auto_start_windows'):
                 checked = self.cb_auto_start_windows.isChecked()
@@ -990,7 +1322,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             if hasattr(self, 'cb_autoscroll'):
                 checked = self.cb_autoscroll.isChecked()
                 self.cb_autoscroll.setText("📜 " + t('autoscroll').strip())
-            
+
             # === 状态标签 ===
             if not self.is_running:
                 self.lbl_status.setText(t('status_stopped'))
@@ -998,7 +1330,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.lbl_status.setText(t('status_paused'))
             else:
                 self.lbl_status.setText(t('status_running'))
-            
+
             # === 状态芯片 ===
             self._update_chip_label(self.lbl_uploaded, t('uploaded'))
             self._update_chip_label(self.lbl_failed, t('failed'))
@@ -1009,7 +1341,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self._update_chip_label(self.lbl_target_disk, t('target_disk'))
             self._update_chip_label(self.lbl_backup_disk, t('backup_disk'))
             self._update_chip_label(self.lbl_network, t('network_status'))
-            
+
             # === 菜单项 ===
             if hasattr(self, 'menu_items'):
                 self.menu_items['clear_logs'].setText(t('clear_logs'))
@@ -1018,7 +1350,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.menu_items['change_password'].setText(t('change_password'))
                 self.menu_items['logout'].setText(t('logout'))
                 self.menu_items['lang_menu'].setTitle("🌐 " + t('menu_language'))
-            
+
             # === 角色标签 ===
             if hasattr(self, 'role_label'):
                 if self.current_role == 'guest':
@@ -1027,7 +1359,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     self.role_label.setText(t('role_user'))
                 else:
                     self.role_label.setText(t('role_admin'))
-            
+
             # === 等待提示文本 ===
             if hasattr(self, 'lbl_current_file') and not self.is_running:
                 self.lbl_current_file.setText(t('waiting'))
@@ -1035,7 +1367,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.pbar_file.setFormat(t('waiting'))
             if hasattr(self, 'lbl_progress') and not self.is_running:
                 self.lbl_progress.setText(t('waiting'))
-            
+
             # === FTP 测试按钮 ===
             if hasattr(self, 'btn_test_ftp_server'):
                 self.btn_test_ftp_server.setText(t('test_config'))
@@ -1045,13 +1377,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 )
             if hasattr(self, 'btn_test_ftp_client'):
                 self.btn_test_ftp_client.setText(t('test_connection'))
-            
+
             # === 可折叠区块标题 ===
             if hasattr(self, 'ftp_server_collapsible'):
                 self.ftp_server_collapsible.setTitle(t('ftp_server_config'))
             if hasattr(self, 'ftp_client_collapsible'):
                 self.ftp_client_collapsible.setTitle(t('ftp_client_config'))
-            
+
             # === 路径标签 ===
             if hasattr(self, 'lbl_src'):
                 self.lbl_src.setText(t('source_folder_label') + ":")
@@ -1059,15 +1391,15 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.lbl_tgt.setText(t('target_folder_label') + ":")
             if hasattr(self, 'lbl_bak'):
                 self.lbl_bak.setText(t('backup_folder_label') + ":")
-            
+
             # === 备份提示 ===
             if hasattr(self, 'backup_hint'):
                 self.backup_hint.setText(t('backup_hint'))
-            
+
             # === 标题栏 ===
             if hasattr(self, 'header_title'):
                 self.header_title.setText(t('header_title'))
-            
+
             # === 协议芯片 ===
             if hasattr(self, 'lbl_protocol'):
                 self._update_chip_label(self.lbl_protocol, t('protocol_chip'))
@@ -1085,7 +1417,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     current_val = self.lbl_ftp_client.value_label.text()
                     if current_val in ['未连接', 'Not Connected']:
                         self.lbl_ftp_client.setValue(t('not_connected'))
-            
+
             # === 网络状态芯片值 ===
             if hasattr(self, 'lbl_network') and hasattr(self.lbl_network, 'value_label'):
                 current_val = self.lbl_network.value_label.text()
@@ -1095,17 +1427,17 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     self.lbl_network.setValue(t('network_connected'))
                 elif current_val in ['已断开', 'Disconnected']:
                     self.lbl_network.setValue(t('network_disconnected'))
-            
+
             # === 当前文件标签 ===
             if hasattr(self, 'current_file_label_widget'):
                 self.current_file_label_widget.setText(t('current_file_label'))
-            
+
             # === 协议相关标签 ===
             if hasattr(self, 'protocol_title_label'):
                 self.protocol_title_label.setText(t('upload_protocol_title'))
             if hasattr(self, 'protocol_type_label'):
                 self.protocol_type_label.setText(t('protocol_type_label'))
-            
+
             # === 协议下拉框选项 ===
             if hasattr(self, 'combo_protocol'):
                 self.combo_protocol.setItemText(0, t('protocol_option_smb'))
@@ -1113,7 +1445,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     self.combo_protocol.setItemText(1, t('protocol_option_ftp_client'))
                 if self.combo_protocol.count() > 2:
                     self.combo_protocol.setItemText(2, t('protocol_option_both'))
-            
+
             # === FTP 复选框 ===
             if hasattr(self, 'cb_server_passive'):
                 self.cb_server_passive.setText(t('enable_passive'))
@@ -1123,7 +1455,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.cb_client_passive.setText(t('enable_passive'))
             if hasattr(self, 'cb_client_tls'):
                 self.cb_client_tls.setText(t('enable_tls'))
-            
+
             # === 数值设置行标签 ===
             if hasattr(self, 'lbl_interval'):
                 self.lbl_interval.setText(t('interval_label') + ":")
@@ -1133,13 +1465,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.lbl_retry.setText(t('retry_label') + ":")
             if hasattr(self, 'lbl_disk_check'):
                 self.lbl_disk_check.setText(t('disk_check_label') + ":")
-            
+
             # === 可折叠区块标题 ===
             if hasattr(self, 'filter_collapsible'):
                 self.filter_collapsible.setTitle(t('file_filter_title'))
             if hasattr(self, 'adv_collapsible'):
                 self.adv_collapsible.setTitle(t('advanced_options_title'))
-            
+
             # === 高级选项区域标签 ===
             if hasattr(self, 'hash_lab'):
                 self.hash_lab.setText(t('hash_algorithm') + ":")
@@ -1153,18 +1485,18 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.dedup_hint.setText(t('dedup_hint'))
             if hasattr(self, 'network_hint'):
                 self.network_hint.setText(t('network_hint'))
-            
+
             # === 策略下拉框选项 ===
             if hasattr(self, 'combo_strategy'):
                 self.combo_strategy.setItemText(0, t('strategy_skip'))
                 self.combo_strategy.setItemText(1, t('strategy_rename'))
                 self.combo_strategy.setItemText(2, t('strategy_overwrite'))
                 self.combo_strategy.setItemText(3, t('strategy_ask'))
-            
+
             # === 网络检查间隔后缀 ===
             if hasattr(self, 'spin_network_check'):
                 self.spin_network_check.setSuffix(" " + t('seconds'))
-            
+
         except Exception as e:
             self._append_log(f'⚠ UI刷新失败: {e}')
 
@@ -1209,13 +1541,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
     def render_permissions(self):
         """根据当前角色更新UI控件的启用状态"""
         logger.debug(f"更新权限: 当前角色={self.current_role}, 运行状态={'运行中' if self.is_running else '已停止'}")
-        
+
         # 计算统一控件状态
         states = self._compute_control_states()
-        
+
         logger.debug(f"[计算状态] 源按钮={states['btn_choose_src']}, 目标按钮={states['btn_choose_tgt']}, 备份按钮={states['btn_choose_bak']}")
         logger.debug(f"[计算状态] 源只读={states['src_edit_readonly']}, 目标只读={states['tgt_edit_readonly']}, 备份只读={states['bak_edit_readonly']}")
-        
+
         # 路径浏览按钮
         if hasattr(self, 'btn_choose_src'):
             self.btn_choose_src.setEnabled(states['btn_choose_src'])
@@ -1223,7 +1555,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.btn_choose_tgt.setEnabled(states['btn_choose_tgt'])
         if hasattr(self, 'btn_choose_bak'):
             self.btn_choose_bak.setEnabled(states['btn_choose_bak'])
-        
+
         # 路径输入框
         self.src_edit.setReadOnly(states['src_edit_readonly'])
         self.tgt_edit.setReadOnly(states['tgt_edit_readonly'])
@@ -1238,11 +1570,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.spin_disk.setEnabled(states['upload_settings'])
         self.spin_retry.setEnabled(states['upload_settings'])
         self.spin_disk_check.setEnabled(states['upload_settings'])
-        
+
         # 文件类型复选框
         for cb in self.cb_ext.values():
             cb.setEnabled(states['file_filters'])
-        
+
         # 开机自启和自动运行复选框
         self.cb_auto_start_windows.setEnabled(states['startup_settings'])
         self.cb_auto_run_on_startup.setEnabled(states['startup_settings'])
@@ -1275,10 +1607,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.filter_collapsible.setEnabled(states['filter_collapsible'])
         if hasattr(self, 'adv_collapsible'):
             self.adv_collapsible.setEnabled(states['adv_collapsible'])
-        
+
         # 保存配置按钮
         self.btn_save.setEnabled(states['btn_save'])
-        
+
         # 协议选择框
         if hasattr(self, 'combo_protocol'):
             self.combo_protocol.setEnabled(states['combo_protocol'])
@@ -1345,20 +1677,20 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.btn_more.setToolTip("请先登录")
             else:
                 self.btn_more.setToolTip("更多操作")
-        
+
         # 上传控制按钮
         self.btn_start.setEnabled(states['btn_start'])
         self.btn_pause.setEnabled(states['btn_pause'])
         self.btn_stop.setEnabled(states['btn_stop'])
         if self._task_requests_blocked():
             self._apply_exit_pending_controls()
-        
+
         actual_src = self.btn_choose_src.isEnabled() if hasattr(self, 'btn_choose_src') else None
         actual_tgt = self.btn_choose_tgt.isEnabled() if hasattr(self, 'btn_choose_tgt') else None
         actual_bak = self.btn_choose_bak.isEnabled() if hasattr(self, 'btn_choose_bak') else None
         logger.debug(f"[应用后实际] 源按钮={actual_src}, 目标按钮={actual_tgt}, 备份按钮={actual_bak}")
         logger.debug(f"[应用后实际] 源只读={self.src_edit.isReadOnly()}, 目标只读={self.tgt_edit.isReadOnly()}, 备份只读={self.bak_edit.isReadOnly()}")
-        
+
         if actual_tgt is not None and actual_tgt != states['btn_choose_tgt']:
             logger.warning(f"目标按钮状态不一致！计算={states['btn_choose_tgt']}, 实际={actual_tgt}")
         if actual_src is not None and actual_src != states['btn_choose_src']:
@@ -1383,14 +1715,29 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             disk_cleanup.setEnabled(False)
 
     def _task_requests_blocked(self) -> bool:
+        """界面辅助：完成“_task_requests_blocked”对应的既有局部显示或事件工作。"""
         return self._exit_pending or self._shutdown_timeout_pending
 
     @property
     def cleanup_role(self) -> str:
+        """作用：执行界面“cleanup_role”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         return self.current_role
 
     @property
     def cleanup_settings_error(self) -> str:
+        """作用：执行界面“cleanup_settings_error”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         return self.last_config_save_error
 
     def cleanup_settings_snapshot(self) -> dict:
@@ -1409,9 +1756,23 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         }
 
     def save_auto_cleanup_settings(self, config: dict) -> bool:
+        """作用：执行界面“save_auto_cleanup_settings”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         return self._save_auto_cleanup_config(config)
 
     def clear_log_view(self):
+        """作用：执行界面“clear_log_view”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         try:
             self.log.clear()
             self._toast('已清空日志', 'info')
@@ -1559,7 +1920,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self._async_log_signal.emit(message)
         except Exception:
             pass
-    
+
     def _show_disk_cleanup(self):
         """显示磁盘清理对话框"""
         if self._task_requests_blocked():
@@ -1599,6 +1960,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
     def _on_login_requested(
         self, dialog: LoginDialog, role: UserRole, password: str
     ) -> None:
+        """作用：执行界面“_on_login_requested”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         result = self.auth_controller.login(role, password)
         if not result.success:
             dialog.render_authentication_failed()
@@ -1621,6 +1989,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self._sync_auth_snapshot()
 
     def render_authenticated_role(self, role: UserRole) -> None:
+        """作用：执行界面“render_authenticated_role”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         if role is UserRole.USER:
             self.role_label.setText(t('role_user'))
             self.role_label.setStyleSheet(
@@ -1640,7 +2015,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         if block_reason:
             self._toast(block_reason, 'warning')
             return
-        
+
         dialog = ChangePasswordDialog(
             self,
             scale_px=self._scale_px,
@@ -1670,6 +2045,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         new_password: str,
         confirm_password: str,
     ) -> None:
+        """作用：执行界面“_on_change_password_requested”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         result = self.auth_controller.change_password(
             target_role,
             old_password,
@@ -1694,7 +2076,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         dialog.render_changed()
 
     # ========== 开机自启动功能 ==========
-    
+
     def _on_dedup_toggled(self, checked: bool):
         """切换智能去重开关"""
         if DEDUPLICATION_FREEZE_ACTIVE and checked:
@@ -1707,28 +2089,28 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.enable_deduplication = checked
         self._mark_config_modified()
         self._update_ui_permissions()
-        
+
         if checked:
             self._append_log("🔍 已启用智能去重")
         else:
             self._append_log("⚪ 已禁用智能去重")
-    
+
     def _on_rate_limit_toggled(self, checked: bool):
         """v2.3.0 切换速率限制开关"""
         self.limit_upload_rate = checked
         self._mark_config_modified()
         self._update_ui_permissions()
-        
+
         if checked:
             rate = self.spin_max_rate.value()
             self._append_log(f"⚡ 已启用速率限制: {rate} MB/s")
         else:
             self._append_log("⚪ 已禁用速率限制")
 
-    def _toggle_password_visibility(self, line_edit: QtWidgets.QLineEdit, 
+    def _toggle_password_visibility(self, line_edit: QtWidgets.QLineEdit,
                                      button: QtWidgets.QToolButton, show: bool):
         """v3.1.0 新增: 切换密码可见性
-        
+
         Args:
             line_edit: 密码输入框
             button: 切换按钮
@@ -1746,6 +2128,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
     def _choose_ftp_share(self):
         """选择 FTP 共享目录"""
         def apply(folder: str) -> None:
+            """作用：执行界面“apply”的既有输入、展示或事件转发职责。
+
+            参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+            返回结果：沿用当前实现的返回值、界面更新或事件语义。
+            执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+            风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+            """
             self.ftp_server_share.setText(folder)
             self.config_modified = True
 
@@ -1767,6 +2156,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 widget.setEnabled(tls_enabled)
 
     def _choose_ftp_cert(self) -> None:
+        """界面辅助：完成“_choose_ftp_cert”对应的既有局部显示或事件工作。"""
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
             t('select_tls_cert'),
@@ -1778,6 +2168,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.config_modified = True
 
     def _choose_ftp_key(self) -> None:
+        """界面辅助：完成“_choose_ftp_key”对应的既有局部显示或事件工作。"""
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
             t('select_tls_key'),
@@ -1789,6 +2180,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.config_modified = True
 
     def _collect_ftp_server_config(self) -> dict:
+        """界面辅助：完成“_collect_ftp_server_config”对应的既有局部显示或事件工作。"""
         return {
             'host': self.ftp_server_host.text().strip(),
             'port': self.ftp_server_port.value(),
@@ -1806,6 +2198,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         }
 
     def _collect_ftp_client_config(self) -> dict:
+        """界面辅助：完成“_collect_ftp_client_config”对应的既有局部显示或事件工作。"""
         return {
             'host': self.ftp_client_host.text().strip(),
             'port': self.ftp_client_port.value(),
@@ -1826,7 +2219,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         if result.is_valid:
             self._append_log(f"✓ FTP服务器共享目录有效: {server_cfg.get('shared_folder', '')}")
         return list(result.errors)
-    
+
     def _test_ftp_server_config(self):
         """测试FTP服务器配置"""
         self._append_log("🧪 开始测试FTP服务器配置...")
@@ -1859,6 +2252,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         QtWidgets.QMessageBox.critical(self, "测试失败", details)
 
     def _is_ftp_server_running(self) -> bool:
+        """界面辅助：完成“_is_ftp_server_running”对应的既有局部显示或事件工作。"""
         return self.ftp_controller.is_server_running()
 
     def _emit_ftp_server_event(self, event: dict) -> None:
@@ -1869,6 +2263,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             logger.debug(f"转发FTP事件失败: {type(e).__name__}: {e}")
 
     def _toggle_ftp_server_only(self):
+        """界面辅助：完成“_toggle_ftp_server_only”对应的既有局部显示或事件工作。"""
         if self._task_requests_blocked():
             self._append_log("⚠️ 退出流程中，已拒绝 FTP 服务状态变更")
             return
@@ -1948,10 +2343,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         return False
 
     def _handle_ftp_server_event(self, event: dict):
+        """界面辅助：完成“_handle_ftp_server_event”对应的既有局部显示或事件工作。"""
         message = event.get("display_message", "")
         if message:
             self._append_log(message)
-    
+
     def _test_ftp_client_connection(self):
         """启动或取消后台 FTP 客户端连接测试。"""
         if self.ftp_controller.client_test_running:
@@ -2017,15 +2413,15 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self._append_log(f"❌ FTP客户端连接测试失败: {details}")
         if not self._exit_pending:
             QtWidgets.QMessageBox.critical(self, "测试失败", details)
-    
+
     def _on_protocol_changed(self, index: int):
         """协议选择变化 (v3.1.0 重构: 移除 ftp_server 枚举)"""
         protocols = ['smb', 'ftp_client', 'both']  # v3.1.0: ftp_server 已抽离为独立开关
         self.current_protocol = protocols[index]
-        
+
         # 更新说明文字
         self._update_protocol_description(index)
-        
+
         # v3.1.0: FTP服务器已抽离为独立服务，不再受协议模式限制
         if index == 0:  # SMB
             # 保持ftp_config_widget可见但禁用,避免布局跳动
@@ -2037,20 +2433,20 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             # FTP服务器配置由独立开关控制
             if self.enable_ftp_server:
                 self.ftp_server_collapsible.set_expanded(True)
-        
+
         self._mark_config_modified()
         mode_names = ['SMB', 'FTP客户端', 'SMB+FTP客户端']
         self._append_log(f"📡 切换上传协议：{mode_names[index]}")
-        
+
         # v3.1.0: 显示模式切换toast
         toast_keys = ['toast_protocol_smb', 'toast_protocol_ftp_client', 'toast_protocol_both']
         self._toast(t(toast_keys[index]), 'info')
-        
+
         # 更新协议状态显示和模式标签
         self._update_protocol_status()
         self._update_mode_chip(index)
         self._update_ui_permissions()
-    
+
     def _update_protocol_description(self, index: int):
         """更新协议说明 (v3.1.0 重构: 更短更直观)"""
         descriptions = [
@@ -2059,7 +2455,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             f"🔄 {t('protocol_desc_both_short')}"
         ]
         self.protocol_desc.setText(descriptions[index])
-    
+
     def _update_mode_chip(self, index: int):
         """v3.1.0 新增: 更新协议模式芯片显示"""
         mode_configs = [
@@ -2074,26 +2470,26 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 f"background:{bg_color}; color:{text_color}; padding:4px 8px; "
                 f"border-radius:4px; font-size:9pt; font-weight:600;"
             )
-    
+
     def _on_ftp_server_toggled(self, checked: bool):
         """v3.1.0 新增: FTP 服务器开关切换"""
         self.enable_ftp_server = checked
-        
+
         # 启用/禁用 FTP 服务器配置
         self.ftp_server_hint.setVisible(checked)
-        
+
         # 启用时自动展开，方便用户配置
         if checked:
             self.ftp_server_collapsible.set_expanded(True)
-        
+
         self.config_modified = True
         self._update_ui_permissions()
         status = '启用' if checked else '禁用'
         self._append_log(f"🖥️ FTP服务器已{status}")
-        
+
         # 更新协议状态显示
         self._update_protocol_status()
-    
+
     def _toggle_autostart(self, checked: bool):
         """Forward a startup-registration request to the runtime controller."""
         if not self.auth_controller.is_authenticated():
@@ -2145,7 +2541,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             if started and self._is_server_only_configuration():
                 self._append_log("✓ 自动运行已启动FTP服务器（server-only）")
                 return
-        
+
         # 验证设置
         if not self.src_edit.text() or not self.tgt_edit.text() or not self.bak_edit.text():
             self._append_log("⚠ 自动运行失败：文件夹路径未设置")
@@ -2155,10 +2551,12 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self._request_start_upload()
 
     def _status_card(self) -> QtWidgets.QWidget:
+        """界面辅助：完成“_status_card”对应的既有局部显示或事件工作。"""
         self.upload_status_panel = UploadStatusPanel(self)
         return self.upload_status_panel
 
     def _hline(self):
+        """界面辅助：完成“_hline”对应的既有局部显示或事件工作。"""
         line = QtWidgets.QFrame()
         shape_enum = getattr(QtWidgets.QFrame, 'Shape', QtWidgets.QFrame)
         line.setFrameShape(getattr(shape_enum, 'HLine'))
@@ -2166,6 +2564,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         return line
 
     def _log_card(self) -> QtWidgets.QWidget:
+        """界面辅助：完成“_log_card”对应的既有局部显示或事件工作。"""
         self.upload_log_panel = UploadLogPanel(self)
         return self.upload_log_panel
 
@@ -2224,6 +2623,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self._append_log('⚠ 配置已修改，请点击"保存配置"按钮确认')
 
     def _collect_upload_request(self) -> UploadTaskRequest:
+        """作用：执行界面“_collect_upload_request”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         strategy_map = {'跳过': 'skip', '重命名': 'rename', '覆盖': 'overwrite', '询问': 'ask'}
         duplicate_strategy = strategy_map.get(self.combo_strategy.currentText(), 'ask')
         filters = tuple(ext for ext, cb in self.cb_ext.items() if cb.isChecked())
@@ -2283,11 +2689,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         src = self.src_edit.text().strip()
         tgt = self.tgt_edit.text().strip()
         return not src and not tgt
-    
+
     def _validate_ftp_config(self) -> tuple:
         """
         验证FTP配置的有效性
-        
+
         Returns:
             tuple: (是否有效, 错误消息列表)
         """
@@ -2320,9 +2726,9 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self._append_log("❌ 未登录用户无权保存配置")
             self._toast('请先登录后再保存配置', 'warning')
             return False
-        
+
         self._append_log("💾 正在保存配置...")
-        
+
         # v2.2.0 新增：保存前验证路径；FTP server-only 不需要源/目标路径
         if not self._is_server_only_configuration():
             is_valid, errors = self._validate_paths()
@@ -2332,7 +2738,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self._append_log(f"❌ 路径验证失败，无法保存配置:\n{error_msg}")
                 self._toast('路径验证失败，请检查配置', 'danger')
                 return False
-        
+
         # v2.2.0 新增：验证FTP配置（如果使用FTP协议或启用内置服务器）
         if self.current_protocol != 'smb' or self.enable_ftp_server:
             is_valid, errors = self._validate_ftp_config()
@@ -2342,7 +2748,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self._append_log(f"❌ FTP配置验证失败，无法保存配置:\n{error_msg}")
                 self._toast('FTP配置验证失败，请检查配置', 'danger')
                 return False
-        
+
         try:
             ftp_server_password, ftp_server_password_encrypted = self.settings_controller.encode_ftp_password(
                 self.ftp_server_pass.text(),
@@ -2357,10 +2763,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self._append_log(f"❌ FTP密码加密失败，无法保存配置: {e}")
             self._toast(f'保存失败: {e}', 'danger')
             return False
-        
+
         # 策略映射
         strategy_map = {'跳过': 'skip', '重命名': 'rename', '覆盖': 'overwrite', '询问': 'ask'}
-        
+
         cfg = {
             'source_folder': self.src_edit.text(),
             'target_folder': self.tgt_edit.text(),
@@ -2445,7 +2851,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             # 保存成功后清除修改标记并更新保存的配置
             self.config_modified = False
             self.saved_settings = copy.deepcopy(settings)
-            
+
             self._append_log("✓ 配置已成功保存到文件")
             self._toast('配置已保存', 'success')
             self._update_auto_cleanup_schedule()
@@ -2503,7 +2909,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         """从配置文件加载设置"""
         self._config_loading = True
         self._append_log("📖 正在加载配置文件...")
-        
+
         config_exists = bool(
             self.settings_controller is not None
             and self.settings_controller.config_exists
@@ -2559,13 +2965,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             return
         self._append_log("=" * 50)
         self._append_log("🚀 准备开始上传任务...")
-        
+
         # 1. 验证路径是否存在
         is_valid, errors = self._validate_paths()
         if not is_valid:
             error_msg = "\n".join(errors)
             self._append_log(f"❌ 路径验证失败:\n{error_msg}")
-            
+
             # 弹窗显示错误
             msg_box = QtWidgets.QMessageBox(self)
             msg_box.setIcon(QtWidgets.QMessageBox.Icon.Critical)
@@ -2574,17 +2980,17 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             msg_box.setDetailedText(error_msg)
             msg_box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
             msg_box.exec() if hasattr(msg_box, 'exec') else msg_box.exec_()
-            
+
             self._toast('路径验证失败，无法开始上传', 'danger')
             return
-        
+
         # v2.0 新增：验证FTP配置（如果使用FTP协议或启用内置服务器）
         if self.current_protocol != 'smb' or self.enable_ftp_server:
             is_valid, errors = self._validate_ftp_config()
             if not is_valid:
                 error_msg = "\n".join(errors)
                 self._append_log(f"❌ FTP配置验证失败:\n{error_msg}")
-                
+
                 # 弹窗显示错误
                 msg_box = QtWidgets.QMessageBox(self)
                 msg_box.setIcon(QtWidgets.QMessageBox.Icon.Critical)
@@ -2593,14 +2999,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 msg_box.setDetailedText(error_msg)
                 msg_box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
                 msg_box.exec() if hasattr(msg_box, 'exec') else msg_box.exec_()
-                
+
                 self._toast('FTP配置验证失败', 'danger')
                 return
-        
+
         # 2. 检查配置是否被修改但未保存
         if self.config_modified:
             self._append_log("⚠ 检测到配置已修改但未保存")
-            
+
             # v2.2.0 权限检查：未登录用户无权保存配置，直接恢复已保存配置
             if not self.auth_controller.is_authenticated():
                 self._append_log("⚠ 未登录用户无权保存配置，自动恢复已保存的配置")
@@ -2608,7 +3014,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     self.apply_settings(self.saved_settings)
                     self.config_modified = False
                     self._append_log("✓ 配置已恢复到已保存状态")
-                    
+
                     # 重新验证路径
                     is_valid, errors = self._validate_paths()
                     if not is_valid:
@@ -2628,14 +3034,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 msg_box.setText("检测到路径配置已修改但未保存！")
                 msg_box.setInformativeText('是否保存当前配置并使用新路径上传？\n\n选择"是"：保存配置并使用新路径\n选择"否"：放弃修改，使用已保存的路径')
                 msg_box.setStandardButtons(
-                    QtWidgets.QMessageBox.StandardButton.Yes | 
+                    QtWidgets.QMessageBox.StandardButton.Yes |
                     QtWidgets.QMessageBox.StandardButton.No |
                     QtWidgets.QMessageBox.StandardButton.Cancel
                 )
                 msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
-                
+
                 result = msg_box.exec() if hasattr(msg_box, 'exec') else msg_box.exec_()
-                
+
                 if result == QtWidgets.QMessageBox.StandardButton.Yes:
                     # 保存配置
                     self._append_log("✓ 用户选择保存配置")
@@ -2649,7 +3055,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                         self.apply_settings(self.saved_settings)
                         self.config_modified = False
                         self._append_log("✓ 配置已恢复")
-                        
+
                         # 重新验证路径
                         is_valid, errors = self._validate_paths()
                         if not is_valid:
@@ -2661,7 +3067,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     # 取消
                     self._append_log("✗ 用户取消开始上传")
                     return
-        
+
         self._append_log("✓ 配置验证通过，开始启动上传任务...")
         request = self._collect_upload_request()
         self._append_log(f"📋 上传配置:")
@@ -2675,7 +3081,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self._append_log(f"  重试次数: {request.retry_count}次")
         self._append_log(f"  文件类型: {', '.join(request.filters)}")
         self._append_log(f"  上传协议: {request.upload_protocol}")
-        
+
         # v2.0 新增：启动FTP服务器（v3.1.0 重构：由独立开关控制）
         if self.enable_ftp_server:
             if self._is_ftp_server_running():
@@ -2727,7 +3133,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self._update_ui_permissions()
         self._toast('开始上传', 'success')
         self._append_log("✓ 上传任务已启动")
-        
+
         # v2.2.0 新增：显示通知
         self._show_notification(
             "上传已开始",
@@ -2758,6 +3164,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
 
     @QtCore.Slot(object)
     def _handle_path_probe_result(self, result: object) -> None:
+        """作用：执行界面“_handle_path_probe_result”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         if not isinstance(result, PathProbeResult):
             return
         if result.generation != self._path_probe_generation:
@@ -2787,6 +3200,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
 
     @staticmethod
     def _path_probe_request_fingerprint(request: UploadTaskRequest) -> tuple[str, ...]:
+        """界面辅助：完成“_path_probe_request_fingerprint”对应的既有局部显示或事件工作。"""
         return (
             request.source,
             request.target,
@@ -2796,6 +3210,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         )
 
     def _toggle_upload_pause(self):
+        """作用：执行界面“_toggle_upload_pause”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         if self._task_requests_blocked():
             return
         if not self.is_running:
@@ -2832,7 +3253,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         result = self.upload_controller.stop()
         if not result.success:
             self._append_log(f"⚠️ 停止上传任务失败: {result.message}")
-        
+
         # v2.0 新增：停止由上传任务启动的FTP服务器；独立启动的服务器不受上传停止影响
         if (
             self.ftp_controller.server_started_by_upload
@@ -2845,14 +3266,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self._update_protocol_status()
             else:
                 self._append_log(f"⚠️ 停止FTP服务时出错: {result.message}")
-        
+
         # 立即恢复UI（不等待线程完全退出，提升响应速度）
         self._restore_ui_after_stop()
-    
+
     def _restore_ui_after_stop(self):
         """恢复停止后的UI状态"""
         states = self._compute_control_states()
-        
+
         # 应用状态
         self.src_edit.setReadOnly(states['src_edit_readonly'])
         self.tgt_edit.setReadOnly(states['tgt_edit_readonly'])
@@ -2870,7 +3291,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.btn_pause.setEnabled(states['btn_pause'])
         self.btn_pause.setText("⏸ 暂停上传")
         self.btn_stop.setEnabled(states['btn_stop'])
-        
+
         # 重置进度显示
         self.pbar.setValue(0)
         self.pbar_file.setValue(0)
@@ -2878,24 +3299,24 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.lbl_current_file.setText("等待开始...")
         self.lbl_progress.setText("已停止")
         self._update_status_pill()
-        
+
         # 统一再走一遍权限更新逻辑，确保一致（会重复应用但保证同步）
         try:
             self._update_ui_permissions()
         except Exception:
             pass
-        
+
         actual_tgt = self.btn_choose_tgt.isEnabled() if hasattr(self, 'btn_choose_tgt') else None
         actual_src = self.btn_choose_src.isEnabled() if hasattr(self, 'btn_choose_src') else None
         logger.debug(f"[停止后实际] 源按钮={actual_src}, 目标按钮={actual_tgt}")
-        
+
         if actual_tgt is not None and actual_tgt != states['btn_choose_tgt']:
             logger.warning(f"停止后目标按钮状态不一致！计算={states['btn_choose_tgt']}, 实际={actual_tgt}")
-        
+
         self._toast('已停止', 'danger')
         self._append_log("✓ 上传任务已停止")
         self._append_log("=" * 50)
-        
+
         # v2.2.0 系统托盘通知
         self._show_notification(
             "上传已停止",
@@ -2903,10 +3324,17 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         )
 
     def render_upload_stats(self, uploaded: int, failed: int, skipped: int, rate: str):
+        """作用：执行界面“render_upload_stats”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         self.lbl_uploaded.setValue(str(uploaded))
         self.lbl_failed.setValue(str(failed))
         self.lbl_skipped.setValue(str(skipped))
-        
+
         # v2.0 增强：速率显示添加协议图标
         protocol_icons = {
             'smb': '📁',
@@ -2918,6 +3346,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.lbl_rate.setValue(f"{icon} {rate}")
 
     def render_upload_progress(self, current: int, total: int, filename: str):
+        """作用：执行界面“render_upload_progress”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         self.pbar.setValue(0 if total <= 0 else int(100*current/max(1,total)))
         eta = "--:--"
         remaining_count = total - current
@@ -2933,24 +3368,24 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         prefix = f"总进度 {self.pbar.value()}%"
         suffix = f"  剩余 {remaining_count} 个文件  预计 {eta}" if total>0 else ""
         self.lbl_progress.setText(prefix + suffix)
-    
+
     def render_file_progress(self, filename: str, progress: int):
         """更新当前文件的进度"""
         # 截断过长的文件名
         display_name = filename
         if len(filename) > 50:
             display_name = filename[:25] + "..." + filename[-22:]
-        
+
         self.lbl_current_file.setText(f"{display_name}")
         self.pbar_file.setValue(progress)
-        
+
         # 小幅度刷新速率显示：当有进度时给出“上传中...”提示，避免长时间保持旧速率
         try:
             if 0 < progress < 100:
                 self.lbl_rate.setValue("上传中...")
         except Exception:
             pass
-        
+
         if progress == 0:
             self.pbar_file.setFormat("准备上传...")
         elif progress == 100:
@@ -3011,6 +3446,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             v.addWidget(lab)
 
             def short(p: str) -> str:
+                """作用：执行界面“short”的既有输入、展示或事件转发职责。
+
+                参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+                返回结果：沿用当前实现的返回值、界面更新或事件语义。
+                执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+                风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+                """
                 return p if len(p) <= 90 else (p[:42] + "..." + p[-42:])
             v.addWidget(QtWidgets.QLabel(f"源文件：{short(src)}"))
             v.addWidget(QtWidgets.QLabel(f"目标已有：{short(dup)}"))
@@ -3051,6 +3493,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             resolved = False
 
             def done(ok: bool):
+                """作用：执行界面“done”的既有输入、展示或事件转发职责。
+
+                参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+                返回结果：沿用当前实现的返回值、界面更新或事件语义。
+                执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+                风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+                """
                 nonlocal resolved
                 choice = 'skip'
                 if ok and rb_rename.isChecked():
@@ -3071,7 +3520,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 self.upload_controller.resolve_duplicate(payload, 'skip', False)
         except Exception:
             self.upload_controller.resolve_duplicate(payload, 'skip', False)
-    
+
     def render_network_status(self, status: str):
         """更新网络状态显示"""
         if status == 'good':
@@ -3091,10 +3540,24 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.lbl_network.setStyleSheet("QFrame{background:#ECEFF1; border-radius:8px;} QLabel{color:#546E7A;}")
 
     def render_worker_status(self, s: str):
+        """作用：执行界面“render_worker_status”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         self.render_status_pill()
 
     def render_upload_finished(self):
         # v2.2.0 系统托盘通知：上传任务完成
+        """作用：执行界面“render_upload_finished”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         if self.uploaded > 0 or self.failed > 0:
             self._show_notification(
                 "上传任务完成",
@@ -3104,13 +3567,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         pass
         # v3.3.0：Worker 结束后恢复定时清理
         self._update_auto_cleanup_schedule()
-    
+
     def render_upload_error(self, filename: str, error_message: str):
         """v2.2.0 处理上传错误通知"""
         # 限制错误通知频率（每个文件只通知一次最新错误）
         if not hasattr(self, '_error_notified_files'):
             self._error_notified_files = set()
-        
+
         if filename not in self._error_notified_files:
             self._error_notified_files.add(filename)
             # 截断过长的错误信息
@@ -3120,11 +3583,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                 f"{filename}: {short_error}",
                 icon_type=get_qt_enum(QtWidgets.QSystemTrayIcon, 'Warning', 2)
             )
-        
+
         # 定期清理已通知文件集合（避免内存泄漏）
         if len(self._error_notified_files) > 100:
             self._error_notified_files.clear()
-    
+
     def _on_disk_warning(self, target_percent: float, backup_percent: float, threshold: int):
         """v2.2.0 处理磁盘空间警告通知"""
         self._show_notification(
@@ -3135,10 +3598,18 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self._request_auto_cleanup("磁盘空间不足")
 
     def _log_message(self, message: str):
+        """界面辅助：完成“_log_message”对应的既有局部显示或事件工作。"""
         self._append_log(message)
 
-    def _append_log(self, line: str): 
+    def _append_log(self, line: str):
         # If autoscroll is disabled, preserve the current scrollbar position.
+        """作用：执行界面“_append_log”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         try:
             vsb = self.log.verticalScrollBar()
             prev = vsb.value()
@@ -3149,10 +3620,10 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         # 添加时间戳
         timestamp = datetime.datetime.now().strftime('%H:%M:%S')
         log_line = f"[{timestamp}] {line}"
-        
+
         # Append the new line to UI
         self.log.appendPlainText(log_line)
-        
+
         self.runtime_controller.append_log(line)
 
         # Decide scrolling behaviour
@@ -3166,8 +3637,15 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             if vsb is not None and prev is not None:
                 # keep the view where it was before appending
                 vsb.setValue(prev)
-    
+
     def render_status_pill(self):
+        """作用：执行界面“render_status_pill”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         if self.is_paused:
             self.lbl_status.setText("🟡 已暂停")
             self.lbl_status.setStyleSheet("background:#FEF9C3; color:#A16207; padding:4px 10px; font-weight:700; border-radius:12px;")
@@ -3177,7 +3655,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         else:
             self.lbl_status.setText("🔴 已停止")
             self.lbl_status.setStyleSheet("background:#FEE2E2; color:#B91C1C; padding:4px 10px; font-weight:700; border-radius:12px;")
-    
+
     def render_protocol_status(self):
         """更新协议和FTP状态显示 (v3.1.0 重构)"""
         # 更新协议模式芯片
@@ -3188,11 +3666,11 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         }
         protocol_text = protocol_names.get(self.current_protocol, 'SMB')
         self.lbl_protocol.setValue(protocol_text)
-        
+
         # v3.1.0: 更新当前模式芯片（醒目显示）
         protocol_index = {'smb': 0, 'ftp_client': 1, 'both': 2}.get(self.current_protocol, 0)
         self._update_mode_chip(protocol_index)
-        
+
         # 更新FTP服务器状态（由独立开关控制，不依赖协议）
         if self.enable_ftp_server:
             try:
@@ -3230,7 +3708,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             self.btn_toggle_ftp_server.setText(
                 t('stop_ftp_server') if self._is_ftp_server_running() else t('start_ftp_server')
             )
-        
+
         # 更新FTP客户端状态（含图标指示器）
         if self.current_protocol in ['ftp_client', 'both']:
             client_status = self.upload_controller.ftp_client_status()
@@ -3274,40 +3752,51 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
     # Compatibility aliases for existing menu/test integrations. New event
     # dispatch uses the render_* methods above.
     def _update_ui_permissions(self) -> None:
+        """界面辅助：完成“_update_ui_permissions”对应的既有局部显示或事件工作。"""
         self.render_permissions()
 
     def _update_status_pill(self) -> None:
+        """界面辅助：完成“_update_status_pill”对应的既有局部显示或事件工作。"""
         self.render_status_pill()
 
     def _update_protocol_status(self) -> None:
+        """界面辅助：完成“_update_protocol_status”对应的既有局部显示或事件工作。"""
         self.render_protocol_status()
 
     def _toast(self, msg: str, kind: str = 'info'):
+        """界面辅助：完成“_toast”对应的既有局部显示或事件工作。"""
         t = Toast(self.window(), msg, kind)
         t.show()
 
     def _tick(self):
         # 运行时间更新
+        """作用：执行界面“_tick”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway、更新状态并刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式、翻译或公开接口。
+        """
         if self.is_running and self.start_time:
             elapsed = int(time.time() - self.start_time)
             h, rem = divmod(elapsed, 3600)
             m, s = divmod(rem, 60)
             t = f"{h:02d}:{m:02d}:{s:02d}"
             self.lbl_time.setValue(t)
-        
+
         # 归档队列大小刷新（近似值即可）
         try:
             self.lbl_queue.setValue(str(self.upload_controller.archive_queue_size()))
         except Exception:
             pass
-        
+
         # 磁盘空间更新（根据配置的间隔）
         self.disk_check_counter += 1
         # 每0.5秒tick一次，所以需要 interval * 2 次tick
         if self.disk_check_counter >= self.disk_check_interval * 2:
             self.disk_check_counter = 0
             self._update_disk_space()
-        
+
         # v2.0 新增：更新协议和FTP状态
         self._update_protocol_status()
 
@@ -3330,6 +3819,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         return normalize_cleanup_folders(raw)
 
     def _collect_auto_cleanup_request(self, trigger_source: str) -> AutoCleanupRequest:
+        """界面辅助：完成“_collect_auto_cleanup_request”对应的既有局部显示或事件工作。"""
         return AutoCleanupRequest(
             enabled=bool(self.enable_auto_delete),
             folders=tuple(self._get_auto_cleanup_folders()),
@@ -3349,12 +3839,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
     def _request_auto_cleanup(
         self, reason: str = "", trigger_source: str = "disk_warning"
     ) -> bool:
+        """界面辅助：完成“_request_auto_cleanup”对应的既有局部显示或事件工作。"""
         if self._task_requests_blocked():
             return False
         request = self._collect_auto_cleanup_request(trigger_source)
         return self.cleanup_controller.maybe_trigger_auto_cleanup(request, reason)
 
     def _update_auto_cleanup_schedule(self) -> None:
+        """界面辅助：完成“_update_auto_cleanup_schedule”对应的既有局部显示或事件工作。"""
         if not hasattr(self, "_auto_cleanup_timer"):
             return
         if not self.enable_auto_delete:
@@ -3372,6 +3864,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self._append_log(f"ℹ️ 自动清理已启用，每 {interval} 秒检查一次")
 
     def _auto_cleanup_tick(self) -> None:
+        """界面辅助：完成“_auto_cleanup_tick”对应的既有局部显示或事件工作。"""
         self._request_auto_cleanup(trigger_source="timer")
     def render_disk_space(self, disk_type: str, free_percent: float):
         """处理磁盘更新信号（在主线程中执行）"""
@@ -3398,14 +3891,14 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                     self.lbl_backup_disk.setStyleSheet("QFrame{background:#FFF9C3; border-radius:8px;} QLabel{color:#F57F17;}")
                 else:
                     self.lbl_backup_disk.setStyleSheet("QFrame{background:#F1F8E9; border-radius:8px;} QLabel{color:#33691E;}")
-    
+
     # ========== v2.2.0 新增：系统托盘功能 ==========
-    
+
     def _init_tray_icon(self):
         """初始化系统托盘图标和菜单"""
         # 创建托盘图标
         self.tray_icon = QtWidgets.QSystemTrayIcon(self)
-        
+
         # 设置托盘图标（使用应用图标或默认图标）
         icon = self.windowIcon()
         if icon.isNull():
@@ -3420,58 +3913,58 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             painter.drawText(pixmap.rect(), get_qt_enum(QtCore.Qt, 'AlignCenter', 0x0084), "图")
             painter.end()
             icon = QtGui.QIcon(pixmap)
-        
+
         self.tray_icon.setIcon(icon)
         self.tray_icon.setToolTip(APP_TITLE)
-        
+
         # 创建托盘菜单
         tray_menu = QtWidgets.QMenu()
-        
+
         # 显示/隐藏主窗口
         show_action = tray_menu.addAction("📱 显示主窗口")
         show_action.triggered.connect(self._show_window)
-        
+
         tray_menu.addSeparator()
-        
+
         # 上传控制
         self.tray_start_action = tray_menu.addAction("▶️ 开始上传")
         self.tray_start_action.triggered.connect(self._request_start_upload)
-        
+
         self.tray_pause_action = tray_menu.addAction("⏸️ 暂停上传")
         self.tray_pause_action.triggered.connect(self._toggle_upload_pause)
         self.tray_pause_action.setEnabled(False)
-        
+
         self.tray_stop_action = tray_menu.addAction("⏹️ 停止上传")
         self.tray_stop_action.triggered.connect(self._request_stop_upload)
         self.tray_stop_action.setEnabled(False)
-        
+
         tray_menu.addSeparator()
-        
+
         # 统计信息
         stats_action = tray_menu.addAction("📊 查看统计")
         stats_action.triggered.connect(self._show_stats)
-        
+
         tray_menu.addSeparator()
-        
+
         # 退出程序
         quit_action = tray_menu.addAction("❌ 退出程序")
         quit_action.triggered.connect(self._quit_application)
-        
+
         self.tray_icon.setContextMenu(tray_menu)
-        
+
         # 双击托盘图标显示主窗口
         self.tray_icon.activated.connect(self._on_tray_activated)
-        
+
         # 显示托盘图标
         self.tray_icon.show()
-        
+
         self._append_log("✓ 系统托盘已初始化")
-    
+
     def _on_tray_activated(self, reason):
         """托盘图标激活事件"""
         if reason == get_qt_enum(QtWidgets.QSystemTrayIcon, 'DoubleClick', 2):
             self._show_window()
-    
+
     def _show_window(self):
         """显示主窗口"""
         self.show()
@@ -3486,7 +3979,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         self.setWindowState(new_state)  # type: ignore[arg-type]
         self.activateWindow()
         self.raise_()
-    
+
     def _show_stats(self):
         """显示统计信息对话框"""
         stats_text = f"""
@@ -3506,13 +3999,13 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             minutes = int((elapsed % 3600) // 60)
             seconds = int(elapsed % 60)
             stats_text += f"运行时间: {hours:02d}:{minutes:02d}:{seconds:02d}\n"
-        
+
         msg_box = QtWidgets.QMessageBox(self)
         msg_box.setWindowTitle("统计信息")
         msg_box.setText(stats_text)
         msg_box.setIcon(QtWidgets.QMessageBox.Icon.Information)
         msg_box.exec()
-    
+
     def _get_network_status_text(self):
         """获取网络状态文本"""
         status_map = {
@@ -3522,7 +4015,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             'unknown': '⚪ 未知'
         }
         return status_map.get(self.network_status, '⚪ 未知')
-    
+
     def _quit_application(self):
         """退出应用程序"""
         if self._exit_pending:
@@ -3534,25 +4027,26 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
             QtWidgets.QMessageBox.StandardButton.No
         )
-        
+
         if reply == QtWidgets.QMessageBox.StandardButton.Yes:
             self.app_exit_requested.emit()
 
     def _handle_app_exit_requested(self) -> None:
+        """界面辅助：完成“_handle_app_exit_requested”对应的既有局部显示或事件工作。"""
         result = self.lifecycle_controller.request_shutdown(self)
         for error in result.errors:
             logger.error("关闭资源失败: %s", error)
-    
+
     def _show_notification(self, title: str, message: str, icon_type: Optional[Any] = None):
         """显示系统通知
-        
+
         Note: PySide6 6.x 的 showMessage API 有两种签名，我们使用 type: ignore[call-overload] 来忽略类型检查
         """
         if self.show_notifications and self.tray_icon and self.tray_icon.isVisible():
             if icon_type is None:
                 icon_type = QtWidgets.QSystemTrayIcon.MessageIcon.Information
             self.tray_icon.showMessage(title, message, icon_type, 3000)  # type: ignore[call-overload]
-    
+
     def changeEvent(self, event):
         """窗口状态改变事件"""
         if event.type() == QtCore.QEvent.Type.WindowStateChange:
@@ -3614,6 +4108,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
             QtCore.QTimer.singleShot(250, self._refresh_shutdown_timeout_state)
 
     def _refresh_shutdown_timeout_state(self) -> None:
+        """界面辅助：完成“_refresh_shutdown_timeout_state”对应的既有局部显示或事件工作。"""
         if not self._shutdown_timeout_pending or self._exit_pending:
             return
         if (
@@ -3633,7 +4128,7 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         local_server = getattr(self, 'local_server', None)
         if local_server is not None:
             local_server.close()
-    
+
     def closeEvent(self, event):
         """窗口关闭事件，清理资源"""
         # 如果启用托盘且不是真正退出，则隐藏到托盘
@@ -3655,41 +4150,41 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
         event.ignore()
         if not self._exit_pending:
             self.app_exit_requested.emit()
-    
+
     def _setup_single_instance_server(self):
         """设置单例唤醒服务器
-        
+
         监听来自新实例的唤醒请求，收到后将窗口置顶激活
         """
         self.local_server = QLocalServer(self)
         server_name = "ImageUploadTool_SingleInstance_Server"
-        
+
         # 先移除可能残留的服务器（程序异常退出时可能遗留）
         QLocalServer.removeServer(server_name)
-        
+
         # 启动服务器
         if not self.local_server.listen(server_name):
             # 服务器启动失败，记录日志但不影响程序运行
             self._log_message(f"警告: 单例服务器启动失败 - {self.local_server.errorString()}")
             return
-        
+
         # 连接新连接信号
         self.local_server.newConnection.connect(self._handle_wakeup_request)
         self._log_message("单例服务器已启动，可接收唤醒请求")
-    
+
     def _handle_wakeup_request(self):
         """处理来自新实例的唤醒请求"""
         # 获取新连接
         client_socket = self.local_server.nextPendingConnection()
         if not client_socket:
             return
-        
+
         # 等待数据到达
         if client_socket.waitForReadyRead(1000):  # 等待最多1秒
             data = client_socket.readAll()
             # 使用 Qt 的方法转换为 Python 字符串
             message = bytes(data).decode('utf-8', errors='ignore')  # type: ignore[arg-type]
-            
+
             if message == "WAKEUP":
                 # 收到唤醒请求，激活窗口
                 self._activate_window()
@@ -3702,24 +4197,24 @@ class MainWindow(QtWidgets.QMainWindow):  # type: ignore[misc]
                         3000,
                     )
                     self._log_message("已显示单实例托盘通知")
-        
+
         # 关闭连接
         client_socket.disconnectFromServer()
-    
+
     def _activate_window(self):
         """激活并置顶窗口"""
         # 如果窗口被隐藏，先显示
         if self.isHidden():
             self.show()
-        
+
         # 如果窗口被最小化，恢复正常状态
         if self.isMinimized():
             self.showNormal()
-        
+
         # 激活窗口（置顶并获得焦点）
         self.activateWindow()
         self.raise_()  # 确保窗口在最前面
-        
+
         # 在 Windows 上，可能需要额外的操作来确保窗口真正置顶
         # 设置窗口标志强制置顶，然后立即恢复
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint)

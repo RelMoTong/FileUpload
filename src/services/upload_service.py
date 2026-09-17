@@ -1,4 +1,10 @@
 """上传 Worker 的创建、Qt 线程生命周期与路径探测服务。
+文件名：src/services/upload_service.py
+文件作用：业务服务层的“upload_service”模块。
+主要功能：封装既有业务规则、后台任务生命周期与底层协作者调用。
+模块关系：由控制器或组合根使用，可调用 Repository、Worker 和 Protocol；不直接操作 View。
+阅读重点：关注输入校验、状态转换、线程/定时器收尾、文件与网络失败路径。
+
 
 本模块负责把纯业务请求转换成一个真实的 ``UploadWorker + QThread`` 会话。它不维护
 界面状态；控制器接收本模块桥接后的事件并维护状态机，避免 Worker 直接依赖窗口。
@@ -470,6 +476,13 @@ class UploadService:
         self._release_check_scheduled = True
 
         def check() -> None:
+            """作用：执行“check”的既有业务服务职责。
+
+            参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+            返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+            执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+            风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+            """
             if not self._workers_running_raw():
                 self._release_resources()
                 return

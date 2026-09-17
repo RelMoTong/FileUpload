@@ -1,4 +1,12 @@
-"""Pure authentication and authorization business rules."""
+"""
+文件名：src/services/auth_service.py
+文件作用：业务服务层的“auth_service”模块。
+主要功能：封装既有业务规则、后台任务生命周期与底层协作者调用。
+模块关系：由控制器或组合根使用，可调用 Repository、Worker 和 Protocol；不直接操作 View。
+阅读重点：关注输入校验、状态转换、线程/定时器收尾、文件与网络失败路径。
+
+Pure authentication and authorization business rules.
+"""
 
 from __future__ import annotations
 
@@ -33,6 +41,13 @@ class AuthService:
 
     @staticmethod
     def hash_password(password: str, *, iterations: int = PBKDF2_ITERATIONS) -> str:
+        """作用：执行“hash_password”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         salt = os.urandom(16)
         digest = hashlib.pbkdf2_hmac(
             "sha256", password.encode("utf-8"), salt, iterations
@@ -45,6 +60,13 @@ class AuthService:
 
     @staticmethod
     def legacy_hash_password(password: str) -> str:
+        """作用：执行“legacy_hash_password”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
     @classmethod
@@ -69,6 +91,7 @@ class AuthService:
 
     @staticmethod
     def _default_password(role: UserRole) -> str:
+        """内部辅助：完成“_default_password”对应的既有局部工作。"""
         if role is UserRole.USER:
             return "123"
         if role is UserRole.ADMIN:
@@ -77,6 +100,7 @@ class AuthService:
 
     @staticmethod
     def _default_hash(role: UserRole) -> str:
+        """内部辅助：完成“_default_hash”对应的既有局部工作。"""
         if role is UserRole.USER:
             return DEFAULT_USER_PASSWORD_HASH
         if role is UserRole.ADMIN:
@@ -84,15 +108,36 @@ class AuthService:
         return ""
 
     def load_users(self, model: AuthModel, users: Any) -> None:
+        """作用：执行“load_users”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         model.users = dict(users) if isinstance(users, Mapping) else {}
 
     def password_hash(self, model: AuthModel, role: UserRole) -> str:
+        """作用：执行“password_hash”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         stored = model.users.get(role.value)
         if isinstance(stored, str) and stored.strip():
             return stored.strip()
         return self._default_hash(role)
 
     def default_password_roles(self, model: AuthModel) -> list[UserRole]:
+        """作用：执行“default_password_roles”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         roles: list[UserRole] = []
         for role in (UserRole.USER, UserRole.ADMIN):
             matches, _ = self.verify_password(
@@ -103,6 +148,13 @@ class AuthService:
         return roles
 
     def authenticate(self, model: AuthModel, role: UserRole, password: str) -> LoginResult:
+        """作用：执行“authenticate”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         if role not in {UserRole.USER, UserRole.ADMIN}:
             return LoginResult(False, error="不支持的登录角色")
         if not password:
@@ -127,10 +179,24 @@ class AuthService:
 
     @staticmethod
     def logout(model: AuthModel) -> None:
+        """作用：执行“logout”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         model.current_role = UserRole.GUEST
         model.password_change_required = False
 
     def validate_new_password(self, old_password: str, new_password: str) -> str:
+        """作用：执行“validate_new_password”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         if len(new_password) < 8:
             return "新密码至少需要 8 位"
         if new_password == old_password:
@@ -158,6 +224,13 @@ class AuthService:
         new_password: str,
         confirm_password: str,
     ) -> PasswordChangeResult:
+        """作用：执行“change_password”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         if model.current_role is UserRole.GUEST:
             return PasswordChangeResult(False, target_role, "请先登录")
         if model.current_role is UserRole.USER and target_role is not UserRole.USER:
@@ -188,6 +261,13 @@ class AuthService:
 
     @staticmethod
     def compute_permissions(role: UserRole, context: PermissionContext) -> ControlPermissions:
+        """作用：执行“compute_permissions”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         is_user_or_admin = role in {UserRole.USER, UserRole.ADMIN}
         is_admin = role is UserRole.ADMIN
         is_guest = role is UserRole.GUEST
@@ -243,6 +323,13 @@ class AuthService:
 
     @staticmethod
     def disk_cleanup_block_reason(role: UserRole) -> str:
+        """作用：执行“disk_cleanup_block_reason”的既有业务服务职责。
+
+        参数：沿用当前函数签名及已有路径、单位、超时、状态和类型约定。
+        返回结果：沿用当前实现的返回值、事件、Future 或异常语义。
+        执行流程：按现有代码顺序完成校验、任务调度、状态更新与结果交付。
+        风险或注意事项：本说明不改变业务规则、线程模型、持久化格式或公开接口。
+        """
         if role is UserRole.GUEST:
             return "请先登录后再使用磁盘清理功能"
         if role is UserRole.USER:

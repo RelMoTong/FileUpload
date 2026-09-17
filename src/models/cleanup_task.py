@@ -1,4 +1,12 @@
-"""手动与自动磁盘清理共用的运行时模型。"""
+"""
+文件名：src/models/cleanup_task.py
+文件作用：纯数据模型与业务契约模块“cleanup_task”。
+主要功能：提供当前既有能力，并以中文说明固定数据、状态和调用边界。
+模块关系：由上层组合根或相邻分层模块调用；不改变现有依赖方向。
+阅读重点：先读公开类型/函数、关键状态和单位说明，再按调用链追踪。
+
+手动与自动磁盘清理共用的运行时模型。
+"""
 
 from __future__ import annotations
 
@@ -81,6 +89,13 @@ class CleanupValidationResult:
 
     @property
     def is_valid(self) -> bool:
+        """作用：执行“is_valid”的既有职责。
+
+        参数：沿用当前函数签名及已有类型、单位和状态约定。
+        返回结果：沿用当前实现的返回值、回调或异常语义。
+        执行流程：按现有代码顺序完成校验、处理与结果交付。
+        风险或注意事项：本说明不改变既有持久化、线程、路径或公开接口约定。
+        """
         return not self.errors and bool(self.valid_folders)
 
 

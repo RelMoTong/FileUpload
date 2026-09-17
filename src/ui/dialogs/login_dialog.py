@@ -1,4 +1,12 @@
-"""Authentication input dialog."""
+"""
+文件名：src/ui/dialogs/login_dialog.py
+文件作用：Qt 界面层的“login_dialog”模块。
+主要功能：按既有 Gateway 协议收集输入、展示状态并转发用户事件。
+模块关系：由 src.ui.main_window 或对话框组合；不直接依赖控制器、服务或持久化实现。
+阅读重点：先读 Gateway 协议、事件转发与 render_* 方法；样式和布局按区域阅读。
+
+Authentication input dialog.
+"""
 
 from __future__ import annotations
 
@@ -23,6 +31,13 @@ class LoginDialog(QtWidgets.QDialog):
         scale_px: Callable[[int, int], int] = lambda value, minimum: max(value, minimum),
         dialog_size: Optional[QtCore.QSize] = None,
     ) -> None:
+        """作用：执行界面“__init__”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway 或刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式或公开接口。
+        """
         super().__init__(parent)
         self.setWindowTitle("🔐 权限登录")
         self.setModal(True)
@@ -65,6 +80,7 @@ class LoginDialog(QtWidgets.QDialog):
         layout.addLayout(button_layout)
 
     def _submit(self) -> None:
+        """界面辅助：完成“_submit”对应的既有局部显示或事件工作。"""
         password = self.password_input.text().strip()
         if not password:
             self.validation_failed.emit(t("please_enter_password"))
@@ -77,8 +93,22 @@ class LoginDialog(QtWidgets.QDialog):
         self.login_requested.emit(role, password)
 
     def render_authentication_failed(self) -> None:
+        """作用：执行界面“render_authentication_failed”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway 或刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式或公开接口。
+        """
         self.password_input.selectAll()
         self.password_input.setFocus()
 
     def render_authenticated(self) -> None:
+        """作用：执行界面“render_authenticated”的既有输入、展示或事件转发职责。
+
+        参数：沿用当前 Qt 信号、控件值、类型和状态约定。
+        返回结果：沿用当前实现的返回值、界面更新或事件语义。
+        执行流程：按现有代码顺序读取控件、调用 Gateway 或刷新界面。
+        风险或注意事项：本说明不改变 Qt 线程边界、信号、布局、样式或公开接口。
+        """
         self.accept()
