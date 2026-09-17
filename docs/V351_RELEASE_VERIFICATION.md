@@ -1,25 +1,34 @@
-# v3.5.1 无数据库版发布验证报告
+# v3.5.2 无数据库版现场验证候选报告
 
 ## 当前结论
 
-本地代码、独立环境构建、候选包校验和隔离启动门禁已通过。真实 SMB/FTP、现场最大文件、断网/服务端重启、强杀/断电、磁盘压力、24–72 小时长稳、逐文件对账、真实回退演练和双签尚未执行，因此当前结论仍为 **NO-GO**。
+本候选包含手动扫描取消不阻塞窗口、结果增量显示和虚拟化列表修复。它只用于现场验证：真实 SMB/FTP、现场最大文件、断网/服务端重启、强杀/断电、磁盘压力、24–72 小时长稳、逐文件对账、真实回退演练和双签尚未执行，因此当前结论仍为 **NO-GO**。
+
+## v3.5.2 本地验证证据（2026-09-17）
+
+| 检查 | 结果 | 说明 |
+| --- | --- | --- |
+| 完整回归 | 188 passed, 1 skipped, 5 subtests passed | 覆盖新增的增量扫描、取消和虚拟化列表用例 |
+| 静态检查 | 0 errors, 0 warnings | Pyright |
+| 源码编译 | 通过 | python -m compileall -q src tools tests |
+| 现场包完整性 | 通过 | 候选目录、ZIP、侧车 SHA-256、逐文件清单及无数据库门禁均由构建脚本复核 |
 
 ## 冻结输入与制品
 
 - Python：3.13.5
 - 直接依赖锁：`requirements.lock.txt`
 - 独立构建环境：`.p4_02_clean_venv`
-- PyInstaller 输出：`dist/ImageUploadTool_v3.5.1`
-- 现场候选：`release_candidate/ImageUploadTool_v3.5.1_no_database_release.zip`
+- PyInstaller 输出：`dist/ImageUploadTool_v3.5.2`
+- 现场候选：`release_candidate/ImageUploadTool_v3.5.2_no_database_release.zip`
 - 候选 ZIP 哈希：以同目录 `.zip.sha256` 侧车文件为准
-- 候选 EXE SHA-256：`6E67CE0E30F52A191E141465A72F2F802DFE0CA08B00563F607B84010E206535`
+- 候选 EXE SHA-256：以候选目录内 `release_manifest.json` 的 `executable_sha256` 为准
 - 回退包：`release_candidate/ImageUploadTool_v3.4.2_rollback.zip`
 - 回退 ZIP SHA-256：`B2AD7AF275DA55BB59D1719BDB337EBAEC67C0EE36D2EAA0E1DEEC90EB4BDD84`
 - 回退 EXE SHA-256：`852182EF323463D713FFAF57B2B19A920E40133B56130D60401A703B16C36073`
 
 回退包基于 Git 最后一个可复现稳定节点 `1322bf3`。仓库没有可重建的 v3.5.0 提交或现成制品；v3.4.2 回退构建仅应用 `docs/V342_ROLLBACK_PACKAGING_PATCH.diff` 中的 Qt/ICU 打包兼容补丁，不修改旧业务代码，且不是无数据库版。
 
-## 2026-09-14 自动化证据
+## 历史 v3.5.1 自动化证据（供回归对照）
 
 | 检查 | 结果 | 命令/说明 |
 | --- | --- | --- |
@@ -62,7 +71,7 @@
 ```powershell
 python field_tools\validate_v351_field_acceptance.py `
   --evidence .\field_evidence.json `
-  --candidate-zip .\ImageUploadTool_v3.5.1_no_database_release.zip `
+  --candidate-zip .\ImageUploadTool_v3.5.2_no_database_release.zip `
   --output .\field_evidence_validation.json
 ```
 

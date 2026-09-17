@@ -39,11 +39,12 @@ from src.core.safe_deletion import (
 
 AUTO_CLEANUP_FAILURE_LIMIT = 20
 CLEANUP_RECORD_READ_LIMIT = 100
-# A scan can encounter tens of thousands of files.  Posting an event for every
-# file floods the GUI event queue, which in turn makes a cancellation appear to
-# hang even after the worker has stopped.  The payload is an object, so the byte
-# total remains a Python integer rather than a Qt 32-bit integer.
+# 扫描结果必须持续推送到界面，但不能每个文件都跨线程发一次信号，否则大量排队
+# 信号会让取消操作看起来像卡死。以下两个边界只控制“传递批次”，不会限制显示
+# 的总文件数；字节总量始终保留为 Python 整数，不经过 Qt 32 位整数。
 SCAN_PROGRESS_INTERVAL_SECONDS = 0.2
+SCAN_RESULT_BATCH_INTERVAL_SECONDS = 0.1
+SCAN_RESULT_BATCH_SIZE = 128
 CleanupEventCallback = Callable[[str, Dict[str, Any]], None]
 logger = logging.getLogger(__name__)
 
@@ -224,16 +225,33 @@ class _ScanWorker(QtCore.QObject):
 
     @QtCore.Slot()
     def run(self) -> None:
-        files: list[CleanupFileItem] = []
+        """在后台流式扫描，并把已发现文件分批交给界面。
+
+        用途：让用户在扫描尚未结束时就看到候选文件，同时保持取消操作可响应。
+        输入：构造时保存的目录、格式和保留天数请求。
+        输出：持续发送【scan_items】和【scan_progress】事件，最后发送扫描汇总。
+        关键步骤：逐个产生候选、累积小批次、定时发送进度、收到取消后尽快结束。
+        风险点：网络盘的系统 I/O 不能被 Python 强制中断，因此取消只能在当前 I/O 返回后生效。
+        """
+        pending_items: list[CleanupFileItem] = []
         total_size_bytes = 0
         file_count = 0
         last_progress_at = 0.0
+        last_result_at = 0.0
         self.worker_event.emit("log", {"message": "开始扫描文件..."})
         for folder in CleanupService.deduplicate_cleanup_roots(self.request.folders):
             self.worker_event.emit("log", {"message": f"扫描目录: {folder}"})
 
         def on_error(path: str, exc: BaseException) -> None:
             self.worker_event.emit("log", {"message": f"无法访问文件 {path}: {exc}"})
+
+        def flush_items() -> None:
+            """把当前小批次移交给界面，随后立即释放 Worker 对该列表的引用。"""
+            nonlocal pending_items
+            if not pending_items:
+                return
+            self.worker_event.emit("scan_items", {"files": tuple(pending_items)})
+            pending_items = []
 
         for candidate in iter_cleanup_candidates(
             self.request.folders,
@@ -244,13 +262,18 @@ class _ScanWorker(QtCore.QObject):
         ):
             if self.is_set():
                 break
-            files.append(candidate.as_file_item())
+            pending_items.append(candidate.as_file_item())
             file_count += 1
-            # Keep this in Python's arbitrary-precision integer domain.  This
-            # must never traverse a Qt `int`, because real deployments can
-            # scan well beyond 100 TB in aggregate.
+            # 必须保持 Python 任意精度整数，现场总容量可超过 100 TB。
             total_size_bytes += int(candidate.size)
             now = time.monotonic()
+            if (
+                file_count == 1
+                or len(pending_items) >= SCAN_RESULT_BATCH_SIZE
+                or now - last_result_at >= SCAN_RESULT_BATCH_INTERVAL_SECONDS
+            ):
+                flush_items()
+                last_result_at = now
             if file_count == 1 or now - last_progress_at >= SCAN_PROGRESS_INTERVAL_SECONDS:
                 last_progress_at = now
                 self.worker_event.emit(
@@ -261,9 +284,18 @@ class _ScanWorker(QtCore.QObject):
                         "total_size_bytes": total_size_bytes,
                     },
                 )
+        # 即使用户取消，也把已经完成 stat 的最后一小批结果交给界面；关闭后的对话框
+        # 已解除监听，不会再接收这些事件。
+        flush_items()
         if self.is_set():
             self.worker_event.emit("log", {"message": "扫描已取消"})
-        self.finished.emit(sort_cleanup_file_items(files))
+        self.finished.emit(
+            {
+                "file_count": file_count,
+                "total_size_bytes": total_size_bytes,
+                "cancelled": self.is_set(),
+            }
+        )
 
 
 class _DeleteWorker(QtCore.QObject):
@@ -410,10 +442,15 @@ class _ManualEventBridge(QtCore.QObject):
         self._callback(kind, dict(payload) if isinstance(payload, dict) else {})
 
     @QtCore.Slot(object)
-    def on_scan_finished(self, files: object) -> None:
+    def on_scan_finished(self, result: object) -> None:
+        """把新扫描汇总或旧版完整列表统一转换为控制器事件。"""
+        if isinstance(result, dict):
+            self._callback("scan_finished", dict(result))
+            return
+        # 兼容仍返回完整列表的旧 Worker，便于渐进升级或旧版扩展接入。
         self._callback(
             "scan_finished",
-            {"files": list(cast(Iterable[CleanupFileItem], files))},
+            {"files": list(cast(Iterable[CleanupFileItem], result))},
         )
 
     @QtCore.Slot(object)

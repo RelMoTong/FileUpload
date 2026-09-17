@@ -1,4 +1,4 @@
-# v3.5.1 最终现场手工测试清单
+# v3.5.2 现场验证手工测试清单
 
 本清单只记录开发机不能替代的实际测试。当前状态统一为 **待测试 / NO-GO**；执行人不得预先勾选，不得用回环 FTP、模拟共享或开发机结果替代。
 
@@ -45,7 +45,7 @@
 
 ```powershell
 python field_tools\release_soak_test.py `
-  --exe "C:\Release\ImageUploadTool_v3.5.1\ImageUploadTool_v3.5.1.exe" `
+  --exe "C:\Release\ImageUploadTool_v3.5.2\ImageUploadTool_v3.5.2.exe" `
   --duration-seconds 86400 `
   --sample-interval 30 `
   --output ".\evidence\soak.json"
@@ -57,14 +57,14 @@ python field_tools\release_soak_test.py `
 
 ## 5. 回退与最终门禁
 
-- [ ] 在独立目录演练回退包启动和一次非生产测试上传，不覆盖 v3.5.1、配置或源文件。
+- [ ] 在独立目录演练回退包启动和一次非生产测试上传，不覆盖 v3.5.2、配置或源文件。
 - [ ] 开发负责人、现场负责人填写真实姓名、日期和 `GO`；任一关键项失败则保持 `NO-GO`。
 - [ ] 执行机器门禁：
 
 ```powershell
 python field_tools\validate_v351_field_acceptance.py `
   --evidence .\field_evidence.json `
-  --candidate-zip .\ImageUploadTool_v3.5.1_no_database_release.zip `
+  --candidate-zip .\ImageUploadTool_v3.5.2_no_database_release.zip `
   --output .\field_evidence_validation.json
 ```
 

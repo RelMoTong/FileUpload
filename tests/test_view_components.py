@@ -291,7 +291,7 @@ def test_enabling_auto_cleanup_requires_explicit_no_retention_confirmation() -> 
         host.close()
 
 
-def test_cleanup_file_table_bounds_qt_rows_for_one_hundred_thousand_files() -> None:
+def test_cleanup_file_table_virtualizes_one_hundred_thousand_incremental_rows() -> None:
     _app()
     table = FileListTable()
     files = [
@@ -303,14 +303,15 @@ def test_cleanup_file_table_bounds_qt_rows_for_one_hundred_thousand_files() -> N
         for index in range(100_000)
     ]
     try:
-        table.load_files(files)
+        table.load_files([])
+        table.append_files(files[:500])
+        table.append_files(files[500:])
+        _app().processEvents()
 
-        assert table.rowCount() == table.PAGE_SIZE == 1000
-        assert table.page_count == 100
-        assert not table.findChildren(QtWidgets.QCheckBox)
-        table.next_page()
-        assert table.current_page == 1
-        assert table.item(0, 1).text() == "001000.jpg"
+        assert isinstance(table, QtWidgets.QTableView)
+        assert table.model().rowCount() == 100_000
+        assert table.file_items[1000].name == "001000.jpg"
+        assert not table.findChildren(QtWidgets.QTableWidget)
 
         table.select_none()
         assert not table.get_checked_files()

@@ -1,4 +1,4 @@
-# v3.5.1 无数据库版现场验收与放行记录
+# v3.5.2 无数据库版现场验收与放行记录
 
 本记录是 P4-03 与 P4-04 的现场证据表。只允许填写实际执行结果；本机回环测试、开发机截图或推断不能替代任何现场项。
 
@@ -6,9 +6,9 @@
 
 ## 输入与冻结物
 
-- 候选包：`release_candidate/ImageUploadTool_v3.5.1_no_database_release.zip`
-- 候选包 SHA-256：以同目录 `ImageUploadTool_v3.5.1_no_database_release.zip.sha256` 侧车文件为准；现场核验时必须重新计算并比对
-- 候选 EXE SHA-256：`6E67CE0E30F52A191E141465A72F2F802DFE0CA08B00563F607B84010E206535`
+- 候选包：`release_candidate/ImageUploadTool_v3.5.2_no_database_release.zip`
+- 候选包 SHA-256：以同目录 `ImageUploadTool_v3.5.2_no_database_release.zip.sha256` 侧车文件为准；现场核验时必须重新计算并比对
+- 候选 EXE SHA-256：以候选目录内 `release_manifest.json` 的 `executable_sha256` 为准
 - 回退包：`release_candidate/ImageUploadTool_v3.4.2_rollback.zip`（基于最后一个可复现稳定提交 `1322bf3`，不是无数据库版）
 - 回退包 SHA-256：`B2AD7AF275DA55BB59D1719BDB337EBAEC67C0EE36D2EAA0E1DEEC90EB4BDD84`
 - 回退 EXE SHA-256：`852182EF323463D713FFAF57B2B19A920E40133B56130D60401A703B16C36073`
@@ -37,7 +37,7 @@
 
 ```powershell
 python field_tools\release_soak_test.py `
-  --exe "C:\Release\ImageUploadTool_v3.5.1\ImageUploadTool_v3.5.1.exe" `
+  --exe "C:\Release\ImageUploadTool_v3.5.2\ImageUploadTool_v3.5.2.exe" `
   --duration-seconds 86400 `
   --sample-interval 30 `
   --output "C:\Release\v351-soak-24h.json"
@@ -58,7 +58,7 @@ python field_tools\release_soak_test.py `
 ```powershell
 python field_tools\validate_v351_field_acceptance.py `
   --evidence .\field_evidence.json `
-  --candidate-zip .\release_candidate\ImageUploadTool_v3.5.1_no_database_release.zip `
+  --candidate-zip .\release_candidate\ImageUploadTool_v3.5.2_no_database_release.zip `
   --output .\field_evidence_validation.json
 ```
 
@@ -70,8 +70,8 @@ python field_tools\validate_v351_field_acceptance.py `
 
 ### 回退演练
 
-1. 停止 v3.5.1，保留 `logs/`、`data/`、`resume_data/` 与 `config.json` 的时间戳副本，不删除任何源目录文件。
-2. 将此前已验证版本解压到独立目录；禁止覆盖 v3.5.1 安装目录。
+1. 停止 v3.5.2，保留 `logs/`、`data/`、`resume_data/` 与 `config.json` 的时间戳副本，不删除任何源目录文件。
+2. 将此前已验证版本解压到独立目录；禁止覆盖 v3.5.2 安装目录。
 3. 仅在管理员确认配置字段兼容后，复制配置副本；先以停止状态启动并检查路径，再允许上传。
 4. 上传一个非生产测试文件，核对目标和备份；失败时停止并恢复原目录，不操作源文件。
 

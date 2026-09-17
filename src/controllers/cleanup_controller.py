@@ -40,6 +40,7 @@ class CleanupController:
         self._auto_config_lock = threading.Lock()
         self._live_auto_use_trash: Optional[bool] = None
         self._closing = False
+        self._discard_manual_events_until_finished = False
 
     @property
     def trash_available(self) -> bool: return self._service.trash_available
@@ -58,7 +59,10 @@ class CleanupController:
     def cancel_scan(self) -> None: self._service.cancel_scan()
     def start_delete(self, request: CleanupDeleteRequest) -> CleanupCommandResult: return self._service.start_delete(request, self._handle_manual_event)
     def close_manual(self) -> None:
-        self._service.shutdown_manual()
+        # 对话框关闭必须立即返回 GUI 事件循环。网络盘 I/O 若尚未返回，Worker 会在
+        # 可取消点自行收尾；服务对象继续持有线程引用，避免 QThread 被提前销毁。
+        self._discard_manual_events_until_finished = self.is_scanning
+        self._service.cancel()
         self._manual_listener = None
     def validate_auto_request(self, request: AutoCleanupRequest) -> CleanupValidationResult: return self._service.validate_auto_request(request)
     def validate_folder_group(self, folders: Any) -> Tuple[bool, str, Any]: return self._service.validate_cleanup_folder_group(folders)
@@ -123,6 +127,11 @@ class CleanupController:
     def _current_delete_mode(self, fallback: bool) -> bool:
         with self._auto_config_lock: return bool(fallback if self._live_auto_use_trash is None else self._live_auto_use_trash)
     def _handle_manual_event(self, kind: str, payload: dict) -> None:
+        # 关闭旧对话框后，不能把其残余扫描事件错误地投递给随后打开的新对话框。
+        if self._discard_manual_events_until_finished:
+            if kind == "scan_finished":
+                self._discard_manual_events_until_finished = False
+            return
         if self._manual_listener is not None: self._manual_listener({"type": kind, **payload})
     def _notify_auto(self, kind: str, **payload: Any) -> None:
         if self._auto_listener is not None: self._auto_listener({"type": kind, **payload})

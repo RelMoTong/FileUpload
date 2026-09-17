@@ -103,13 +103,19 @@ def test_manual_scan_cancellation_stops_before_collecting_more_candidates() -> N
         file_id="1:1",
     )
     worker = _ScanWorker(CleanupScanRequest(("Z:/image",), (".raw",)))
-    completed: list[list[CleanupFileItem]] = []
+    completed: list[dict[str, object]] = []
+    discovered: list[CleanupFileItem] = []
 
     def cancel_after_first_progress(kind: str, _payload: object) -> None:
         if kind == "scan_progress":
             worker.cancel()
 
     worker.worker_event.connect(cancel_after_first_progress)
+    worker.worker_event.connect(
+        lambda kind, payload: discovered.extend(payload["files"])
+        if kind == "scan_items" and isinstance(payload, dict)
+        else None
+    )
     worker.finished.connect(completed.append)
     with mock.patch(
         "src.services.cleanup_service.iter_cleanup_candidates",
@@ -118,7 +124,49 @@ def test_manual_scan_cancellation_stops_before_collecting_more_candidates() -> N
         worker.run()
 
     assert len(completed) == 1
-    assert len(completed[0]) == 1
+    assert completed[0]["cancelled"] is True
+    assert completed[0]["file_count"] == 1
+    assert len(discovered) == 1
+
+
+def test_manual_scan_streams_candidates_before_emitting_final_summary() -> None:
+    """手动扫描不能把完整结果积压到结束时才交给 GUI。"""
+    candidates = tuple(
+        CleanupCandidate(
+            path=f"Z:/image/{index:04d}.raw",
+            root_path="Z:/image",
+            size=index + 1,
+            mtime=1.0,
+            mtime_ns=1_000_000_000 + index,
+            file_id=f"1:{index}",
+        )
+        for index in range(300)
+    )
+    worker = _ScanWorker(CleanupScanRequest(("Z:/image",), (".raw",)))
+    events: list[tuple[str, dict[str, object]]] = []
+    completed: list[dict[str, object]] = []
+    worker.worker_event.connect(
+        lambda kind, payload: events.append((kind, dict(payload)))
+    )
+    worker.finished.connect(completed.append)
+
+    with mock.patch(
+        "src.services.cleanup_service.iter_cleanup_candidates",
+        return_value=iter(candidates),
+    ), mock.patch("src.services.cleanup_service.time.monotonic", return_value=0.0):
+        worker.run()
+
+    batches = [payload["files"] for kind, payload in events if kind == "scan_items"]
+    assert batches
+    assert sum(len(batch) for batch in batches) == len(candidates)
+    assert all(len(batch) <= 128 for batch in batches)
+    assert completed == [
+        {
+            "file_count": len(candidates),
+            "total_size_bytes": sum(candidate.size for candidate in candidates),
+            "cancelled": False,
+        }
+    ]
 
 
 def test_manual_scan_coalesces_progress_events_for_large_file_counts() -> None:

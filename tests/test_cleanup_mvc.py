@@ -57,7 +57,13 @@ def test_manual_scan_and_authorized_permanent_delete_run_through_controller(
         )
 
         finished = next(event for event in events if event.get("type") == "scan_finished")
-        files = finished["files"]
+        files = [
+            item
+            for event in events
+            if event.get("type") == "scan_items"
+            for item in event["files"]
+        ]
+        assert finished["file_count"] == 1
         assert [item.path for item in files] == [str(old_jpg)]
 
         events.clear()
@@ -124,3 +130,37 @@ def test_manual_shutdown_timeout_is_reported_and_references_are_retained() -> No
     assert service._delete_worker is worker
     assert service._delete_thread is thread
     assert service.has_running_workers
+
+
+def test_close_manual_requests_cancel_without_waiting_for_a_hung_scan() -> None:
+    class Service:
+        is_scanning = True
+        is_deleting = False
+
+        def __init__(self) -> None:
+            self.cancelled = False
+            self.shutdown_called = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+        def shutdown_manual(self) -> None:
+            self.shutdown_called = True
+
+    service = Service()
+    controller = CleanupController(service)
+    controller.set_manual_listener(lambda _event: None)
+
+    controller.close_manual()
+
+    assert service.cancelled
+    assert not service.shutdown_called
+    assert controller._manual_listener is None
+
+    received: list[dict] = []
+    controller.set_manual_listener(received.append)
+    controller._handle_manual_event("scan_items", {"files": ("old",)})
+    controller._handle_manual_event("scan_finished", {})
+    controller._handle_manual_event("log", {"message": "new dialog event"})
+
+    assert received == [{"type": "log", "message": "new dialog event"}]

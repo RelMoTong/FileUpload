@@ -72,198 +72,355 @@ def calculate_dialog_responsive_metrics(
 FileItem = CleanupFileItem
 
 
-class FileListTable(QtWidgets.QTableWidget):  # type: ignore[misc]
-    """文件列表表格"""
-    PAGE_SIZE = 1000
+def format_cleanup_size(size: int) -> str:
+    """把任意精度字节数转换为面向界面的容量文本。"""
+    size_float = float(size)
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size_float < 1024.0:
+            return f"{size_float:.1f} {unit}"
+        size_float /= 1024.0
+    return f"{size_float:.1f} TB"
+
+
+class CleanupFileListModel(QtCore.QAbstractTableModel):  # type: ignore[misc]
+    """保存全部清理候选、仅为可见行提供数据的虚拟化列表模型。
+
+    用途：替代 QTableWidget 为每个文件创建五个 Qt 项目的做法，支持大量文件增量显示。
+    输入：扫描 Worker 分批提交的 CleanupFileItem 列表。
+    输出：QTableView 所需的单元格文本、勾选状态和排序原始值。
+    关键步骤：只保存 Python 数据对象；Qt 仅向当前滚动区域请求可见行数据。
+    风险点：候选列表仍需保留到用户确认删除，不能在扫描未结束时丢弃身份字段。
+    """
+
     check_state_changed = Signal()
-    page_changed = Signal(int, int)
-    
-    def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
+    _HEADERS = ("", "文件名", "路径", "大小", "修改时间")
+
+    def __init__(self, parent: Optional[QtCore.QObject] = None) -> None:
         super().__init__(parent)
         self.file_items: List[FileItem] = []
-        self.current_page = 0
-        self._rendering = False
+
+    def rowCount(self, parent: QtCore.QModelIndex = QtCore.QModelIndex()) -> int:  # noqa: N802
+        return 0 if parent.isValid() else len(self.file_items)
+
+    def columnCount(self, parent: QtCore.QModelIndex = QtCore.QModelIndex()) -> int:  # noqa: N802
+        return 0 if parent.isValid() else len(self._HEADERS)
+
+    def headerData(  # noqa: N802
+        self,
+        section: int,
+        orientation: Qt.Orientation,
+        role: int = int(Qt.ItemDataRole.DisplayRole),
+    ) -> Any:
+        if (
+            orientation == Qt.Orientation.Horizontal
+            and role == int(Qt.ItemDataRole.DisplayRole)
+            and 0 <= section < len(self._HEADERS)
+        ):
+            return self._HEADERS[section]
+        return None
+
+    def data(  # noqa: N802
+        self,
+        index: QtCore.QModelIndex,
+        role: int = int(Qt.ItemDataRole.DisplayRole),
+    ) -> Any:
+        if not index.isValid() or not 0 <= index.row() < len(self.file_items):
+            return None
+        file_item = self.file_items[index.row()]
+        column = index.column()
+        if role == int(Qt.ItemDataRole.UserRole):
+            return file_item
+        if role == int(Qt.ItemDataRole.CheckStateRole) and column == 0:
+            return Qt.CheckState.Checked if file_item.checked else Qt.CheckState.Unchecked
+        if role != int(Qt.ItemDataRole.DisplayRole):
+            return None
+        if column == 1:
+            return file_item.name
+        if column == 2:
+            return file_item.path
+        if column == 3:
+            return format_cleanup_size(file_item.size)
+        if column == 4:
+            return datetime.fromtimestamp(file_item.mtime).strftime("%Y-%m-%d %H:%M:%S")
+        return ""
+
+    def flags(self, index: QtCore.QModelIndex) -> Qt.ItemFlag:
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        if index.column() == 0:
+            flags |= Qt.ItemFlag.ItemIsUserCheckable
+        return flags
+
+    def setData(  # noqa: N802
+        self,
+        index: QtCore.QModelIndex,
+        value: Any,
+        role: int = int(Qt.ItemDataRole.EditRole),
+    ) -> bool:
+        if (
+            not index.isValid()
+            or index.column() != 0
+            or role != int(Qt.ItemDataRole.CheckStateRole)
+        ):
+            return False
+        file_item = self.file_items[index.row()]
+        checked = int(value) == int(Qt.CheckState.Checked)
+        if file_item.checked == checked:
+            return True
+        file_item.checked = checked
+        self.dataChanged.emit(index, index, [int(Qt.ItemDataRole.CheckStateRole)])
+        self.check_state_changed.emit()
+        return True
+
+    def replace_files(self, file_items: List[FileItem]) -> None:
+        """一次替换列表引用，用于新扫描或删除完成后重置数据源。"""
+        self.beginResetModel()
+        self.file_items = file_items
+        self.endResetModel()
+
+    def append_files(self, file_items: List[FileItem]) -> None:
+        """把扫描到的小批次插入模型，使界面立即显示而不重建已有可见行。"""
+        if not file_items:
+            return
+        first_row = len(self.file_items)
+        self.beginInsertRows(QtCore.QModelIndex(), first_row, first_row + len(file_items) - 1)
+        self.file_items.extend(file_items)
+        self.endInsertRows()
+
+    def set_all_checked(self, checked: bool) -> None:
+        """批量更新勾选状态，只通知一次视图和删除按钮。"""
+        if not self.file_items:
+            return
+        changed = any(file_item.checked != checked for file_item in self.file_items)
+        if not changed:
+            return
+        for file_item in self.file_items:
+            file_item.checked = checked
+        top_left = self.index(0, 0)
+        bottom_right = self.index(len(self.file_items) - 1, 0)
+        self.dataChanged.emit(top_left, bottom_right, [int(Qt.ItemDataRole.CheckStateRole)])
+        self.check_state_changed.emit()
+
+
+class CleanupFileFilterProxyModel(QtCore.QSortFilterProxyModel):  # type: ignore[misc]
+    """把搜索和快捷筛选放在代理模型中，避免逐行隐藏大量 Qt 控件。"""
+
+    def __init__(self, parent: Optional[QtCore.QObject] = None) -> None:
+        super().__init__(parent)
+        self._search_text = ""
+        self._show_checked_only = False
+        self._show_large_only = False
+        self._show_recent_only = False
+        self._size_threshold = 10 * 1024 * 1024
+        self._recent_cutoff = 0.0
+
+    def set_filters(
+        self,
+        search_text: str,
+        show_checked_only: bool,
+        show_large_only: bool,
+        show_recent_only: bool,
+        recent_cutoff: float,
+    ) -> None:
+        """更新全部筛选条件，并由 Qt 重新计算当前可见的实际行。"""
+        self._search_text = search_text.strip().casefold()
+        self._show_checked_only = show_checked_only
+        self._show_large_only = show_large_only
+        self._show_recent_only = show_recent_only
+        self._recent_cutoff = recent_cutoff
+        self.refresh_filters()
+
+    def refresh_filters(self) -> None:
+        """通知 Qt 仅重新计算行过滤，避免调用已废弃的全量失效接口。"""
+        self.beginFilterChange()
+        self.endFilterChange(QtCore.QSortFilterProxyModel.Direction.Rows)
+
+    def filterAcceptsRow(  # noqa: N802
+        self, source_row: int, source_parent: QtCore.QModelIndex
+    ) -> bool:
+        source_model = self.sourceModel()
+        if not isinstance(source_model, CleanupFileListModel):
+            return True
+        if not 0 <= source_row < len(source_model.file_items):
+            return False
+        file_item = source_model.file_items[source_row]
+        if self._search_text and (
+            self._search_text not in file_item.name.casefold()
+            and self._search_text not in file_item.path.casefold()
+        ):
+            return False
+        if self._show_checked_only and not file_item.checked:
+            return False
+        if self._show_large_only and file_item.size < self._size_threshold:
+            return False
+        return not self._show_recent_only or file_item.mtime >= self._recent_cutoff
+
+    def lessThan(  # noqa: N802
+        self, left: QtCore.QModelIndex, right: QtCore.QModelIndex
+    ) -> bool:
+        left_item = left.data(int(Qt.ItemDataRole.UserRole))
+        right_item = right.data(int(Qt.ItemDataRole.UserRole))
+        if not isinstance(left_item, CleanupFileItem) or not isinstance(right_item, CleanupFileItem):
+            return super().lessThan(left, right)
+        if left.column() == 3:
+            return left_item.size < right_item.size
+        if left.column() == 4:
+            return left_item.mtime < right_item.mtime
+        if left.column() == 1:
+            return left_item.name.casefold() < right_item.name.casefold()
+        if left.column() == 2:
+            return left_item.path.casefold() < right_item.path.casefold()
+        return left.row() < right.row()
+
+
+class FileListTable(QtWidgets.QTableView):  # type: ignore[misc]
+    """采用模型/视图虚拟化的清理结果表格，不使用固定分页上限。"""
+
+    check_state_changed = Signal()
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+        self._source_model = CleanupFileListModel(self)
+        self._proxy_model = CleanupFileFilterProxyModel(self)
+        self._proxy_model.setSourceModel(self._source_model)
+        self.setModel(self._proxy_model)
         self._setup_table()
         self._setup_context_menu()
-        self.itemChanged.connect(self._on_item_changed)
-    
+        self._source_model.check_state_changed.connect(self._on_check_state_changed)
+
+    @property
+    def file_items(self) -> List[FileItem]:
+        """返回模型持有的候选列表；不会额外复制大规模扫描结果。"""
+        return self._source_model.file_items
+
     def _setup_table(self) -> None:
-        """设置表格"""
-        self.setColumnCount(5)
-        self.setHorizontalHeaderLabels(["", "文件名", "路径", "大小", "修改时间"])
-        self.setSortingEnabled(True)
+        """设置列宽和选择方式；排序仅在用户点击表头时执行。"""
         self.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setAlternatingRowColors(True)
-        
-        # 设置列宽
+        self.setSortingEnabled(False)
         header = self.horizontalHeader()
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeMode.Fixed)
+        header.setSectionsClickable(True)
+        header.setSortIndicatorShown(True)
+        header.sectionClicked.connect(self._sort_by_clicked_column)
         self.setColumnWidth(0, 40)
         self.setColumnWidth(1, 200)
         self.setColumnWidth(3, 100)
         self.setColumnWidth(4, 150)
-    
+
     def _setup_context_menu(self) -> None:
-        """设置右键菜单"""
+        """设置与当前实际可见行对应的右键菜单。"""
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
-    
+
+    def _on_check_state_changed(self) -> None:
+        """勾选状态会影响“仅看已选”筛选，因此同时刷新代理和删除按钮。"""
+        self._proxy_model.refresh_filters()
+        self.check_state_changed.emit()
+
+    def _sort_by_clicked_column(self, column: int) -> None:
+        """按用户选择的列排序；扫描期间不自动排序，避免大列表反复重排。"""
+        header = self.horizontalHeader()
+        order = (
+            Qt.SortOrder.DescendingOrder
+            if header.sortIndicatorSection() == column
+            and header.sortIndicatorOrder() == Qt.SortOrder.AscendingOrder
+            else Qt.SortOrder.AscendingOrder
+        )
+        header.setSortIndicator(column, order)
+        self._proxy_model.sort(column, order)
+        self._proxy_model.setDynamicSortFilter(True)
+
     def _show_context_menu(self, pos: QtCore.QPoint) -> None:
-        """显示右键菜单"""
-        item = self.itemAt(pos)
-        if not item:
-            return
-        
-        row = item.row()
-        if row >= len(self.file_items):
-            return
-        
-        check_item = self.item(row, 0)
-        file_item = check_item.data(Qt.ItemDataRole.UserRole) if check_item else None
+        """从代理索引读取源文件对象，再显示文件操作菜单。"""
+        index = self.indexAt(pos)
+        file_item = index.data(int(Qt.ItemDataRole.UserRole)) if index.isValid() else None
         if not isinstance(file_item, CleanupFileItem):
             return
         menu = QtWidgets.QMenu(self)
-        
         action_open_folder = menu.addAction("打开所在文件夹")
         action_copy_path = menu.addAction("复制路径")
         menu.addSeparator()
         action_copy_name = menu.addAction("复制文件名")
-        
         action = menu.exec(self.mapToGlobal(pos))
-        
         if action == action_open_folder:
             self._open_file_location(file_item.path)
         elif action == action_copy_path:
             QtWidgets.QApplication.clipboard().setText(file_item.path)
         elif action == action_copy_name:
             QtWidgets.QApplication.clipboard().setText(file_item.name)
-    
+
     def _open_file_location(self, file_path: str) -> None:
-        """打开文件所在文件夹"""
+        """调用当前操作系统的文件管理器定位用户选择的文件。"""
         try:
             if platform.system() == "Windows":
                 subprocess.run(
-                    ['explorer', '/select,', file_path],
+                    ["explorer", "/select,", file_path],
                     check=False,
-                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
                 )
-            elif platform.system() == "Darwin":  # macOS
+            elif platform.system() == "Darwin":
                 subprocess.run(
-                    ['open', '-R', file_path],
+                    ["open", "-R", file_path],
                     check=False,
-                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
                 )
-            else:  # Linux
-                folder = os.path.dirname(file_path)
+            else:
                 subprocess.run(
-                    ['xdg-open', folder],
+                    ["xdg-open", os.path.dirname(file_path)],
                     check=False,
-                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
                 )
-        except Exception as e:
-            QtWidgets.QMessageBox.warning(self, "错误", f"无法打开文件夹：{e}")
-    
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "错误", f"无法打开文件夹：{exc}")
+
     def load_files(self, file_items: List[FileItem]) -> None:
-        """加载轻量记录；Qt 控件只渲染当前有界页。"""
-        self.file_items = file_items
-        self.current_page = 0
-        self._render_page()
+        """替换当前结果列表；Qt 只按滚动区域请求实际需要显示的行。"""
+        self._proxy_model.setDynamicSortFilter(False)
+        self._source_model.replace_files(file_items)
 
-    @property
-    def page_count(self) -> int:
-        return max(1, (len(self.file_items) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+    def clear_files(self) -> None:
+        """清空当前扫描结果，并返回由表格持有的新空列表。"""
+        self.load_files([])
 
-    def _render_page(self) -> None:
-        self._rendering = True
-        sorting = self.isSortingEnabled()
-        self.setSortingEnabled(False)
-        start = self.current_page * self.PAGE_SIZE
-        page_items = self.file_items[start : start + self.PAGE_SIZE]
-        self.clearContents()
-        self.setRowCount(len(page_items))
-        for row, file_item in enumerate(page_items):
-            check_item = QtWidgets.QTableWidgetItem()
-            check_item.setFlags(
-                Qt.ItemFlag.ItemIsEnabled
-                | Qt.ItemFlag.ItemIsSelectable
-                | Qt.ItemFlag.ItemIsUserCheckable
-            )
-            check_item.setCheckState(
-                Qt.CheckState.Checked if file_item.checked else Qt.CheckState.Unchecked
-            )
-            check_item.setData(Qt.ItemDataRole.UserRole, file_item)
-            self.setItem(row, 0, check_item)
-            
-            # 文件名
-            self.setItem(row, 1, QtWidgets.QTableWidgetItem(file_item.name))
-            
-            # 路径
-            self.setItem(row, 2, QtWidgets.QTableWidgetItem(file_item.path))
-            
-            # 大小
-            size_text = self._format_size(file_item.size)
-            size_item = QtWidgets.QTableWidgetItem(size_text)
-            size_item.setData(Qt.ItemDataRole.UserRole, file_item.size)  # 存储原始值用于排序
-            self.setItem(row, 3, size_item)
-            
-            # 修改时间
-            mtime_text = datetime.fromtimestamp(file_item.mtime).strftime("%Y-%m-%d %H:%M:%S")
-            mtime_item = QtWidgets.QTableWidgetItem(mtime_text)
-            mtime_item.setData(Qt.ItemDataRole.UserRole, file_item.mtime)  # 存储原始值用于排序
-            self.setItem(row, 4, mtime_item)
-        self.setSortingEnabled(sorting)
-        self._rendering = False
-        self.page_changed.emit(self.current_page + 1, self.page_count)
+    def append_files(self, file_items: List[FileItem]) -> None:
+        """追加刚扫描到的一小批结果，不重建已有可见行。"""
+        self._source_model.append_files(file_items)
 
-    def next_page(self) -> None:
-        if self.current_page + 1 < self.page_count:
-            self.current_page += 1
-            self._render_page()
+    def set_filters(
+        self,
+        search_text: str,
+        show_checked_only: bool,
+        show_large_only: bool,
+        show_recent_only: bool,
+        recent_cutoff: float,
+    ) -> None:
+        """把搜索和快捷条件交给代理模型，避免遍历并隐藏表格控件。"""
+        self._proxy_model.set_filters(
+            search_text,
+            show_checked_only,
+            show_large_only,
+            show_recent_only,
+            recent_cutoff,
+        )
 
-    def previous_page(self) -> None:
-        if self.current_page > 0:
-            self.current_page -= 1
-            self._render_page()
-    
-    def _format_size(self, size: int) -> str:
-        """格式化文件大小"""
-        size_float = float(size)
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if size_float < 1024.0:
-                return f"{size_float:.1f} {unit}"
-            size_float /= 1024.0
-        return f"{size_float:.1f} TB"
-    
-    def _on_item_changed(self, item: QtWidgets.QTableWidgetItem) -> None:
-        if self._rendering or item.column() != 0:
-            return
-        file_item = item.data(Qt.ItemDataRole.UserRole)
-        if isinstance(file_item, CleanupFileItem):
-            file_item.checked = item.checkState() == Qt.CheckState.Checked
-        self.check_state_changed.emit()
-    
     def get_checked_files(self) -> List[FileItem]:
-        """获取已勾选的文件"""
-        return [item for item in self.file_items if item.checked]
-    
+        """返回全部已勾选候选，不受当前搜索或快捷筛选影响。"""
+        return [file_item for file_item in self.file_items if file_item.checked]
+
     def select_all(self) -> None:
-        """全选"""
-        for item in self.file_items:
-            item.checked = True
-        self._render_page()
-        self.check_state_changed.emit()
-    
+        """勾选全部扫描结果。"""
+        self._source_model.set_all_checked(True)
+
     def select_none(self) -> None:
-        """取消全选"""
-        for item in self.file_items:
-            item.checked = False
-        self._render_page()
-        self.check_state_changed.emit()
+        """取消勾选全部扫描结果。"""
+        self._source_model.set_all_checked(False)
 
 class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
     """文件清理对话框 - 按目录和扩展名清理文件
@@ -296,6 +453,9 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.cleanup_controller.set_manual_listener(self._handle_cleanup_event)
 
         self.all_files: List[FileItem] = []
+        self._scan_file_count = 0
+        self._scan_total_size_bytes = 0
+        self._scan_cancel_requested = False
         self._scanned_folders: Tuple[str, ...] = ()
         self._hidden_auto_cleanup_folders: List[str] = []
         self._folder_rows: List[
@@ -811,7 +971,6 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.file_table = FileListTable()
         # v3.3.0：复选框变化时刷新删除按钮状态
         self.file_table.check_state_changed.connect(self._on_file_check_changed)
-        self.file_table.page_changed.connect(self._on_file_page_changed)
         layout.addWidget(self.file_table)
         
         # 表格操作按钮和统计
@@ -824,16 +983,6 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         btn_select_none.clicked.connect(self.file_table.select_none)
         table_actions_layout.addWidget(btn_select_all)
         table_actions_layout.addWidget(btn_select_none)
-        self.btn_previous_page = QtWidgets.QPushButton("上一页")
-        self.btn_previous_page.setProperty("class", "Secondary")
-        self.btn_previous_page.clicked.connect(self.file_table.previous_page)
-        self.btn_next_page = QtWidgets.QPushButton("下一页")
-        self.btn_next_page.setProperty("class", "Secondary")
-        self.btn_next_page.clicked.connect(self.file_table.next_page)
-        self.page_label = QtWidgets.QLabel("1 / 1")
-        table_actions_layout.addWidget(self.btn_previous_page)
-        table_actions_layout.addWidget(self.page_label)
-        table_actions_layout.addWidget(self.btn_next_page)
         table_actions_layout.addStretch()
         
         # 统计信息
@@ -845,44 +994,9 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         
         return widget
 
-    def _on_file_page_changed(self, page: int, total: int) -> None:
-        self.page_label.setText(f"{page} / {total}")
-        self.btn_previous_page.setEnabled(page > 1)
-        self.btn_next_page.setEnabled(page < total)
-        self._filter_files()
-    
     def _apply_quick_filters(self) -> None:
-        """应用快捷筛选"""
-        import time
-        cutoff_time_7days = time.time() - (7 * 24 * 3600)
-        size_threshold = 10 * 1024 * 1024  # 10MB
-        
-        show_checked_only = self.chip_show_checked.isChecked()
-        show_large_only = self.chip_show_large.isChecked()
-        show_recent_only = self.chip_show_recent.isChecked()
-        
-        for row in range(self.file_table.rowCount()):
-            check_item = self.file_table.item(row, 0)
-            file_item = (
-                check_item.data(Qt.ItemDataRole.UserRole) if check_item else None
-            )
-            if not isinstance(file_item, CleanupFileItem):
-                continue
-            show = True
-            
-            # 检查已选筛选
-            if show_checked_only and not file_item.checked:
-                show = False
-            
-            # 检查大文件筛选
-            if show_large_only and file_item.size < size_threshold:
-                show = False
-            
-            # 检查最近7天筛选
-            if show_recent_only and file_item.mtime < cutoff_time_7days:
-                show = False
-            
-            self.file_table.setRowHidden(row, not show)
+        """将快捷筛选状态交给虚拟化代理模型重新计算可见行。"""
+        self._filter_files()
     
     def _update_summary(self) -> None:
         """更新摘要条"""
@@ -1536,13 +1650,22 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.delete_mode_label.setText("(回收站)" if use_trash else "(永久)")
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
-        """Close the dialog after delegating worker cleanup to the controller."""
+        """关闭对话框时只请求取消，不在 GUI 线程等待网络盘扫描线程退出。
+
+        用途：避免 SMB 或网络盘 I/O 卡住时，关闭清理窗口连带冻结整个应用。
+        输入：Qt 发送的关闭事件。
+        输出：删除任务运行中拒绝关闭；其他情况立即关闭窗口并解除事件监听。
+        关键步骤：删除中先阻止关闭；扫描中发出协作取消；随后委托控制器解绑监听。
+        风险点：系统级 I/O 无法强制中断，后台线程会在当前 I/O 返回后自行收尾。
+        """
         if self.cleanup_controller.is_deleting:
             QtWidgets.QMessageBox.warning(
                 self, "正在删除", "正在删除文件，请等待完成后再关闭。"
             )
             event.ignore()
             return
+        if self.cleanup_controller.is_scanning:
+            self.cleanup_controller.cancel_scan()
         self.cleanup_controller.close_manual()
         super().closeEvent(event)
 
@@ -1752,51 +1875,25 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             return False
     
     def _filter_files(self) -> None:
-        """根据搜索框过滤文件（与快捷筛选结合）"""
-        search_text = self.search_edit.text().lower()
+        """根据搜索框和快捷条件更新代理模型，不逐行操作大量视图控件。"""
+        search_text = self.search_edit.text()
         import time
         cutoff_time_7days = time.time() - (7 * 24 * 3600)
-        size_threshold = 10 * 1024 * 1024
-        
-        show_checked_only = self.chip_show_checked.isChecked()
-        show_large_only = self.chip_show_large.isChecked()
-        show_recent_only = self.chip_show_recent.isChecked()
-        
-        for row in range(self.file_table.rowCount()):
-            check_item = self.file_table.item(row, 0)
-            file_item = (
-                check_item.data(Qt.ItemDataRole.UserRole) if check_item else None
-            )
-            if not isinstance(file_item, CleanupFileItem):
-                continue
-            name_item = self.file_table.item(row, 1)
-            path_item = self.file_table.item(row, 2)
-            
-            show = True
-            
-            # 搜索文本匹配
-            if search_text and name_item and path_item:
-                name_match = search_text in name_item.text().lower()
-                path_match = search_text in path_item.text().lower()
-                if not (name_match or path_match):
-                    show = False
-            
-            # 快捷筛选
-            if show_checked_only and not file_item.checked:
-                show = False
-            if show_large_only and file_item.size < size_threshold:
-                show = False
-            if show_recent_only and file_item.mtime < cutoff_time_7days:
-                show = False
-            
-            self.file_table.setRowHidden(row, not show)
+        self.file_table.set_filters(
+            search_text,
+            self.chip_show_checked.isChecked(),
+            self.chip_show_large.isChecked(),
+            self.chip_show_recent.isChecked(),
+            cutoff_time_7days,
+        )
     
     def _cancel_scan(self) -> None:
-        """取消扫描"""
+        """请求后台扫描在下一个可取消点停止，界面保持可操作。"""
         self.cleanup_controller.cancel_scan()
+        self._scan_cancel_requested = True
         self.btn_cancel_scan.setVisible(False)
-        self.progress_bar.setVisible(False)
-        self._append_log_line("扫描已取消。")
+        self.progress_label.setText("正在请求取消扫描，请稍候...")
+        self._append_log_line("已请求取消扫描；网络盘当前 I/O 返回后将结束。")
 
     def _scan_files(self) -> None:
         """Collect scan input and delegate filesystem work to the controller."""
@@ -1806,8 +1903,11 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._update_summary()
         self._clear_log()
         self._append_log_line("准备扫描...")
-        self.all_files = []
-        self.file_table.load_files([])
+        self.file_table.clear_files()
+        self.all_files = self.file_table.file_items
+        self._scan_file_count = 0
+        self._scan_total_size_bytes = 0
+        self._scan_cancel_requested = False
         self.stats_label.setText("扫描中...")
         self.progress_label.setText("准备扫描...")
 
@@ -1887,13 +1987,18 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             self._on_scan_progress(
                 str(event.get("current_dir", "")),
                 int(event.get("file_count", 0)),
-                # New workers keep totals in an object payload under the
-                # explicit byte key.  Retain the legacy key while older
-                # workers are still in use during staged upgrades.
+                # 新 Worker 使用明确的字节字段；保留旧字段兼容分阶段升级。
                 int(event.get("total_size_bytes", event.get("total_size", 0))),
             )
+        elif event_type == "scan_items":
+            self._on_scan_items(list(event.get("files", ())))
         elif event_type == "scan_finished":
-            self._on_scan_finished(list(event.get("files", [])))
+            self._on_scan_finished(
+                list(event.get("files", ())),
+                int(event.get("file_count", len(self.all_files))),
+                int(event.get("total_size_bytes", self._scan_total_size_bytes)),
+                bool(event.get("cancelled", self._scan_cancel_requested)),
+            )
         elif event_type == "delete_progress":
             self._on_delete_progress_value(
                 int(event.get("current", 0)), int(event.get("total", 0))
@@ -1907,12 +2012,37 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
             )
 
     def _on_scan_progress(self, current_dir: str, file_count: int, total_size: int) -> None:
-        """更新扫描进度"""
-        size_mb = total_size / (1024 * 1024)
+        """更新不受 32 位限制的扫描计数、容量和当前目录提示。"""
+        self._scan_file_count = max(self._scan_file_count, file_count)
+        self._scan_total_size_bytes = max(self._scan_total_size_bytes, total_size)
         # 简化显示路径
         if len(current_dir) > 50:
             current_dir = "..." + current_dir[-47:]
-        self.progress_label.setText(f"扫描: {file_count} 文件 | {size_mb:.1f} MB | {current_dir}")
+        self.progress_label.setText(
+            f"扫描: {file_count} 文件 | {format_cleanup_size(total_size)} | {current_dir}"
+        )
+        self.stats_label.setText(
+            f"扫描中：已发现 {len(self.all_files)} 文件 | "
+            f"{format_cleanup_size(self._scan_total_size_bytes)}"
+        )
+
+    def _on_scan_items(self, files: List[FileItem]) -> None:
+        """把刚发现的小批次直接追加到虚拟化表格，无需等待全量扫描完成。
+
+        用途：让用户及时看到结果，同时避免一次性创建大量 Qt 表格项。
+        输入：后台 Worker 已完成身份采样的一批文件。
+        输出：表格和内部候选列表同步追加这些文件。
+        关键步骤：模型插入行后复用其列表引用，再更新当前统计文本。
+        风险点：不能在此处排序全部候选，否则大量文件会重新阻塞 GUI 线程。
+        """
+        if not files:
+            return
+        self.file_table.append_files(files)
+        self.all_files = self.file_table.file_items
+        self.stats_label.setText(
+            f"扫描中：已发现 {len(self.all_files)} 文件 | "
+            f"{format_cleanup_size(self._scan_total_size_bytes)}"
+        )
     
     def _delete_files(self) -> None:
         """删除选中的文件（异步线程，支持回收站）"""
@@ -2010,26 +2140,44 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         
         return "\n".join(summary_lines)
 
-    def _on_scan_finished(self, files: List[FileItem]) -> None:
-        """扫描完成回调"""
-        self.all_files = sorted(files, key=lambda x: x.size, reverse=True)
-        
-        # 隐藏进度条和取消按钮
+    def _on_scan_finished(
+        self,
+        legacy_files: List[FileItem],
+        file_count: int,
+        total_size: int,
+        cancelled: bool,
+    ) -> None:
+        """完成增量扫描并恢复操作按钮，不再执行全量排序或全量渲染。
+
+        用途：收尾新流式协议，也兼容旧 Worker 一次性返回的文件列表。
+        输入：可选旧列表、Worker 汇总计数、总字节数及取消状态。
+        输出：界面显示最终统计，并允许用户开始下一次扫描或删除。
+        关键步骤：旧协议才替换表格列表；新协议复用已增量插入的模型列表。
+        风险点：取消结果同样可供用户核对，但不能把“取消”误报为完整扫描完成。
+        """
+        if legacy_files:
+            self.file_table.load_files(legacy_files)
+        self.all_files = self.file_table.file_items
+        self._scan_file_count = max(file_count, len(self.all_files))
+        self._scan_total_size_bytes = max(total_size, self._scan_total_size_bytes)
+
+        # 隐藏进度条和取消按钮，并恢复下一步操作。
         self.progress_bar.setVisible(False)
         self.btn_cancel_scan.setVisible(False)
-        
-        # 加载到表格
-        self.file_table.load_files(self.all_files)
-        
-        # 更新统计
-        total_size = sum(f.size for f in self.all_files)
-        size_mb = total_size / (1024 * 1024)
-        size_gb = total_size / (1024 * 1024 * 1024)
         self.stats_label.setText(
-            f"共 {len(self.all_files)} 文件 | {size_mb:.1f} MB ({size_gb:.2f} GB)"
+            f"共 {len(self.all_files)} 文件 | "
+            f"{format_cleanup_size(self._scan_total_size_bytes)}"
         )
-        self.progress_label.setText(f"扫描完成，找到 {len(self.all_files)} 个文件")
-        self._append_log_line(f"扫描完成，找到 {len(self.all_files)} 个文件。")
+        if cancelled:
+            self.progress_label.setText(
+                f"扫描已取消，已发现 {len(self.all_files)} 个文件"
+            )
+            self._append_log_line(
+                f"扫描已取消，保留已发现的 {len(self.all_files)} 个文件供核对。"
+            )
+        else:
+            self.progress_label.setText(f"扫描完成，找到 {len(self.all_files)} 个文件")
+            self._append_log_line(f"扫描完成，找到 {len(self.all_files)} 个文件。")
 
         can_manage = self._can_manage_cleanup()
         self.btn_scan.setEnabled(can_manage)
@@ -2064,8 +2212,8 @@ class DiskCleanupDialog(QtWidgets.QDialog):  # type: ignore[misc]
         else:
             self._append_log_line("删除完成，未发现失败项。")
 
-        self.all_files = remaining_files
-        self.file_table.load_files(self.all_files)
+        self.file_table.load_files(remaining_files)
+        self.all_files = self.file_table.file_items
         total_size = sum(item.size for item in self.all_files)
         size_mb_total = total_size / (1024 * 1024)
         size_gb_total = total_size / (1024 * 1024 * 1024)
